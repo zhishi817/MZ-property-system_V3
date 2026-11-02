@@ -58,14 +58,24 @@ import { projectDailyTaskStats } from '../lib/dailyTaskExecutionStats'
 import {
   GUEST_READY_NOTIFICATION_PERMISSION,
   GuestReadyNotificationConflict,
+  buildPriorTaskGuestReadyNotification,
   buildGuestReadyNotificationProjection,
   buildGuestReadyOutsideKeyProjection,
+  buildTaskGuestReadyNotificationProjection,
+  guestReadyCheckinTaskId,
   guestReadyNotificationAction,
+  guestReadyNotificationWorkRecordActions,
   guestReadyOutsideKeyAction,
+  hasCurrentGuestReadyReadinessEvidence,
+  isCurrentGuestReadyNotificationBusinessDate,
   isGuestReadyNotificationCustomerServiceRole,
   isGuestReadyNotificationRequirementBindingCurrent,
+  isGuestReadyTaskNotificationRequirementBindingCurrent,
   loadGuestReadyNotificationOrderStates,
+  loadGuestReadyNotificationTaskStates,
+  lockGuestReadyTaskNotificationContext,
   planGuestReadyNotificationMutation,
+  planTaskGuestReadyNotificationMutation,
 } from '../lib/guestReadyNotification'
 import { CLEANING_IMAGE_FORMAT_ERROR, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
@@ -96,8 +106,9 @@ import {
   recordWorkTaskActionAudit,
 } from '../lib/workTaskActionAudit'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
-import { activeCleaningTaskWhereSql, syncCheckoutOldCodeFromCheckinNewCode, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
+import { activeCleaningTaskWhereSql, claimTaskPasswordAuthorityFields, confirmTaskPasswordAuthority, lockCleaningPasswordChainKey, normalizeCleaningPasswordChainKeys, previewNextCheckinPasswordTarget, syncCheckoutOldCodeFromCheckinNewCode, syncNextCheckinOldCodeFromSourceOrder, validCleaningTaskOrderWhereSql, type PasswordAuthorityAuditContext } from '../services/cleaningSync'
 import { assertR5TaskRuntimeSchemaReady, isR5RequestSchemaReady, isR5TaskRuntimeSchemaReady, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
+import { isPasswordAuthoritySchemaReady } from '../lib/passwordAuthoritySchema'
 import {
   authorizeDeferredInspectionCheckinSubmission,
   buildDeferredInspectionCheckinArrangements,
@@ -109,6 +120,7 @@ import {
   mergeDeferredInspectionAwareActions,
   reconcileDeferredInspectionCheckinReplacement,
 } from '../services/deferredInspectionCheckinConflict'
+import { updatePasswordOnlyTaskSortOrder } from '../services/passwordOnlyTaskReorder'
 
 export const router = Router()
 
@@ -3244,7 +3256,8 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
                 inspection_mode,
                 inspection_scope,
                 inspection_due_date::text AS inspection_due_date,
-                property_id::text AS property_id
+                property_id::text AS property_id,
+                COALESCE(guest_ready_checkin_requirement_version, 0) AS guest_ready_checkin_requirement_version
            FROM cleaning_tasks
           WHERE id::text=$1::text
           FOR UPDATE`,
@@ -3288,6 +3301,7 @@ router.post('/cleaning-tasks/:id/lockbox-video', async (req, res) => {
         metadata: {
           route: 'mzapp.cleaning_tasks.lockbox_video',
           self_complete_lockbox: selfCompleteLockbox,
+          guest_ready_requirement_version: Number(lockedTask.guest_ready_checkin_requirement_version || 0),
         },
       }, client)
       await client.query(
@@ -4861,6 +4875,7 @@ router.post('/cleaning-tasks/order-keys-required', requireR5TaskRuntimeSchema, a
 const managerFieldsSchema = z
   .object({
     task_ids: z.array(z.string().trim().min(1)).min(1).max(50),
+    password_task_ids: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
     checkout_time: z.string().trim().max(32).optional().nullable(),
     checkin_time: z.string().trim().max(32).optional().nullable(),
     old_code: z.string().trim().max(64).optional().nullable(),
@@ -4875,13 +4890,101 @@ const managerFieldsSchema = z
       }, z.number().int().min(1).max(2))
       .optional()
       .nullable(),
+    password_verification: z.object({
+      fields: z.array(z.enum(['old_code', 'new_code'])).min(1).max(2),
+      request_id: z.string().trim().min(1).max(100),
+      client: z.literal('mobile'),
+    }).strict().optional(),
   })
   .strict()
+
+const passwordAuthorityPreviewSchema = z.object({
+  task_ids: z.array(z.string().trim().min(1)).min(1).max(50),
+  fields: z.array(z.enum(['old_code', 'new_code'])).min(1).max(2),
+}).strict()
+
+router.post('/cleaning-tasks/manager-fields/password-preview', requireR5TaskRuntimeSchema, async (req, res) => {
+  const user = (req as any).user
+  if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!(hasRole(user, 'customer_service') || hasRole(user, 'admin') || hasRole(user, 'offline_manager'))) return res.status(403).json({ message: 'forbidden' })
+  if (!isPasswordAuthoritySchemaReady()) return res.status(503).json({ code: 'password_authority_schema_not_ready' })
+  const parsed = passwordAuthorityPreviewSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  try {
+    const selectedResult = await pgPool.query(
+      `SELECT id::text AS id, order_id::text AS order_id,
+              lower(COALESCE(task_type, type, '')) AS task_type,
+              property_id::text AS property_id,
+              COALESCE(task_date, date)::date::text AS task_date,
+              old_code_authority_status, new_code_authority_status
+       FROM cleaning_tasks
+       WHERE id::text = ANY($1::text[])
+         AND ${activeCleaningTaskWhereSql('')}`,
+      [parsed.data.task_ids],
+    )
+    const selected = selectedResult?.rows || []
+    if (selected.length !== new Set(parsed.data.task_ids).size) return res.status(404).json({ message: 'task not found' })
+    const selectedTaskTypes = new Set(selected.map((row: any) => String(row?.task_type || '').trim().toLowerCase()))
+    const unsupportedFields = parsed.data.fields.filter((field) => (
+      field === 'old_code' ? !selectedTaskTypes.has('checkout_clean') : !selectedTaskTypes.has('checkin_clean')
+    ))
+    if (unsupportedFields.length) return res.status(400).json({ message: 'password_field_not_applicable' })
+    const checkinOrderIds = Array.from(new Set(selected
+      .filter((row: any) => row.task_type === 'checkin_clean')
+      .map((row: any) => String(row.order_id || '').trim())
+      .filter(Boolean)))
+    const sameOrderResult = checkinOrderIds.length
+      ? await pgPool.query(
+          `SELECT id::text AS id, order_id::text AS order_id
+           FROM cleaning_tasks
+           WHERE order_id::text = ANY($1::text[])
+             AND lower(COALESCE(task_type, type, '')) = 'checkout_clean'
+             AND ${activeCleaningTaskWhereSql('')}`,
+          [checkinOrderIds],
+        )
+      : { rows: [] }
+    const sourceLinkedResult = checkinOrderIds.length
+      ? await pgPool.query(
+          `SELECT id::text AS id, old_code_source_order_id::text AS source_order_id
+           FROM cleaning_tasks
+           WHERE old_code_source_order_id::text = ANY($1::text[])
+             AND lower(COALESCE(old_code_authority_status, '')) = 'source_linked'
+             AND ${activeCleaningTaskWhereSql('')}`,
+          [checkinOrderIds],
+        )
+      : { rows: [] }
+    const predictedDependentTaskIds: string[] = []
+    const blockedSourceOrderIds: string[] = []
+    for (const sourceOrderId of checkinOrderIds) {
+      const target = await previewNextCheckinPasswordTarget({ sourceOrderId, client: pgPool })
+      if (target.state === 'unique' && target.targetTaskId) predictedDependentTaskIds.push(target.targetTaskId)
+      else if (target.state === 'ambiguous' || target.state === 'source_missing') blockedSourceOrderIds.push(sourceOrderId)
+    }
+    const manualTaskIds = selected.filter((row: any) => !String(row.order_id || '').trim()).map((row: any) => String(row.id))
+    return res.json({
+      selected_task_ids: selected.map((row: any) => String(row.id)),
+      fields: parsed.data.fields,
+      same_order_checkout_task_ids: Array.from(new Set((sameOrderResult.rows || []).map((row: any) => String(row.id)))),
+      dependent_checkin_task_ids: Array.from(new Set([
+        ...(sourceLinkedResult.rows || []).map((row: any) => String(row.id)),
+        ...predictedDependentTaskIds,
+      ])),
+      blocked_source_order_ids: blockedSourceOrderIds,
+      manual_task_ids: manualTaskIds,
+      requires_manual_source_confirmation: manualTaskIds.length > 0,
+      note: manualTaskIds.length ? '手工任务没有订单来源；确认后仅标记为人工核对，不猜测关联订单。' : null,
+    })
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message || 'password_preview_failed' })
+  }
+})
 
 async function handleManagerFields(req: any, res: any) {
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   if (!(hasRole(user, 'customer_service') || hasRole(user, 'admin') || hasRole(user, 'offline_manager'))) return res.status(403).json({ message: 'forbidden' })
+  if (!isPasswordAuthoritySchemaReady()) return res.status(503).json({ code: 'password_authority_schema_not_ready' })
   const parsed = managerFieldsSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -4912,9 +5015,11 @@ async function handleManagerFields(req: any, res: any) {
       propertyCode = String(prevRow?.property_code || '').trim()
     } catch {}
     const fields: string[] = []
+    const fieldNames: string[] = []
     const vals: any[] = []
     const push = (sql: string, v: any) => {
       vals.push(v)
+      fieldNames.push(sql)
       fields.push(`${sql} = $${vals.length}`)
     }
     const norm = (v: any) => String(v ?? '').replace(/\s+/g, ' ').trim()
@@ -4926,8 +5031,8 @@ async function handleManagerFields(req: any, res: any) {
     let keysNullIds: string[] = []
     if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) push('checkout_time', parsed.data.checkout_time)
     if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) push('checkin_time', parsed.data.checkin_time)
-    if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) push('old_code', parsed.data.old_code)
-    if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) push('new_code', parsed.data.new_code)
+    if (parsed.data.old_code !== undefined) push('old_code', parsed.data.old_code)
+    if (parsed.data.new_code !== undefined) push('new_code', parsed.data.new_code)
     if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) push('guest_special_request', parsed.data.guest_special_request)
     if (parsed.data.keys_required !== undefined) {
       const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
@@ -5015,44 +5120,159 @@ async function handleManagerFields(req: any, res: any) {
         }
       }
     }
-    if (!fields.length && nextKeysRequired == null) return res.json({ ok: true, skipped: 'no_change' })
+    const verificationFields = Array.from(new Set([
+      ...(parsed.data.old_code !== undefined ? ['old_code' as const] : []),
+      ...(parsed.data.new_code !== undefined ? ['new_code' as const] : []),
+      ...((parsed.data.password_verification?.fields || []) as Array<'old_code' | 'new_code'>),
+    ]))
+    if (!fields.length && nextKeysRequired == null && !verificationFields.length) return res.json({ ok: true, skipped: 'no_change' })
 
-    if (fields.length) {
-      vals.push(parsed.data.task_ids)
-      const sql = `UPDATE cleaning_tasks SET ${fields.join(', ')}, updated_at = now() WHERE id::text = ANY($${vals.length}::text[])`
-      await pool.query(sql, vals)
-    }
-
-    if (parsed.data.new_code !== undefined) {
-      try {
-        const rLinkedOrders = await pool.query(
-          `SELECT DISTINCT order_id::text AS order_id
-           FROM cleaning_tasks
-           WHERE id::text = ANY($1::text[])
-             AND lower(COALESCE(task_type, type, '')) = 'checkin_clean'
-             AND NULLIF(order_id::text, '') IS NOT NULL`,
-          [parsed.data.task_ids],
+    const passwordRequestId = parsed.data.password_verification?.request_id || crypto.randomUUID()
+    const affectedTaskIds = (await pgRunInTransaction(async (client) => {
+      const generalTaskIds = Array.from(new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))).sort()
+      const passwordTaskIds = Array.from(new Set((parsed.data.password_task_ids || parsed.data.task_ids).map((x) => String(x || '').trim()).filter(Boolean))).sort()
+      const targetTaskIds = Array.from(new Set([...generalTaskIds, ...passwordTaskIds])).sort()
+      const affected = new Set<string>()
+      const snapshotResult = await client.query(
+        `SELECT t.id::text AS id,
+                COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id
+         FROM cleaning_tasks t
+         LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+         WHERE t.id::text = ANY($1::text[])
+         ORDER BY t.id`,
+        [targetTaskIds],
+      )
+      if ((snapshotResult?.rows || []).length !== targetTaskIds.length) {
+        const error: any = new Error('manager_fields_task_not_found')
+        error.status = 404
+        throw error
+      }
+      let lockedPasswordPropertyIds: string[] = []
+      if (verificationFields.length) {
+        lockedPasswordPropertyIds = Array.from(new Set<string>((snapshotResult?.rows || [])
+          .map((row: any) => String(row.property_id || '').trim())
+          .filter(Boolean))).sort()
+        for (const propertyId of lockedPasswordPropertyIds) await lockCleaningPasswordChainKey(client, propertyId)
+      }
+      const lockedResult = await client.query(
+        `SELECT id::text AS id, order_id::text AS order_id,
+                lower(COALESCE(task_type, type, '')) AS task_type,
+                property_id::text AS property_id
+         FROM cleaning_tasks
+         WHERE id::text = ANY($1::text[])
+           AND ${activeCleaningTaskWhereSql('')}
+         ORDER BY id
+         FOR UPDATE`,
+        [targetTaskIds],
+      )
+      const lockedTasks = lockedResult?.rows || []
+      if (lockedTasks.length !== targetTaskIds.length) {
+        const error: any = new Error('manager_fields_task_inactive')
+        error.status = 409
+        throw error
+      }
+      const passwordTaskIdSet = new Set(passwordTaskIds)
+      const lockedPasswordTasks = lockedTasks.filter((row: any) => passwordTaskIdSet.has(String(row.id)))
+      const lockedTaskTypes = new Set(lockedPasswordTasks.map((row: any) => String(row?.task_type || '').trim().toLowerCase()))
+      const unsupportedPasswordFields = verificationFields.filter((field) => (
+        field === 'old_code' ? !lockedTaskTypes.has('checkout_clean') : !lockedTaskTypes.has('checkin_clean')
+      ))
+      if (unsupportedPasswordFields.length) {
+        const error: any = new Error('password_field_not_applicable')
+        error.status = 400
+        throw error
+      }
+      if (verificationFields.length) {
+        const verifiedPropertyIds = await normalizeCleaningPasswordChainKeys(
+          client,
+          lockedPasswordTasks.map((row: any) => row?.property_id),
         )
-        for (const row of rLinkedOrders?.rows || []) {
-          const orderId = String(row?.order_id || '').trim()
-          if (orderId) await syncCheckoutOldCodeFromCheckinNewCode({ orderId, client: pool })
+        if (verifiedPropertyIds.some((propertyId) => !lockedPasswordPropertyIds.includes(propertyId))) {
+          const error: any = new Error('password_chain_topology_changed_retry')
+          error.status = 409
+          throw error
         }
-      } catch {}
-    }
+      }
 
-    const affectedTaskIds = new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))
-    if (nextKeysRequired != null) {
-      try {
+      const passwordAudit: PasswordAuthorityAuditContext = {
+        requestId: passwordRequestId,
+        actorUserId: String(user?.sub || '').trim() || null,
+        actorRole: roleNamesOf(user).join(',') || null,
+        client: 'mobile',
+      }
+      const claimedByTask = new Map<string, Array<'old_code' | 'new_code'>>()
+      if (verificationFields.length) {
+        for (const row of lockedPasswordTasks) {
+          const taskType = String(row?.task_type || '')
+          const taskFields = verificationFields.filter((field) => (
+            (taskType === 'checkout_clean' && field === 'old_code')
+            || (taskType === 'checkin_clean' && field === 'new_code')
+          ))
+          if (!taskFields.length) continue
+          const claimedFields = await claimTaskPasswordAuthorityFields({ taskId: String(row.id), fields: taskFields, client, audit: passwordAudit })
+          claimedByTask.set(String(row.id), claimedFields)
+        }
+      }
+
+      const nonPasswordEntries = fieldNames
+        .map((field, index) => ({ field, value: vals[index] }))
+        .filter((entry) => entry.field !== 'old_code' && entry.field !== 'new_code')
+      if (nonPasswordEntries.length) {
+        const assignments = nonPasswordEntries.map((entry, index) => `${entry.field} = $${index + 1}`)
+        const transactionValues = [...nonPasswordEntries.map((entry) => entry.value), generalTaskIds]
+        const sql = `UPDATE cleaning_tasks SET ${assignments.join(', ')}, updated_at = now() WHERE id::text = ANY($${transactionValues.length}::text[])`
+        await client.query(sql, transactionValues)
+        for (const taskId of generalTaskIds) affected.add(taskId)
+      }
+
+      const passwordEntryByField = new Map(fieldNames.map((field, index) => [field, vals[index]]))
+      const linkedOrders = new Set<string>()
+      for (const row of lockedPasswordTasks) {
+        const taskId = String(row.id)
+        const claimedFields = claimedByTask.get(taskId) || []
+        const passwordWriteFields = claimedFields.filter((field) => passwordEntryByField.has(field))
+        if (passwordWriteFields.length) {
+          const assignments = passwordWriteFields.map((field, index) => `${field} = $${index + 1}`)
+          const values = passwordWriteFields.map((field) => passwordEntryByField.get(field))
+          await client.query(
+            `UPDATE cleaning_tasks SET ${assignments.join(', ')}, updated_at = now() WHERE id::text = $${values.length + 1}::text`,
+            [...values, taskId],
+          )
+        }
+        if (claimedFields.length) {
+          const confirmed = await confirmTaskPasswordAuthority({
+            taskId,
+            fields: claimedFields,
+            claimedFields,
+            client,
+            audit: passwordAudit,
+          })
+          if (confirmed.updatedFields.length) affected.add(taskId)
+          if (String(row?.task_type || '') === 'checkin_clean' && confirmed.updatedFields.includes('new_code')) {
+            const orderId = String(row?.order_id || '').trim()
+            if (orderId) linkedOrders.add(orderId)
+          }
+        }
+      }
+      for (const orderId of Array.from(linkedOrders).sort()) {
+        const checkoutResult = await syncCheckoutOldCodeFromCheckinNewCode({ orderId, client, audit: passwordAudit })
+        if (checkoutResult.targetTaskId) affected.add(String(checkoutResult.targetTaskId))
+        const nextResult = await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: orderId, client, audit: passwordAudit })
+        if (nextResult.targetTaskId) affected.add(String(nextResult.targetTaskId))
+      }
+
+      if (nextKeysRequired != null) {
         const doUpdateOrder = async () => {
           if (!keysOrderIds.length) return
-          await pool.query(
+          await client.query(
             `UPDATE orders
              SET keys_required = $1
              WHERE id::text = ANY($2::text[])
                AND COALESCE(keys_required, 1) <> $1`,
             [nextKeysRequired, keysOrderIds],
           )
-          await pool.query(
+          await client.query(
             `UPDATE cleaning_tasks
              SET keys_required = $1, updated_at = now()
              WHERE order_id::text = ANY($2::text[])
@@ -5060,7 +5280,7 @@ async function handleManagerFields(req: any, res: any) {
                AND COALESCE(keys_required, 1) <> $1`,
             [nextKeysRequired, keysOrderIds],
           )
-          const rIds = await pool.query(
+          const rIds = await client.query(
             `SELECT id::text AS id
              FROM cleaning_tasks
              WHERE order_id::text = ANY($1::text[])
@@ -5069,12 +5289,12 @@ async function handleManagerFields(req: any, res: any) {
           )
           for (const x of rIds?.rows || []) {
             const id2 = String(x?.id || '').trim()
-            if (id2) affectedTaskIds.add(id2)
+            if (id2) affected.add(id2)
           }
         }
         const doUpdateNull = async () => {
           if (!keysNullIds.length) return
-          await pool.query(
+          await client.query(
             `UPDATE cleaning_tasks
              SET keys_required = $1, updated_at = now()
              WHERE order_id IS NULL
@@ -5083,12 +5303,13 @@ async function handleManagerFields(req: any, res: any) {
                AND COALESCE(keys_required, 1) <> $1`,
             [nextKeysRequired, keysNullIds],
           )
-          for (const id2 of keysNullIds) affectedTaskIds.add(String(id2))
+          for (const id2 of keysNullIds) affected.add(String(id2))
         }
         await doUpdateOrder()
         await doUpdateNull()
-      } catch {}
-    }
+      }
+      return affected
+    })) || new Set<string>()
 
     setImmediate(() => {
       ;(async () => {
@@ -5222,8 +5443,8 @@ async function handleManagerFields(req: any, res: any) {
           const lines: string[] = []
           if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) lines.push(fmt('退房时间', parsed.data.checkout_time, prevRow?.checkout_time))
           if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) lines.push(fmt('入住时间', parsed.data.checkin_time, prevRow?.checkin_time))
-          if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) lines.push(fmt('旧密码', parsed.data.old_code, prevRow?.old_code))
-          if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) lines.push(fmt('新密码', parsed.data.new_code, prevRow?.new_code))
+          if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) lines.push('旧密码：已更新（值已隐藏）')
+          if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) lines.push('新密码：已更新（值已隐藏）')
           if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) lines.push(fmt('客人需求', parsed.data.guest_special_request, prevRow?.guest_special_request))
           if (parsed.data.keys_required !== undefined) {
             const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
@@ -5244,7 +5465,7 @@ async function handleManagerFields(req: any, res: any) {
           let afterRow: any = null
           try {
             const rAfter = await pool.query(
-              `SELECT t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request,
+              `SELECT t.property_id::text AS property_id, t.checkout_time, t.checkin_time, t.guest_special_request,
                       CASE
                         WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1)
                         ELSE COALESCE(o.keys_required, t.keys_required, 1)
@@ -5264,8 +5485,9 @@ async function handleManagerFields(req: any, res: any) {
           const keyObj = {
             checkout_time: afterRow?.checkout_time == null ? null : String(afterRow.checkout_time),
             checkin_time: afterRow?.checkin_time == null ? null : String(afterRow.checkin_time),
-            old_code: afterRow?.old_code == null ? null : String(afterRow.old_code),
-            new_code: afterRow?.new_code == null ? null : String(afterRow.new_code),
+            old_code_changed: parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code),
+            new_code_changed: parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code),
+            password_request_id: verificationFields.length ? passwordRequestId : null,
             guest_special_request: afterRow?.guest_special_request == null ? null : String(afterRow.guest_special_request),
             keys_required: nextKeysRequired != null ? nextKeysRequired : (afterRow?.keys_required == null ? 1 : Number(afterRow.keys_required)),
           }
@@ -5318,7 +5540,7 @@ async function handleManagerFields(req: any, res: any) {
     })
     return res.status(201).json({ ok: true })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'manager_fields_failed' })
+    return res.status(Number(e?.status || 500)).json({ message: e?.message || 'manager_fields_failed' })
   }
 }
 
@@ -6931,7 +7153,7 @@ const workTaskReorderSchema = z.object({
 const mixedTaskReorderSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   items: z.array(z.object({
-    kind: z.enum(['work', 'cleaner', 'inspector']),
+    kind: z.enum(['work', 'cleaner', 'inspector', 'executor']),
     ids: z.array(z.string().min(1)).min(1),
     sort_index: z.number().int().min(1),
   }).strict()).min(1),
@@ -7046,7 +7268,7 @@ router.post('/work-tasks/mixed-reorder', requireR5TaskRuntimeSchema, async (req,
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
 
   const date = parsed.data.date
-  const entriesForKind = (kind: 'work' | 'cleaner' | 'inspector') => {
+  const entriesForKind = (kind: 'work' | 'cleaner' | 'inspector' | 'executor') => {
     const byId = new Map<string, { id: string; sort_index: number }>()
     for (const item of parsed.data.items) {
       if (item.kind !== kind) continue
@@ -7060,6 +7282,7 @@ router.post('/work-tasks/mixed-reorder', requireR5TaskRuntimeSchema, async (req,
   const workEntries = entriesForKind('work')
   const cleanerEntries = entriesForKind('cleaner')
   const inspectorEntries = entriesForKind('inspector')
+  const executorEntries = entriesForKind('executor')
 
   try {
     await assertWorkTasksSchemaReady()
@@ -7229,6 +7452,15 @@ router.post('/work-tasks/mixed-reorder', requireR5TaskRuntimeSchema, async (req,
         if ((r?.rowCount || 0) !== expected) {
           throw Object.assign(new Error('forbidden'), { statusCode: 403 })
         }
+      }
+
+      if (executorEntries.length) {
+        await updatePasswordOnlyTaskSortOrder({
+          client,
+          entries: executorEntries,
+          date,
+          userId,
+        })
       }
 
       await client.query('COMMIT')
@@ -7555,6 +7787,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
 
   const user = (req as any).user
   if (!user) return res.status(401).json({ message: 'unauthorized' })
+  if (!isPasswordAuthoritySchemaReady()) return res.status(503).json({ code: 'password_authority_schema_not_ready' })
   const userId = String(user.sub || '')
 
   // The mobile all-task execution view is role-authoritative. A standalone
@@ -8386,7 +8619,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               COALESCE(p_id.wifi_ssid::text, p_code.wifi_ssid::text) AS property_wifi_ssid,
               COALESCE(p_id.wifi_password::text, p_code.wifi_password::text) AS property_wifi_password,
               COALESCE(p_id.router_location::text, p_code.router_location::text) AS property_router_location,
-              t.task_type,
+              COALESCE(NULLIF(t.task_type, ''), NULLIF(t.type, '')) AS task_type,
               t.linked_checkout_task_id,
               COALESCE(t.task_date, t.date)::text AS task_date,
               t.status,
@@ -8405,6 +8638,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               t.checkin_time,
               t.old_code,
               t.new_code,
+              t.old_code_authority_status,
+              t.new_code_authority_status,
+              t.old_code_source_task_id,
+              t.old_code_source_order_id,
+              t.old_code_source_field,
               t.guest_special_request,
               t.note,
               CASE
@@ -8618,6 +8856,11 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             t.checkin_time,
             t.old_code,
             t.new_code,
+            t.old_code_authority_status,
+            t.new_code_authority_status,
+            t.old_code_source_task_id,
+            t.old_code_source_order_id,
+            t.old_code_source_field,
             t.guest_special_request,
             t.note,
             t.keys_required,
@@ -9386,6 +9629,13 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             checkin_time: row.checkin_time,
             old_code: row.old_code,
             new_code: row.new_code,
+            password_authority: {
+              old_code_status: row.old_code_authority_status || 'needs_review',
+              new_code_status: row.new_code_authority_status || 'needs_review',
+              old_code_source_task_id: row.old_code_source_task_id || null,
+              old_code_source_order_id: row.old_code_source_order_id || null,
+              old_code_source_field: row.old_code_source_field || null,
+            },
             guest_special_request: row.guest_special_request,
             note: row.note == null ? null : String(row.note || '').trim() || null,
             keys_required: row.keys_required == null ? 1 : Number(row.keys_required),
@@ -9506,12 +9756,20 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
 
           const effectiveExecutorId = executorId || manualExecutionAssigneeId
           if (wantExecutor && isCheckinSiteExecution) {
-            const executorTerminal = raw_status === 'keys_hung' || !!row.lockbox_video_url
+            const executorTerminal = ['cleaned', 'restock_pending', 'restocked', 'ready', 'inspected', 'keys_hung', 'done', 'completed', 'pending_review', 'review_pending', 'awaiting_review', 'closed'].includes(raw_status)
+              || !!row.lockbox_video_url
             const cancelled = raw_status === 'cancelled' || raw_status === 'canceled'
             if (!suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate(row) && !executorTerminal && !cancelled && taskDate >= dateFrom && taskDate <= dateTo && effectiveExecutorId && (allowAll || effectiveExecutorId === userId)) {
               const k = `${taskDate}|${rowBusinessIdentity}|${effectiveExecutorId}`
               const arr = executorGroups.get(k) || []
-              arr.push({ ...base, __assignee_executor: effectiveExecutorId })
+              arr.push({
+                ...base,
+                __assignee_executor: effectiveExecutorId,
+                // A legacy inspector fallback or a one-off manual action grant can
+                // make this execution visible/actionable, but only the persisted
+                // source assignee owns its list position.
+                __executor_reorderable: String(row.assignee_id || '').trim() === effectiveExecutorId,
+              })
               executorGroups.set(k, arr)
             }
             const recordEvidence = mergeRoleRecordEvidenceWithCancellation({
@@ -9859,8 +10117,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                     ? '清洁'
                     : (summaryFromCleaningTimes(p.a.checkout_time, p.a.checkin_time) || null)
 
-          const oldCode = firstNonEmpty(turnoverDisplay.old_code, p.a.old_code, p.b?.old_code, ...rows.map((x) => x.old_code))
-          const newCode = firstNonEmpty(turnoverDisplay.new_code, p.b?.new_code, ...nextCheckinsForCheckout.map((x: any) => x.new_code), p.a.new_code, ...rows.map((x) => x.new_code))
+          const oldCode = turnoverDisplay.old_code
+          const newCode = turnoverDisplay.new_code
           const guestSpecialRequest = displayMergeCheckinRow
             ? (String(displayMergeCheckinRow.guest_special_request || '').trim() || null)
             : firstNonEmpty(turnoverDisplay.guest_request_summary, p.a.guest_special_request, p.b?.guest_special_request, ...rows.map((x) => x.guest_special_request))
@@ -10230,6 +10488,13 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             assignee_id: String(assigneeId || '').trim() || null,
             inspector_id: inspectorAssigned ? String(inspectorAssigned) : null,
             executor_id: roleKind === 'executor' ? (String(assigneeId || '').trim() || null) : null,
+            executor_reorderable: roleKind === 'executor'
+              && !isWorkRecordGroup
+              && p.ids.length > 0
+              && p.ids.every((sourceId) => rows.some((row) => (
+                String(row.__raw_id || '') === String(sourceId)
+                && row.__executor_reorderable === true
+              ))),
             assignee_name: displayMergeCheckinRow
               ? (inspectorName || null)
               : (isWorkRecordGroup ? workRecordActorName : null) || executorName || cleanerName || inspectorName || null,
@@ -10241,6 +10506,17 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             sort_index_inspector,
             old_code: oldCode,
             new_code: newCode,
+            password_authority: {
+              old_code_status: p.kind === 'checkout' || p.kind === 'turnover'
+                ? (turnoverDisplay.old_code_authority_status || 'needs_review')
+                : 'not_applicable',
+              new_code_status: p.kind === 'checkin' || p.kind === 'turnover' || nextCheckinsForCheckout.length > 0
+                ? (turnoverDisplay.new_code_authority_status || 'needs_review')
+                : 'not_applicable',
+              old_code_source_task_id: turnoverDisplay.old_code_source_task_id || null,
+              old_code_source_order_id: turnoverDisplay.old_code_source_order_id || null,
+              old_code_source_field: turnoverDisplay.old_code_source_field || null,
+            },
             guest_special_request: guestSpecialRequest,
             guest_request_checkout: displayTurnoverDisplay.guest_request_checkout,
             guest_request_checkin: displayTurnoverDisplay.guest_request_checkin,
@@ -10391,8 +10667,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const [d, businessIdentity] = keyParts
         const mergeIdentity = keyParts.slice(2).join('|') || null
         const propKey = String(preferred?.property?.code || preferred?.property_id || preferred?.title || '').trim() || 'unknown'
-        const mergedTurnoverDisplay = mergeCleaningTurnoverDisplays(arr.map((x) => x.turnover_display))
-        const managerTimingAuthority = deferredInspectionManagerTimingAuthority(arr, mergedTurnoverDisplay)
+        const mergedTurnoverDisplay = mergeCleaningTurnoverDisplays(preferredPool.map((x) => x.turnover_display))
+        const managerTimingAuthority = deferredInspectionManagerTimingAuthority(preferredPool, mergedTurnoverDisplay)
         const deferredInspectionMerged = managerTimingAuthority.deferredInspectionMerged
         const deferredInspectionCurrentDayCheckout = managerTimingAuthority.currentDayCheckout
         const managerTurnoverDisplay = managerTimingAuthority.turnoverDisplay
@@ -10467,20 +10743,20 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const keyPhotoUrl = firstNonEmpty(...arr.map((x) => x.key_photo_url))
         const lockboxVideoUrl = firstNonEmpty(...arr.map((x) => x.lockbox_video_url))
         const lockboxVideoConfirmsCurrentState = keyHandover?.state === 'completed'
-        const oldCode = firstNonEmpty(
-          mergedTurnoverDisplay?.old_code,
-          ...arr
-            .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
-            .map((x) => x.old_code),
-          ...arr.map((x) => x.old_code),
-        )
-        const newCode = firstNonEmpty(
-          mergedTurnoverDisplay?.new_code,
-          ...arr
-            .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')
-            .map((x) => x.new_code),
-          ...arr.map((x) => x.new_code),
-        )
+        const oldCode = mergedTurnoverDisplay
+          ? mergedTurnoverDisplay.old_code
+          : firstNonEmpty(
+              ...arr
+                .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
+                .map((x) => x.old_code),
+            )
+        const newCode = mergedTurnoverDisplay
+          ? mergedTurnoverDisplay.new_code
+          : firstNonEmpty(
+              ...arr
+                .filter((x) => String(x?.task_type || '').trim().toLowerCase() === 'checkin_clean')
+                .map((x) => x.new_code),
+            )
         const keysRequired = Math.max(...arr.map((x) => (x?.keys_required == null ? 1 : Number(x.keys_required))).filter((x) => Number.isFinite(x) && x > 0), 1)
         const checkoutKeys = Math.max(
           ...arr.map((x) => (x?.keys_required_checkout == null ? 0 : Number(x.keys_required_checkout))).filter((x) => Number.isFinite(x) && x > 0),
@@ -10676,6 +10952,18 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           lockbox_video_url: hideUnattributedHistoricalMedia ? null : (canViewLockboxVideo ? lockboxVideoUrl : null),
           old_code: oldCode || null,
           new_code: newCode || null,
+          password_authority: {
+            ...(preferred?.password_authority || {}),
+            old_code_status: hasCheckoutSide
+              ? (mergedTurnoverDisplay?.old_code_authority_status || 'needs_review')
+              : 'not_applicable',
+            new_code_status: hasCheckinSide
+              ? (mergedTurnoverDisplay?.new_code_authority_status || 'needs_review')
+              : 'not_applicable',
+            old_code_source_task_id: mergedTurnoverDisplay?.old_code_source_task_id || null,
+            old_code_source_order_id: mergedTurnoverDisplay?.old_code_source_order_id || null,
+            old_code_source_field: mergedTurnoverDisplay?.old_code_source_field || null,
+          },
           guest_request_checkout: mergedTurnoverDisplay?.guest_request_checkout || null,
           guest_request_checkin: mergedTurnoverDisplay?.guest_request_checkin || null,
           guest_request_summary: mergedTurnoverDisplay?.guest_request_summary || null,
@@ -10768,6 +11056,16 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             .map((task) => task?.order_id_checkin),
         )
       : new Map<string, any>()
+    const guestReadyTaskIdByResponseId = new Map<string, string>()
+    for (const task of visibleOut) {
+      const orderId = String(task?.order_id_checkin || '').trim()
+      const orderState = orderId ? guestReadyStatesByOrder.get(orderId) : null
+      const taskId = String(orderState?.current_checkin_task_id || guestReadyCheckinTaskId(task) || '').trim()
+      if (taskId) guestReadyTaskIdByResponseId.set(String(task?.id || ''), taskId)
+    }
+    const guestReadyStatesByTask = canViewGuestReadyNotification
+      ? await loadGuestReadyNotificationTaskStates(pgPool, Array.from(guestReadyTaskIdByResponseId.values()))
+      : new Map<string, any>()
     markWorkTasksStep('guest_ready_notification')
 
     const manualParticipantsByRef = await loadManualWorkTaskParticipantsByRef(visibleOut)
@@ -10778,15 +11076,32 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
       const projectedReadOnlyViews = workRecordReadOnlyViews(task, user, userId)
       const orderIdCheckin = String(task?.order_id_checkin || '').trim()
       const guestReadyState = orderIdCheckin ? guestReadyStatesByOrder.get(orderIdCheckin) : null
+      const guestReadyTaskId = guestReadyTaskIdByResponseId.get(String(task?.id || '')) || ''
+      const guestReadyTaskState = guestReadyTaskId ? guestReadyStatesByTask.get(guestReadyTaskId) : null
       const currentCheckin = guestReadyState?.current_checkin_count === 1
       const notificationBindingCurrent = isGuestReadyNotificationRequirementBindingCurrent({
         notifiedCheckinTaskId: guestReadyState?.notified_checkin_task_id,
         notifiedRequirementVersion: guestReadyState?.notified_requirement_version,
         currentCheckinTaskId: guestReadyState?.current_checkin_task_id,
         currentRequirementVersion: guestReadyState?.current_requirement_version,
+        notifiedAt: guestReadyState?.notified_at,
+        latestLegacyAssignmentChangedAt: guestReadyState?.latest_legacy_assignment_changed_at,
       })
       const canProjectGuestContext = (!isProjectedWorkRecord && canViewGuestReadyNotification)
         || (isProjectedWorkRecord && projectedReadOnlyViews.guest_context)
+      const priorTaskNotification = canViewGuestReadyNotification && orderIdCheckin && guestReadyTaskState
+        ? buildPriorTaskGuestReadyNotification({
+            taskId: guestReadyTaskId,
+            notifiedAt: guestReadyTaskState.notified_at,
+            notifiedByUserId: guestReadyTaskState.notified_by_user_id,
+            notifiedByName: guestReadyTaskState.notified_by_name,
+            version: guestReadyTaskState.version,
+            lastAction: guestReadyTaskState.last_action,
+            lastActionAt: guestReadyTaskState.last_action_at,
+            lastActorUserId: guestReadyTaskState.last_actor_user_id,
+            lastActorName: guestReadyTaskState.last_actor_name,
+          })
+        : null
       const guestReadyOutsideKey = canProjectGuestContext && orderIdCheckin
         ? buildGuestReadyOutsideKeyProjection({
             orderId: orderIdCheckin,
@@ -10805,13 +11120,35 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             notifiedByUserId: guestReadyState?.notified_by_user_id,
             notifiedByName: guestReadyState?.notified_by_name,
             version: guestReadyState?.version,
-            propertyReady: task?.property_ready_for_guest_notification === true,
+            propertyReady: hasCurrentGuestReadyReadinessEvidence({
+              propertyReady: task?.property_ready_for_guest_notification === true,
+              currentCheckinTaskKeyHandoverComplete: guestReadyTaskState?.key_handover_complete === true,
+            }),
             currentCheckin,
             automaticEarlyArrival: task?.is_early_checkin === true,
             outsideKeyRequired: guestReadyOutsideKey?.required === true,
             notificationBindingCurrent,
+            includeAllOrderBoundCheckins: canViewGuestReadyNotification,
+            priorTaskNotification,
           })
-        : null
+        : canProjectGuestContext && canViewGuestReadyNotification && guestReadyTaskId
+          ? buildTaskGuestReadyNotificationProjection({
+              taskId: guestReadyTaskId,
+              notifiedAt: guestReadyTaskState?.notified_at,
+              notifiedByUserId: guestReadyTaskState?.notified_by_user_id,
+              notifiedByName: guestReadyTaskState?.notified_by_name,
+              version: guestReadyTaskState?.version,
+              lastAction: guestReadyTaskState?.last_action,
+              lastActionAt: guestReadyTaskState?.last_action_at,
+              lastActorUserId: guestReadyTaskState?.last_actor_user_id,
+              lastActorName: guestReadyTaskState?.last_actor_name,
+              keyHandoverComplete: guestReadyTaskState?.key_handover_complete === true,
+              currentUnlinkedCheckin: isCurrentGuestReadyNotificationBusinessDate(
+                task?.work_record_date || task?.scheduled_date,
+              ),
+              notificationBindingCurrent: guestReadyTaskState?.notification_binding_current === true,
+            })
+          : null
       const taskWithGuestState = {
         ...task,
         ...(guestReadyNotification ? { guest_ready_notification: guestReadyNotification } : {}),
@@ -10864,6 +11201,14 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               source_id: readOnlyViews.feedback_source_id,
             })
         }
+        recordActions.push(...guestReadyNotificationWorkRecordActions(payload.available_actions, {
+          sourceType: guestReadyNotification?.source_type,
+          sourceId: guestReadyNotification?.source_id,
+          canManage: canViewGuestReadyNotification,
+          canViewGuestContext: readOnlyViews.guest_context,
+          workRecordDate: taskWithParticipants.work_record_date || taskWithParticipants.scheduled_date || taskWithParticipants.date,
+          workRecordState: taskWithParticipants.work_record_state,
+        }))
         payload.available_actions = recordActions
         payload.capabilities = {
           ...payload.capabilities,
@@ -11009,6 +11354,10 @@ function guestReadyNotificationErrorMessage(code: string) {
   if (code === 'GUEST_READY_NOTIFICATION_CHANGED') return '通知状态已被其他人更新，请刷新后重试'
   if (code === 'GUEST_READY_NOTIFICATION_NOT_REQUIRED') return '当前入住时间不是早入住，无需记录客人通知状态'
   if (code === 'GUEST_READY_PROPERTY_NOT_READY') return '房屋尚未设为可入住，不能记录已通知客人'
+  if (code === 'GUEST_READY_TASK_NOT_FOUND') return '本次手工入住任务不存在，请刷新后重试'
+  if (code === 'GUEST_READY_TASK_LINKED_TO_ORDER') return '该手工入住任务已关联订单，请刷新并使用订单通知状态'
+  if (code === 'GUEST_READY_TASK_RECORD_CHANGED') return '挂钥匙记录已取消、替代或改派，请刷新后重试'
+  if (code === 'GUEST_READY_KEY_HANDOVER_INCOMPLETE') return '请先完成挂钥匙，再记录已通知客人'
   return '客人通知状态保存失败，请刷新后重试'
 }
 
@@ -11061,7 +11410,7 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
           AND ${validCleaningTaskOrderWhereSql('t', 'checkin_order')}
         ORDER BY t.updated_at DESC NULLS LAST, t.id
         LIMIT 2
-        FOR SHARE OF t`,
+        FOR UPDATE OF t`,
       [existing.order_id_snapshot],
     )
     let currentCheckin = (currentCheckinResult?.rows || []).length === 1
@@ -11090,6 +11439,7 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
         }).is_early_checkin
       : false
     let propertyReady = false
+    let currentCheckinTaskState: any = null
     if (checkinTask) {
       const readyResult = await client.query(
         `SELECT ready_task.id::text AS id
@@ -11102,10 +11452,17 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
             AND lower(COALESCE(ready_task.status, '')) = 'ready'
             AND ${activeCleaningTaskWhereSql('ready_task')}
             AND ${validCleaningTaskOrderWhereSql('ready_task', 'ready_order')}
-          LIMIT 1`,
+          LIMIT 1
+          FOR SHARE OF ready_task`,
         [String(checkinTask.task_date || '').slice(0, 10), String(checkinTask.property_id || '')],
       )
-      propertyReady = !!readyResult?.rowCount
+      currentCheckinTaskState = await lockGuestReadyTaskNotificationContext(client, checkinTask.task_id)
+      propertyReady = hasCurrentGuestReadyReadinessEvidence({
+        propertyReady: !!readyResult?.rowCount,
+        currentCheckinTaskKeyHandoverComplete:
+          String(currentCheckinTaskState?.task_id || '') === String(checkinTask.task_id || '')
+          && currentCheckinTaskState?.key_handover_complete === true,
+      })
     }
     const outsideKeyProjection = buildGuestReadyOutsideKeyProjection({
       orderId: currentOrder?.id,
@@ -11121,6 +11478,8 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
       notifiedRequirementVersion: currentOrder?.guest_ready_notified_requirement_version,
       currentCheckinTaskId: checkinTask?.task_id,
       currentRequirementVersion: checkinTask?.guest_ready_checkin_requirement_version,
+      notifiedAt: currentOrder?.guest_ready_notified_at,
+      latestLegacyAssignmentChangedAt: currentCheckinTaskState?.latest_legacy_assignment_changed_at,
     })
     const projection = buildGuestReadyNotificationProjection({
       orderId: currentOrder?.id,
@@ -11133,6 +11492,7 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
       automaticEarlyArrival,
       outsideKeyRequired: outsideKeyProjection?.required === true,
       notificationBindingCurrent,
+      includeAllOrderBoundCheckins: true,
     })
     const nextAction = guestReadyNotificationAction(projection, true)
     const outsideKeyAction = guestReadyOutsideKeyAction(outsideKeyProjection, true)
@@ -11259,10 +11619,17 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
             AND lower(COALESCE(ready_task.status, '')) = 'ready'
             AND ${activeCleaningTaskWhereSql('ready_task')}
             AND ${validCleaningTaskOrderWhereSql('ready_task', 'ready_order')}
-          LIMIT 1`,
+          LIMIT 1
+          FOR SHARE OF ready_task`,
         [String(checkinTask.task_date || '').slice(0, 10), String(checkinTask.property_id || '')],
       )
-      const propertyReady = !!readyResult?.rowCount
+      const currentCheckinTaskState = await lockGuestReadyTaskNotificationContext(client, checkinTask.task_id)
+      const propertyReady = hasCurrentGuestReadyReadinessEvidence({
+        propertyReady: !!readyResult?.rowCount,
+        currentCheckinTaskKeyHandoverComplete:
+          String(currentCheckinTaskState?.task_id || '') === String(checkinTask.task_id || '')
+          && currentCheckinTaskState?.key_handover_complete === true,
+      })
       const automaticEarlyArrival = buildCleaningTurnoverDisplay({
         checkinTask: {
           taskType: 'checkin_clean',
@@ -11275,6 +11642,8 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
         notifiedRequirementVersion: order.guest_ready_notified_requirement_version,
         currentCheckinTaskId: checkinTask.task_id,
         currentRequirementVersion: checkinTask.guest_ready_checkin_requirement_version,
+        notifiedAt: order.guest_ready_notified_at,
+        latestLegacyAssignmentChangedAt: currentCheckinTaskState?.latest_legacy_assignment_changed_at,
       })
       const plan = planGuestReadyNotificationMutation({
         action: parsed.data.action,
@@ -11295,7 +11664,7 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
           `UPDATE orders
               SET guest_ready_notified_at = CASE
                     WHEN $2::boolean = false THEN NULL
-                    WHEN $6::boolean THEN now()
+                    WHEN $6::boolean THEN clock_timestamp()
                     ELSE guest_ready_notified_at
                   END,
                   guest_ready_notified_by = CASE
@@ -11436,7 +11805,10 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
           notifiedRequirementVersion: resultingOrder.guest_ready_notified_requirement_version,
           currentCheckinTaskId: checkinTask.task_id,
           currentRequirementVersion: checkinTask.guest_ready_checkin_requirement_version,
+          notifiedAt: resultingOrder.guest_ready_notified_at,
+          latestLegacyAssignmentChangedAt: currentCheckinTaskState?.latest_legacy_assignment_changed_at,
         }),
+        includeAllOrderBoundCheckins: true,
       })
       const nextAction = guestReadyNotificationAction(projection, true)
       const outsideKeyAction = guestReadyOutsideKeyAction(outsideKeyProjection, true)
@@ -11484,6 +11856,274 @@ router.post('/guest-ready-notifications', requirePerm(GUEST_READY_NOTIFICATION_P
   } catch (error: any) {
     if (error instanceof GuestReadyNotificationConflict) {
       const status = error.code === 'GUEST_READY_ORDER_NOT_FOUND' ? 404 : 409
+      return res.status(status).json({ code: error.code, message: guestReadyNotificationErrorMessage(error.code) })
+    }
+    if (['42P01', '42703'].includes(String(error?.code || ''))) {
+      return res.status(503).json({ code: 'guest_ready_notification_schema_not_ready', message: '通知状态功能尚未完成数据库准备' })
+    }
+    return res.status(500).json({ code: 'guest_ready_notification_failed', message: '客人通知状态保存失败，请稍后重试' })
+  }
+})
+
+const guestReadyTaskNotificationMutationSchema = z.object({
+  task_id: z.string().trim().min(1).max(160),
+  action: z.enum(['mark', 'revoke']),
+  operation_id: z.string().trim().min(8).max(160),
+  expected_version: z.number().int().min(0),
+}).strict()
+
+router.post('/guest-ready-task-notifications', requirePerm(GUEST_READY_NOTIFICATION_PERMISSION), async (req, res) => {
+  const parsed = guestReadyTaskNotificationMutationSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ code: 'GUEST_READY_INVALID_REQUEST', message: '通知状态请求无效，请刷新后重试' })
+  const user = (req as any).user
+  const actorUserId = String(user?.sub || '').trim()
+  if (!actorUserId) return res.status(401).json({ message: 'unauthorized' })
+  if (!isGuestReadyNotificationCustomerServiceRole(user?.role)) {
+    return res.status(403).json({ code: 'GUEST_READY_ROLE_FORBIDDEN', message: '仅当前客服角色可记录客人通知状态' })
+  }
+  if (!hasPg || !pgPool) return res.status(503).json({ code: 'guest_ready_notification_storage_unavailable', message: '通知状态服务暂不可用，请稍后重试' })
+
+  try {
+    const result = await pgRunInTransaction(async (client: any) => {
+      const task = await lockGuestReadyTaskNotificationContext(client, parsed.data.task_id)
+      if (!task) throw new GuestReadyNotificationConflict('GUEST_READY_TASK_NOT_FOUND')
+
+      const stateResult = await client.query(
+        `SELECT state.*,
+                COALESCE(NULLIF(TRIM(notified_user.display_name), ''), NULLIF(TRIM(notified_user.username), ''), NULLIF(TRIM(notified_user.email), ''), state.notified_by_user_id::text) AS notified_by_name,
+                COALESCE(NULLIF(TRIM(last_actor.display_name), ''), NULLIF(TRIM(last_actor.username), ''), NULLIF(TRIM(last_actor.email), ''), state.last_actor_user_id::text) AS last_actor_name
+           FROM cleaning_task_guest_ready_notifications state
+           LEFT JOIN users notified_user ON notified_user.id::text = state.notified_by_user_id::text
+           LEFT JOIN users last_actor ON last_actor.id::text = state.last_actor_user_id::text
+          WHERE state.task_id::text = $1::text
+          FOR UPDATE OF state`,
+        [parsed.data.task_id],
+      )
+      const state = stateResult?.rows?.[0] || null
+      const existingResult = await client.query(
+        `SELECT *
+           FROM cleaning_task_guest_ready_notification_events
+          WHERE task_id_snapshot = $1::text
+            AND operation_id = $2::text
+          LIMIT 1`,
+        [parsed.data.task_id, parsed.data.operation_id],
+      )
+      const existing = existingResult?.rows?.[0] || null
+      const taskType = String(task.task_type || '').trim().toLowerCase()
+      const orderId = String(task.order_id || '').trim()
+      const currentRequirementVersion = Number(task.guest_ready_checkin_requirement_version || 0)
+      const notificationBindingCurrent = isGuestReadyTaskNotificationRequirementBindingCurrent({
+        notifiedRequirementVersion: state?.notified_requirement_version,
+        currentRequirementVersion,
+      })
+      const active = String(task.execution_state || '').trim().toLowerCase() === 'active'
+        && !['cancelled', 'canceled'].includes(String(task.status || '').trim().toLowerCase())
+      const taskDate = String(task.task_date || '').slice(0, 10)
+      const currentUnlinkedCheckin = taskType === 'checkin_clean'
+        && !orderId
+        && active
+        && isCurrentGuestReadyNotificationBusinessDate(taskDate)
+      const lockboxHandoverActorUserId = String(task.lockbox_handover_actor_user_id || '').trim()
+      const manualHandoverActorUserId = String(task.manual_handover_actor_user_id || '').trim()
+      const keyHandoverComplete = task.key_handover_complete === true
+      const projectionFromState = (currentState: any, replay: boolean) => {
+        const projection = buildTaskGuestReadyNotificationProjection({
+          taskId: task.task_id,
+          notifiedAt: currentState?.notified_at,
+          notifiedByUserId: currentState?.notified_by_user_id,
+          notifiedByName: currentState?.notified_by_name,
+          version: currentState?.version,
+          lastAction: currentState?.last_action,
+          lastActionAt: currentState?.last_action_at,
+          lastActorUserId: currentState?.last_actor_user_id,
+          lastActorName: currentState?.last_actor_name,
+          keyHandoverComplete,
+          currentUnlinkedCheckin,
+          notificationBindingCurrent: isGuestReadyTaskNotificationRequirementBindingCurrent({
+            notifiedRequirementVersion: currentState?.notified_requirement_version,
+            currentRequirementVersion,
+          }),
+          unavailableReason: orderId ? 'task_linked_to_order' : 'checkin_order_changed',
+        })
+        return {
+          ok: true,
+          operation_id: parsed.data.operation_id,
+          changed: replay ? existing?.changed === true : false,
+          idempotent_replay: replay,
+          guest_ready_notification: projection,
+          guest_ready_outside_key: null,
+          available_actions: [guestReadyNotificationAction(projection, currentUnlinkedCheckin)].filter(Boolean),
+          task_id: String(task.task_id || '').trim() || null,
+        }
+      }
+      if (existing) return projectionFromState(state, true)
+
+      if (taskType !== 'checkin_clean' || !active || !isCurrentGuestReadyNotificationBusinessDate(taskDate)) {
+        throw new GuestReadyNotificationConflict('GUEST_READY_TASK_RECORD_CHANGED')
+      }
+      if (orderId) throw new GuestReadyNotificationConflict('GUEST_READY_TASK_LINKED_TO_ORDER')
+
+      const currentVersion = Number(state?.version || 0)
+      const plan = planTaskGuestReadyNotificationMutation({
+        action: parsed.data.action,
+        expectedVersion: parsed.data.expected_version,
+        currentVersion,
+        notifiedAt: state?.notified_at,
+        notifiedByUserId: state?.notified_by_user_id,
+        notificationBindingCurrent,
+        keyHandoverComplete,
+        currentUnlinkedCheckin: true,
+      })
+      const actorName = String(user?.display_name || user?.username || user?.email || actorUserId).trim() || actorUserId
+      const resultingStateResult = await client.query(
+        `INSERT INTO cleaning_task_guest_ready_notifications (
+           task_id, notified_at, notified_by_user_id, notified_requirement_version, version,
+           last_action, last_action_at, last_actor_user_id, updated_at
+         ) VALUES (
+           $1,
+           CASE WHEN $2::boolean THEN now() ELSE NULL END,
+           CASE WHEN $2::boolean THEN $3::text ELSE NULL END,
+           CASE WHEN $2::boolean THEN $7::bigint ELSE NULL END,
+           $4::integer, $5, now(), $3, now()
+         )
+         ON CONFLICT (task_id) DO UPDATE SET
+           notified_at = CASE
+             WHEN $2::boolean = false THEN NULL
+             WHEN $6::boolean THEN now()
+             ELSE cleaning_task_guest_ready_notifications.notified_at
+           END,
+           notified_by_user_id = CASE
+             WHEN $2::boolean = false THEN NULL
+             WHEN $6::boolean THEN $3::text
+             ELSE cleaning_task_guest_ready_notifications.notified_by_user_id
+           END,
+           notified_requirement_version = CASE
+             WHEN $2::boolean = false THEN NULL
+             WHEN $6::boolean THEN $7::bigint
+             ELSE cleaning_task_guest_ready_notifications.notified_requirement_version
+           END,
+           version = $4::integer,
+           last_action = $5,
+           last_action_at = now(),
+           last_actor_user_id = $3,
+           updated_at = now()
+         RETURNING *`,
+        [
+          parsed.data.task_id,
+          plan.wantsNotified,
+          actorUserId,
+          plan.nextVersion,
+          parsed.data.action,
+          plan.changed,
+          currentRequirementVersion,
+        ],
+      )
+      const resultingState = resultingStateResult.rows[0]
+      const resultingNotifiedByName = plan.wantsNotified
+        ? (plan.changed ? actorName : String(state?.notified_by_name || state?.notified_by_user_id || '').trim() || actorName)
+        : null
+      await client.query(
+        `INSERT INTO cleaning_task_guest_ready_notification_events (
+           id, task_id, task_id_snapshot, order_id_at_action, action, changed,
+           actor_user_id, operation_id, expected_version,
+           previous_notified_at, previous_notified_by_user_id, previous_notified_requirement_version,
+           resulting_notified_at, resulting_notified_by_user_id, resulting_notified_requirement_version, resulting_version,
+           property_id, task_date, metadata
+         ) VALUES (
+           $1, $2, $2, NULL, $3, $4,
+           $5, $6, $7,
+           $8, $9, $10,
+           $11, $12, $13, $14,
+           $15, $16::date, $17::jsonb
+         )`,
+        [
+          crypto.randomUUID(),
+          parsed.data.task_id,
+          parsed.data.action,
+          plan.changed,
+          actorUserId,
+          parsed.data.operation_id,
+          parsed.data.expected_version,
+          state?.notified_at || null,
+          state?.notified_by_user_id || null,
+          state?.notified_requirement_version == null ? null : Number(state.notified_requirement_version),
+          resultingState.notified_at || null,
+          resultingState.notified_by_user_id || null,
+          resultingState.notified_requirement_version == null ? null : Number(resultingState.notified_requirement_version),
+          plan.nextVersion,
+          String(task.property_id || '').trim() || null,
+          taskDate,
+          JSON.stringify({
+            source: 'mzapp_manual_checkin_task',
+            association_state: 'manual_unlinked',
+            no_message_sent: true,
+            key_handover_complete: keyHandoverComplete,
+            lockbox_handover_actor_user_id: lockboxHandoverActorUserId || null,
+            manual_handover_actor_user_id: manualHandoverActorUserId || null,
+            order_id_at_action: null,
+            guest_ready_requirement_version: currentRequirementVersion,
+          }),
+        ],
+      )
+      const projection = buildTaskGuestReadyNotificationProjection({
+        taskId: task.task_id,
+        notifiedAt: resultingState.notified_at,
+        notifiedByUserId: resultingState.notified_by_user_id,
+        notifiedByName: resultingNotifiedByName,
+        version: resultingState.version,
+        lastAction: resultingState.last_action,
+        lastActionAt: resultingState.last_action_at,
+        lastActorUserId: resultingState.last_actor_user_id,
+        lastActorName: actorName,
+        keyHandoverComplete,
+        currentUnlinkedCheckin: true,
+        notificationBindingCurrent: isGuestReadyTaskNotificationRequirementBindingCurrent({
+          notifiedRequirementVersion: resultingState.notified_requirement_version,
+          currentRequirementVersion,
+        }),
+      })
+      return {
+        ok: true,
+        operation_id: parsed.data.operation_id,
+        changed: plan.changed,
+        idempotent_replay: false,
+        guest_ready_notification: projection,
+        guest_ready_outside_key: null,
+        available_actions: [guestReadyNotificationAction(projection, true)].filter(Boolean),
+        task_id: String(task.task_id || '').trim() || null,
+      }
+    })
+
+    if (!result) return res.status(503).json({ code: 'guest_ready_notification_storage_unavailable', message: '通知状态服务暂不可用，请稍后重试' })
+    if (result.changed && !result.idempotent_replay && result.task_id) {
+      try {
+        const taskResult = await pgPool.query(
+          `SELECT id::text AS id, assignee_id, cleaner_id, inspector_id, status, execution_state
+             FROM cleaning_tasks
+            WHERE id::text = $1::text
+            LIMIT 1`,
+          [result.task_id],
+        )
+        const taskRow = taskResult?.rows?.[0]
+        if (taskRow) {
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${result.task_id}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [result.task_id],
+            eventType: 'TASK_UPDATED',
+            changeScope: 'list',
+            changedFields: ['guest_ready_notification', 'available_actions'],
+            patch: {},
+            causedByUserId: actorUserId,
+            visibilityHints: buildCleaningTaskVisibilityHints(taskRow),
+          })
+        }
+      } catch {}
+    }
+    return res.json(result)
+  } catch (error: any) {
+    if (error instanceof GuestReadyNotificationConflict) {
+      const status = error.code === 'GUEST_READY_TASK_NOT_FOUND' ? 404 : 409
       return res.status(status).json({ code: error.code, message: guestReadyNotificationErrorMessage(error.code) })
     }
     if (['42P01', '42703'].includes(String(error?.code || ''))) {

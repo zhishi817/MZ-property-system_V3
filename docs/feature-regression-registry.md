@@ -2,6 +2,44 @@
 
 本文件只保存当前有效的业务不变量、责任范围、测试映射和最近一次完整验证索引。
 
+## FR-043：仅改密码入住执行任务参与本人混合排序
+
+- **维护责任范围：** backend MZ App mixed reorder / paired Mobile task ordering
+- **最后审查日期：** 2026-11-02
+- **状态：** active
+
+### 业务保护规则
+
+- `checkin_clean + password_only` 继续使用通用执行人语义，但当前 `assignee_id` 必须能把本人仍在办的仅改密码任务与清洁、检查和线下任务一起保存为同一全局顺序；Root 使用独立 `executor` 排序项，不能把它伪装成清洁或普通检查任务。
+- executor 排序只允许请求用户本人、准确业务日、`execution_state=active` 且未终态的 `password_only` 入住 source，并只写既有 `sort_index_inspector`。投影只在当前用户等于持久 source `assignee_id` 时下发 `executor_reorderable=true`；legacy inspector fallback 或 manual action grant 保留既有查看/执行能力但不取得排序权。他人任务、普通挂钥匙/检查、跨日、完成/取消/历史/被替代记录或请求期间已改派/终态的 source 必须 fail-closed；管理角色不能凭全量查看权限绕过本人归属。
+- executor、cleaner、inspector 与 work 项继续在同一 mixed-reorder 事务中提交；任一项写入数不完整必须整批回滚。重复 source 归一成一个确定性写入，并发重试不得共享请求状态或扩大权限。
+- 不改变任务类型、`available_actions`、状态机、日期、负责人、计费/房数、媒体、合卡或延期检查接管规则；FR-042 的 `password_only` 排除仍适用于延期检查接管路径。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| executor 排序写入与 fail-closed 边界 | `backend/scripts/tests/test_password_only_task_reorder.ts` | schema/事务接线、本人/他人写时归属、准确日期、scope/type、终态拒绝、重复 source 归一、并发重试请求隔离、行数不完整拒绝与整批回滚契约 | sufficient | `npm run test:password-only-task-reorder --prefix backend` |
+| 真实 PostgreSQL 写时守卫、整批回滚与双连接竞争 | `backend/scripts/tests/test_password_only_task_reorder_pg_integration.ts` | PostgreSQL 16 驱动级验证他人/跨日/type/scope/终态/superseded 拒绝；一条未授权时已更新的本人 executor 和先前 work 项整批回滚；并发改派持锁后提交时 stale executor UPDATE 等待并重新核对归属、返回 403 且不写旧顺序 | sufficient | `MZ093_TEST_DATABASE_URL=<dedicated-loopback-db> MZ093_TEST_DATA_DIR=<ephemeral-cluster> MZ093_TEST_DATABASE_WRITE=yes MZ093_TEST_CONFIRM_EPHEMERAL=yes npm run test:password-only-task-reorder:pg --prefix backend` |
+
+### 验证策略
+
+- 使用合成条目、拒绝真实数据库的 mock client、源码事务契约、隔离 loopback PostgreSQL 16 驱动级并发/回滚测试、后端构建和完整质量门；不调用生产 API、不连接共享 Neon 写、不修改真实任务排序。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261101-001 / mobile/CRL-20261101-001
+- **Commit：** not committed
+- **日期：** 2026-11-01；定向 Root/Mobile 回归、隔离 loopback PostgreSQL 16.15 真实驱动回滚/双连接改派竞争、最终 Root `check:full` 和 Mobile `check:ci` 均通过；Root frontend 56 files / 299 tests，Mobile 82 suites / 728 tests。临时数据库、服务和目录已清理；未连接生产/共享数据库写，未做真机或 OTA 验收。
+
+### 相关 CRL
+
+- root/CRL-20261029-001（MZ-092 延期检查合卡排序授权，独立且保持不变）；paired mobile/CRL-20261101-001。
+
+### 非保护范围
+
+- 不包含普通挂钥匙任务排序、管理端全量排序、数据库迁移/回填、生产数据修正、部署、OTA 或真机验收。
+
 ## FR-042：延期检查可靠合卡的展示与排序授权一致
 
 - **维护责任范围：** backend MZ App work-task projection and mixed reorder
@@ -273,36 +311,42 @@
 ## FR-036：日常任务统计与当前入住客人通知记录
 
 - **维护责任范围：** backend / web / paired mobile
-- **最后审查日期：** 2026-10-11
+- **最后审查日期：** 2026-11-01
 - **状态：** active
-- **候选发布门禁：** 自动早入住/结构化钥匙外挂/当前客服角色候选已增加资格代际修复，Root/Web/Mobile 完整质量门槛通过；最终独立复审 GO，P0/P1/P2 均无未解决项。数据库 migration 仍未执行且需另行授权，本地候选未发布。
+- **候选发布门禁：** MZ-010 当前候选把人工通知留痕扩展到所有订单绑定入住，并为无订单手工入住增加独立任务状态/审计链；挂钥匙后的只读工作记录只能保留精确订单或任务动作。扩展后的完整 Root/Mobile 门禁、隔离数据库事务验证、独立复审、模拟器/真机和发布授权仍待完成，未发布。
 
 ### 业务保护规则
 
 - 每日统计只能消费 FR-035 已授权的执行任务；入住与退房按房源/业务日期合并一次，线下任务独立计数。
-- “已通知客人”自动适用于当前 check-in 入住时间严格早于标准 15:00 的订单；必须复用 `buildCleaningTurnoverDisplay()` 的 canonical `is_early_checkin`，不得另写时间规则。
-- 结构化“钥匙外挂”由当前客服明确登记/取消，不从自由文本、订单备注或钥匙套数推断；自动早入住或钥匙外挂任一成立即需要通知，两者并存时取消一项不得移除另一项资格。
-- 15:00 和晚于 15:00 不产生自动资格。通知 marker 必须绑定当前 check-in task ID 与单调资格代际；入住时间或当前入住身份实际变化后旧 marker 只保留为历史审计，不能在同一订单再次变早时重现。仍有钥匙外挂时要求继续存在，但新代际必须重新确认通知；取消最后一个钥匙外挂条件会清理当前 marker。
+- “已通知客人”是外部通知后的人工留痕，不发送消息；它适用于所有当前订单绑定入住，以及 Melbourne 当天仍有效、未关联订单并已完成挂钥匙的手工入住。客户端不得自行推导动作，必须消费 Root 返回的精确 `orders` 或 `cleaning_tasks` source。
+- 无订单手工入住必须使用独立的任务级当前状态、单调版本、任务行锁、任务/操作 ID 唯一幂等收据和追加式审计；只有当前生效 `customer_service` 且具备独立 guest-ready 权限可操作。任务取消、替代、变为历史、日期改变、挂钥匙证据与当前执行人不一致或权限撤回后均 fail closed。
+- 手工任务后来关联订单时不得把任务 marker 自动迁移、覆盖或双写订单 marker；订单链成为当前权威，关联前任务留痕仅作为明确标注的只读历史，审计保留任务快照与动作时关联状态。
+- 结构化“钥匙外挂”由当前客服明确登记/取消，不从自由文本、订单备注或钥匙套数推断；严格早于 15:00 的自动早入住和钥匙外挂继续作为 `requirement_reasons` 元数据，必须复用 `buildCleaningTurnoverDisplay()` 的 canonical `is_early_checkin`，但不再决定人工通知留痕是否存在。
+- 通知 marker 必须绑定当前 check-in task ID 与单调资格代际；入住时间或当前入住身份实际变化后旧 marker 只保留为历史审计，新代际必须重新确认通知。登记/取消钥匙外挂不得清除当前代际的人工通知 marker。
+- 无订单任务 marker 与挂钥匙证据同样必须绑定 `guest_ready_checkin_requirement_version`；关联/取消关联、取消/重开、改期、换房、任务类型或任一执行人变化后，旧 marker/视频/人工确认不得复活。上线后的 A→B→A 必须推进两次单调代际；迁移不得批量更新历史任务或订单。上线前已有改派审计时，旧订单 marker 和跨表视频证据必须严格晚于最近一次 `assignment_changed`；同表人工确认按 `(occurred_at, sequence_no)` 顺序比较，因此同一事件内同时改派并确认挂钥匙有效，更早的同时间确认失败关闭。改派后重新完成的合法证据继续有效。上线前 legacy 证据只允许版本 0 且日期、房源、当前执行人/安排快照精确匹配；显式 null、畸形/超长 metadata 与非零代际都 fail closed。
 - Mobile/Web 读取与写接口必须同样排除同房源、同日期的其他订单竞争 check-in；存在竞争时 projection 和动作 fail-closed，不能先显示旧“已通知”再等提交冲突。
-- 标签、状态和动作只提供给当前生效角色 `customer_service`；admin、offline manager、cleaner、inspector 以及仅附带客服角色但当前已切换到其他角色的账号都不得看到或操作。
+- 普通入住新增的标签、状态和所有可变动作只提供给当前生效角色 `customer_service`；admin、offline manager、cleaner、inspector 以及仅附带客服角色但当前已切换到其他角色的账号都不得收到普通入住投影或操作。修复前已存在的早入住/钥匙外挂只读状态仍可按工作记录 `guest_context` 能力展示给授权执行人/经理，但不得携带 mark/revoke/register/cancel 动作，不能借本次扩展扩大为普通入住状态。
 - 共享实时刷新事件不得携带客服专属通知 projection；只用变更字段触发按当前角色重新拉取，避免向非客服泄漏状态、人员、时间、订单或版本。
 - 后台订单同步 create/update/cancel 改变 check-in 资格身份时，任务写入与空 payload 失效事件必须同事务提交；Mobile 对带 guest-ready 权威字段的 list 或 membership 事件先强制完整刷新，再处理一般成员变化。
-- mark/revoke/register/cancel 必须共用当前订单校验、审计、单调版本和幂等语义；幂等重放返回当前资格而不是历史资格。mark 必须重新核对至少一个通知条件仍成立且房源已完成待客准备。记录事实不发送消息，独立权限不能由通用任务编辑权限隐式获得。
+- mark/revoke/register/cancel 必须使用对应订单或任务权威校验、审计、单调版本和幂等语义；幂等重放返回当前权威状态而不是历史资格，并从独占 task 锁开始，不能通过 SHARE→UPDATE 升级造成并发重放死锁。订单 mark 必须重新核对当前 check-in 唯一、订单绑定有效，并要求房源已 `ready` 或该精确 current check-in 的同代际挂钥匙证据；后者只为没有配对 ready 行的仅入住/仅挂钥匙执行补足完成权威。无订单 task mark 必须重新锁定精确任务并核对有效 `checkin_clean`、当天、仍未关联订单和挂钥匙证据。挂完钥匙后的只读工作记录只能保留服务端授权且 `source_type/source_id` 精确匹配的 mark/revoke；取消、替代、无访客上下文或非客服角色不得保留。记录事实不发送消息，独立权限不能由通用任务编辑权限隐式获得。
+- Web/Mobile mutation 回执只可覆盖请求发出时仍为相同 source 且相同预期版本的缓存；若实时事件或其他页面已推进同一来源版本，延迟旧回执必须跳过，等待/保留新权威状态。
 
 ### 测试映射
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
 | 权威可见性先行和分组去重 | `backend/scripts/tests/test_daily_task_execution_stats.ts` | 审核/未分配任务不计数、同房源周转去重、线下独立计数 | sufficient | `npm run test:daily-task-execution-stats --prefix backend` |
-| 通知状态、角色、自动早入住、钥匙外挂、资格代际、幂等和审计 | `backend/scripts/tests/test_guest_ready_notification.ts` | `<15:00` 自动资格、15:00/晚入住、早→普通→早失效、外挂保留、trigger 写入口、绑定行锁、登记/取消、当前客服、当前订单/冲突、准备门禁、版本、migration 与审计 contract | sufficient | `npm run test:guest-ready-notification --prefix backend` |
+| 通知状态、角色、全入住类型、特殊原因元数据、订单/任务权威、幂等和审计 | `backend/scripts/tests/test_guest_ready_notification.ts` | 普通/早入住/钥匙外挂、无订单任务 mark/revoke/no-op、完成记录精确 source、关联前只读历史、取消/替代/日期/挂钥匙/角色门禁、版本、migration 与审计 contract | sufficient | `npm run test:guest-ready-notification --prefix backend` |
+| 无订单任务 PostgreSQL 约束、代际证据与锁等待 | `backend/scripts/tests/test_guest_ready_notification_sql_integration.ts` | 随机 schema 合成数据验证 migration rerun、marker 代际、assignment A→B→A、最近改派前后证据、同事件改派并挂钥匙、legacy v0、非零代际失效、显式 null/200 位 metadata、latest exact/wrong performer、唯一操作 ID、rollback、重开 fresh snapshot、ready 行共享锁与并发 receipt exclusive serialization | sufficient | `MZ010_TEST_DATABASE_URL=postgresql://127.0.0.1:<port>/mz010_test_<id> MZ010_TEST_DATABASE_WRITE=yes npm run test:guest-ready-notification:sql --prefix backend` |
+| 无订单任务真实鉴权 HTTP/SQL mark/revoke | `backend/scripts/tests/test_guest_ready_notification_http_integration.ts` | localhost 随机 schema 和合成账号验证匿名/非客服拒绝、客服 mark/replay/stale/revoke、关联订单冲突、数据库当前角色撤回、追加式审计和 no-message marker | sufficient | `MZ010_TEST_DATABASE_URL=postgresql://127.0.0.1:<port>/mz010_test_<id> MZ010_TEST_DATABASE_WRITE=yes npm run test:guest-ready-notification:http --prefix backend` |
 | 后台同步资格字段差异 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | check-in 资格字段差异与非 check-out 误触发 | sufficient | `npm run test:cleaning-sync-v2 --prefix backend` |
 | 后台同步实时失效 contract | `backend/scripts/tests/test_guest_ready_notification.ts` | create/update/cancel 空 payload 事件、无 client 原子事务和跨订单 read projection fail-closed | sufficient | `npm run test:guest-ready-notification --prefix backend` |
-| Web 统计与通知展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 两组计数与通知标签角色隔离 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
+| Web 统计与通知展示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 两组计数、订单/任务 mutation source、关联前只读历史与通知标签角色隔离 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
 | Web 钥匙外挂合同 | `backend/scripts/tests/test_guest_ready_notification.ts` | task-center projection/action 与 Web 提交当前角色门禁 | sufficient | `npm run test:guest-ready-notification --prefix backend` |
 
 ### 验证策略
 
-- 运行纯契约、前后端类型/构建和完整质量检查；迁移与真实路由需在获批非生产环境单独验证。
+- 运行纯契约、前后端类型/构建和完整质量检查；迁移、并发锁与真实鉴权路由只在获批的 localhost 一次性 PostgreSQL、随机 schema 和合成数据中验证，生产与真机仍单独验收。
 
 ### 最后验证
 
@@ -314,6 +358,7 @@
 
 - root/CRL-20261010-002：整合 MZ-010 的分组统计和通知记录。
 - root/CRL-20261011-001：收窄通知标签/动作到当前客服，保留 canonical 自动早入住并新增结构化钥匙外挂登记/取消。
+- root/CRL-20261101-002：MZ-010 扩展所有订单绑定入住、恢复挂钥匙完成后的动作，并新增无订单手工入住任务级留痕链。
 
 ### 非保护范围
 
@@ -1313,7 +1358,7 @@
 ## FR-002：自动任务与手动任务合并及字段继承
 
 - **维护责任范围：** backend / web / mobile
-- **最后审查日期：** 2026-10-07
+- **最后审查日期：** 2026-11-01
 - **状态：** active
 
 ### 业务保护规则
@@ -1323,8 +1368,11 @@
 - 线下手动任务的执行人以 `work_tasks` canonical 投影为准；PATCH 指派必须与源任务原子一致，缺省字段不得覆盖既有执行人；显式 `assignee_id: null`、空字符串或纯空白表示取消指派，并将未完成任务恢复为 `todo`，不得继续返回“暂不支持清空执行人”。
 - 合并结果必须区分 active、取消、延后和已完成来源，不能仅按首个子任务推导。
 - 周转合并卡的入住晚数必须取后一个入住订单，并明确显示为“待住 X晚”，不能继续显示前一个退房订单的晚数。
-- 同一订单的入住 `new_code` 必须回填有效退房任务的 `old_code`；同步查询同时兼容当前 `task_type` 与历史仅有 `type` 的任务行，并保留手工锁定退房任务不覆盖的边界。
-- 纯入住任务的 `old_code` 必须优先继承同房源最近一笔有效退房任务的 `old_code`；历史退房任务缺该字段时，只能回退到该上一笔订单的入住 `new_code`，绝不能使用当前订单的 `new_code` 或猜测密码。来源失效后须清空此前自动填入的值；没有可信来源时保持空白，手工锁定的入住任务不得覆盖。
+- 同一订单、同一房源的入住 `new_code` 是对应退房任务 `old_code` 的唯一自动来源。填入、修改或清空入住新密码，都必须在同一事务内把对应退房旧密码更新为相同值或空值；退房尚未生成时先保存入住值，不提前创建任务，后来生成退房时从该订单最新入住新密码初始化。创建与保存并发必须由同一订单/房源锁和幂等同步收敛，不能因执行顺序漏写。禁止把任何上一笔/更早退房旧密码或另一订单入住密码作为兜底，也禁止向下一笔入住传播。
+- 纯入住任务不适用 `old_code`，纯退房任务不适用 `new_code`：不得从同房源历史退房、历史入住、当前订单另一侧字段或房号/日期猜测，也不得显示或继续写入这些遗留的不适用字段。历史值可留在底层避免无授权数据清理，但所有 Root/Web/Mobile 投影必须隐藏并标记 `not_applicable`，且不能被同值核对；人工旧密码本地纠正只适用于当前退房任务，不倒写入住来源，也不传播到任何前后任务。无可靠同订单来源时退房旧密码为空并标记 `needs_review`，流程可以继续但客户端不得显示隐藏的陈旧值或把它声明为“已核对”。legacy `type`-only 任务必须按实际入住/退房侧识别，不得因字段版本差异隐藏正确值或退回门禁箱密码。
+- 密码权威状态必须区分 `needs_review`、系统生成、来源关联和明确人工确认，并记录来源 task/order/field。已有明确人工确认即使 `auto_sync_enabled=true` 也不得被自动同步覆盖；旧行无法可靠辨别来源时即使值恰好等于手机号派生建议也必须保留现值并待核对，不能只用值相等、缺少服务端事件或 `auto_sync_enabled=false` 猜来源。手工任务没有明确来源时保持待核对；客服可在 Web/Mobile 先查看脱敏影响预览，再用同值核对显式确认人工来源。
+- 所有密码写入口和同步 worker 必须在任何任务行锁/更新之前规范化并全序取得旧/新房源的 property-chain advisory lock，行锁后还要核验任务未移动到未持有的链；删除、批量删除、Web 多任务核对和 Mobile 多 source 同样适用。订单任务必须与有效订单的 canonical 房源一致，并在密码核对/传播期间持有订单行稳定锁；同订单入住/退房 source/target 在锁后重新读取确认。订单任务不得通过通用任务 PATCH 单独换房源；跨房源、订单取消、任务取消/替代或来源漂移时必须 fail closed 且不可传播。终态和取消任务不可被传播改写，pending→终态与密码写同请求也必须在 receipt 前拒绝。Web 多任务同值核对和 Mobile 多 source 保存必须各自在一个事务内完成。相同 request ID/task/field 由唯一 receipt 幂等去重，重复点击不得刷新时间或重复发事件。
+- Web、Mobile、同步 worker 和 API 的密码来源事件必须记录 request ID、角色、客户端、source/target 与结果，但事件、同步日志、删除审计、合卡 supersede 决策、通知正文及通知去重元数据不得持久化或广播密码/手机号原文或其可枚举弱哈希；通用 `canonical_value` / `manual_value` 结构和 JSON 字符串也必须脱敏。Mobile 保存后必须权威重取服务端状态；刷新返回 false 或找不到任务都必须提示失败并恢复刷新前显示，未知 `password_authority` 事件不能用局部缓存补丁冒充成功。新后端在独立 MZ-091 migration marker 缺失时必须 fail closed，worker 不得继续运行。
 - 历史订单的 `checkin_only` 修复只能创建缺失的 `checkin_clean`；任何已有入住任务（包括未分配、未锁定或仍为 `pending` 的人工编辑）都必须保护跳过，不得改写日期、密码、排期、状态或退房/延期检查投影。
 - 普通同步与 `checkin_only` 同步的 active queue identity 必须包含作用域；两者可并存但不得互相覆盖 payload 或改变彼此的执行范围。同一作用域的重试仍可幂等合并。订单取消清理和删除 job 的 supersede 仅属于 `full`，受控 job 对这些场景必须无操作，不得取消任务或改变普通 job。
 - 纯入住现场执行任务的检查完成依赖真实执行人 `assignee_id`；任务中心后端计数与网页本地草稿必须把该字段视为已安排，普通清洁任务仍以 `inspector_id` 为检查人。拖入或拖出检查人员行后，刷新不得把任务留在旧人员行。
@@ -1349,7 +1397,9 @@
 | 线下任务执行人三角色授权 | `backend/scripts/tests/test_offline_task_assignment_patch.ts` | 客服、线下经理和 admin 的 HTTP/数据库验证，并覆盖 null/纯空白清空后 source/canonical 均为 null、状态恢复 `todo`；仅在显式非生产测试库、写入确认与生产库身份比对均存在时运行 | partial | `npm run test:offline-task-assignment-patch-integration --prefix backend` |
 | 首次 PATCH 的 canonical 表确保顺序 | `backend/scripts/tests/test_offline_task_assignment_first_patch_contract.ts` | root backend Full 每次断言两张表确保均位于 `pgRunInTransaction` 和首个 `FOR UPDATE` 之前；独立 integration 脚本只在显式非生产测试库与写入确认下覆盖无投影首次写入与三角色 | sufficient | `npm run test:offline-task-assignment-first-patch --prefix backend` |
 | 自动/手动字段继承、受控入住补建和队列作用域隔离 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | 手动 placeholder、旧任务、同步后字段保留；`checkin_only` 只补缺失任务并保留未锁定人工日期/密码/排期；普通↔受控 job 双向不合并、同作用域幂等合并；取消订单的 scoped update 与 scoped delete 均不改变普通 job 或任务投影；scope-aware active-job 索引迁移/初始化契约 | sufficient | `npm run test:cleaning-sync-v2 --prefix backend`（由 root `check:backend` / `check:full` 执行） |
-| 入住/纯入住旧密码的历史字段兼容 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | `task_type` 缺失时同订单回填；纯入住优先取上一笔退房 `old_code`、退房历史缺字段时回退上一笔入住 `new_code`、两类来源失效均清空自动值、无来源保持空白、手工锁定不覆盖，统一展示保留纯入住旧密码 | partial | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |
+| 同订单密码来源、权威状态与传播保护 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | 同订单入住新密码填入/修改/清空；先入住后退房、先退房后入住、生成与同步收敛；纯入住与下一订单不继承历史，遗留纯入住 old_code 底层保留但所有投影隐藏；人工当前退房旧密码只在该退房任务保留；取消/房源漂移/终态/旧依赖 fail closed；重复 receipt 幂等与审计脱敏 | sufficient | `npm run test:cleaning-sync-v2 --prefix backend`（由 root `check:backend` / `check:full` 执行） |
+| 同订单来源真实 PostgreSQL 事务、GET 投影与并发 | `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` | fail-closed 本机临时库身份校验；真实 Express `PATCH /cleaning/tasks/:id` 与 `GET /mzapp/work-tasks`；同订单关联/清空、legacy `auto_sync_enabled=false` 不冒充人工、人工退房本地纠正、`source_linked` source task/order/field、`manual_confirmed`、`needs_review` 空值、可靠合卡不恢复底层陈旧值、先后生成、两个独立 session 的创建/同步锁等待与收敛、跨订单旧依赖清除及精确清理 | sufficient | `MZ091_TEST_DATABASE_URL=<127.0.0.1:non-5432/mz091_test_*> MZ091_TEST_DATA_DIR=<exact-/tmp-cluster>/data MZ091_TEST_DATABASE_WRITE=yes MZ091_TEST_CONFIRM_EPHEMERAL=yes npm run test:mz091-password-chain:pg --prefix backend` |
+| 密码事务、预览、迁移与客户端入口契约 | `backend/scripts/tests/test_mz091_password_authority_contract.ts` | Mobile manager-field 先取 property-chain 锁再同事务保存/传播、不吞异常、脱敏事件与通知 key、impact preview、Web 原子多任务核对、独立 runtime marker、receipt 表及受控迁移字段 | sufficient | `npm run test:mz091-password-authority --prefix backend`（由 root `check:backend` / `check:full` 执行） |
 | Web 合并卡展示 | `frontend/src/lib/cleaningDailyMerge.test.ts` | 每日清洁合并和来源展示；后一个入住订单的晚数优先并显示“待住 X晚” | partial | `npm run test --prefix frontend -- src/lib/cleaningDailyMerge.test.ts` |
 | Web 任务中心字段展示与未安排统计 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 合并任务标题、状态和字段；退房入住卡显示“已住 X晚”和“待住 X晚”；纯入住拖入或拖出检查人员行时保留/清空 `assignee_id`，普通任务仍写 `inspector_id`；只有检查人员的普通清洁任务仍计入未安排 | partial | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
 | Web 任务中心真实退房状态投影 | `backend/scripts/tests/test_web_task_capabilities.ts` | 离线内存任务中心把真实 `checked_out_at` 从退房子任务合并到周转卡并显示“已退房”，同时保留 canonical `assigned`；`in_progress` 仍显示“进行中”，无退房标记仍显示“已分配” | sufficient | `DATABASE_URL='' ./backend/node_modules/.bin/ts-node-dev --transpile-only backend/scripts/tests/test_web_task_capabilities.ts` |
@@ -1366,9 +1416,9 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261007-001
+- **CRL：** root/CRL-20261102-001
 - **Commit：** not committed
-- **日期：** 2026-10-07
+- **日期：** 2026-11-02；同订单密码规则的内存回归、后端编译、Mobile 定向测试和隔离 loopback PostgreSQL 16.15 事务/双连接并发已通过；完整门禁与独立审查见对应 CRL，未提交、推送或发布。
 
 ### 相关 CRL
 
@@ -1389,6 +1439,8 @@
 - root/CRL-20260820-004：历史订单入住任务受控队列范围保护
 - root/CRL-20260825-002：任务中心检查分派与维修详情展示
 - root/CRL-20261007-001：网页任务中心沿用真实退房标记显示“已退房”，并保留流程状态优先级。
+- root/CRL-20261101-001：MZ-091 最近来源边界、权威状态、原子传播、人工修正保护与脱敏审计。
+- root/CRL-20261102-001：MZ-091 更正为同订单入住新密码唯一来源，移除纯入住/下一订单历史密码传播。
 
 ### 非保护范围
 
@@ -1453,7 +1505,7 @@
 ## FR-004：检查、自完成、补品和挂钥匙流程
 
 - **维护责任范围：** backend / mobile
-- **最后审查日期：** 2026-08-25
+- **最后审查日期：** 2026-11-01
 - **状态：** active
 
 ### 业务保护规则
@@ -1474,6 +1526,7 @@
 - 钥匙照片被删除后，钥匙照片上传动作必须恢复可用，不得因为补品已提交、清洁状态已进入完成态或共享任务状态已推进而阻止重新上传；钥匙照片仍存在时继续保持已记录状态。
 - 补品提交完成后的钥匙重传不得把 `done`、`cleaned`、`restock_pending`、检查中间态或其他已推进状态覆盖为 `in_progress`；钥匙上传事件必须增量合并，不能用不完整任务刷新覆盖已保存的补品消耗照片。
 - 正式检查与补充已成功保存到服务器后，只允许从相册追加新的“清洁问题反馈”；已提交的检查、补货和问题照片必须保持只读，追加问题不得替换历史媒体或再次推进任务状态。
+- 普通检查的补品凭证只能记录非终态 `record_restock_proof`，不得伪造正式检查完成；终态任务必须在任务行锁内、任何媒体/审计/幂等 receipt 写入前拒绝。媒体、非终态审计和 receipt 必须共享同一事务，失败全部回滚；相同 receipt 的重放或并发重试只能产生一次业务写入、广播和通知。旧版精确 `mzapp.cleaning_tasks.restock_proof` 审计仍只作兼容排除，不得阻塞后续真实检查照片保存。
 - 追加问题照片在上传成功但服务端业务保存失败时，必须保留本地草稿和远端引用；重试只能补做业务保存，不得重复上传已确认的照片。
 - 自完成完成照片的客户端必拍清单、后端保存 schema、最终完成门槛、任务卡状态投影和管理端详情展示必须使用同一组区域：基础房间照片、浴室下水口、电视和空调遥控器同框的一张必拍照片及吸尘器使用后。新照片继续使用 `remote_tv` 区域；旧 `remote_ac`、`remote_controls` 记录重进时必须合并展示，不能丢失。刚拍完的本地大图必须显示与最终上传相同的房号/执行人/时间水印，远端图片继续由既有上传链路实际写入水印。
 - 自完成补品草稿只能保存用户已明确选择的结果；未选择项必须保持空状态并回显为“待确认”。未结束自完成任务进入页面必须确认房号，已结束状态重进不得重复阻断查看。可选的补品图片字段没有远端引用时必须从请求中省略，不能以空字符串触发服务端非空校验。
@@ -1525,6 +1578,8 @@
 | 检查同步幂等 ID与历史队列迁移 | `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.test.ts` | 超长历史 `submit_id` 自动迁移；已有媒体上传成功时只重试失败的补品/检查业务保存步骤 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand src/lib/inspectionPanelSubmitQueue.test.ts` |
 | 后端保存接口共享幂等 ID上限 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | cleaning-app、mzapp 的检查/补品/反馈保存接口使用共享 256 字符上限，不回退到旧 120 字符限制 | not-wired | `npm run test:idempotency-submit-id-contract --prefix backend` |
 | 自完成补货凭证授权与前置 | `backend/scripts/tests/test_idempotency_submit_id_contract.ts` | 只有自完成任务的清洁执行人（或受控手工 action）可用 `self_complete_restock`；仍先要求消耗品记录，审计为 `fill_supplies`，不套用检查专用的房源照片前置 | partial | `npm run test:idempotency-submit-id-contract --prefix backend` |
+| 普通检查补品凭证事务路由 | `backend/scripts/tests/test_mzapp_restock_proof_transaction_route.ts` | 实际 Express 路由与真实事务 wrapper 接入隔离内存适配器；覆盖 cancelled/ready/completed/done 零写入拒绝、审计失败回滚、receipt 重放不重复写入/副作用、同 receipt 并发重试按任务行锁串行且有超时、补品替换保留无关检查/挂钥匙媒体 | sufficient | `npm run test:mzapp-restock-proof-transaction --prefix backend` |
+| 普通检查补品凭证 PostgreSQL 驱动级事务 | `backend/scripts/tests/test_mzapp_restock_proof_postgres_integration.ts` | 本机一次性 PostgreSQL 16.15 上执行实际 Express 路由、真实 `pg` 事务、SQL 触发失败回滚、receipt 重放及双连接真实行锁；任何 DDL 前核对服务端数据库/地址/端口/`/tmp` data directory；2026-11-01 已在独立随机端口和 `mz073_*` 合成数据库通过，测试后确认无残留 schema、服务停止且专用临时集群已清理 | sufficient | `MZ073_SQL_INTEGRATION_DATABASE_URL=<loopback-random-port-mz073-db> MZ073_SQL_INTEGRATION_EXPECT_DATA_DIRECTORY=<approved-/tmp-cluster> MZ073_SQL_INTEGRATION_WRITE=1 MZ073_SQL_INTEGRATION_CONFIRM_EPHEMERAL=1 npm run test:mzapp-restock-proof-postgres --prefix backend` |
 | 清洁未提交时阻止检查提交 | `backend/scripts/tests/test_work_task_actions.ts` | `cleaning_submission_ready=false` 时禁用检查照片和挂钥匙 action，并保留清洁补品 action | sufficient | `npm run test:work-task-actions --prefix backend` |
 | 纯入住检查不套用清洁提交前置 | `backend/scripts/tests/test_work_task_actions.ts` | `checkout_clean` 的 `cleaning_submission_ready=false` 仍禁用检查/挂钥匙；`checkin_clean` 不套用该门槛 | sufficient | `npm run test:work-task-actions --prefix backend` |
 | 检查提交前置断言和共享任务恢复 | `backend/scripts/tests/test_cleaning_task_transition_guard.ts` | `checkout_clean` 缺少清洁补品/房源照片时返回 `CLEANING_SUBMISSION_REQUIRED`；`checkin_clean` 只跳过清洁前置、仍保留检查照片状态门槛 | sufficient | `npm run test:cleaning-task-transition-guard --prefix backend` |
@@ -1553,16 +1608,16 @@
 
 ### 验证策略
 
-- **backend 修改：** action/transition contract test。
+- **backend 修改：** action/transition contract test；涉及补品凭证事务时同时运行实际 Express 路由 + 事务适配器组合测试；驱动、回滚或锁语义变化时，另在明确隔离的一次性本机 PostgreSQL 合成数据库中运行显式集成命令，不得借生产数据库补测。
 - **mobile 修改：** 对应 screen test + mobile typecheck/lint；涉及队列时增加队列测试。
 - **跨层修改：** 后端门槛、客户端显示/提交/刷新和通知入口。
 - **发布前：** `npm run check:full`。
 
 ### 最后验证
 
-- **CRL：** mobile/CRL-20260817-001；root/CRL-20260817-001（此前记录保留）
+- **CRL：** root/CRL-20261101-001；root/CRL-20261022-006（此前记录保留）
 - **Commit：** not committed
-- **日期：** 2026-08-17
+- **日期：** 2026-11-01
 
 ### 相关 CRL
 
@@ -1571,6 +1626,8 @@
 - CRL-20260812-008：日终媒体跨来源冲突 fail-closed 补丁
 - mobile/CRL-20260817-001：挂钥匙视频静默刷新与重拍本地保留
 - root/CRL-20260817-001：FR-004 挂钥匙视频回归映射
+- root/CRL-20261022-006：MZ-073 补品凭证不得误记正式检查完成
+- root/CRL-20261101-001：MZ-073 实际 Express 路由与事务适配器组合回归
 - CRL-20260723-006：弱网视频提交与检查照片完成状态解耦
 - CRL-20260724-014：修复厨房照片连续拍摄卡住
 - CRL-20260725-021：修复检查与补品保存的超长幂等 ID失败

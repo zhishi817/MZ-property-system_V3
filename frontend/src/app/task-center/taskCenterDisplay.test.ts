@@ -1,13 +1,57 @@
 import { describe, expect, it } from 'vitest'
-import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, deferredInspectionMergePresentation, guestReadyNotificationPresentation, guestReadyOperationId, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterDailyGroupCounts, taskCenterInspectionAssignmentPatch, taskCenterInspectionAssignmentTaskIds } from './taskCenterDisplay'
+import { cleaningNightsDisplayLabels, cleaningTaskFlowLabelText, deferredInspectionConflictPresentation, deferredInspectionMergePresentation, guestReadyNotificationPresentation, guestReadyOperationId, hasTaskCenterRequiredExecutor, isDeferredInspectionDisplayTask, maintenanceDetailContentText, resolveTaskCenterColumns, taskCenterBoardInspectionDueDate, taskCenterDailyGroupCounts, taskCenterGuestReadyMutationTarget, taskCenterInspectionAssignmentPatch, taskCenterInspectionAssignmentTaskIds, taskCenterTaskMatchesGuestReadyTarget } from './taskCenterDisplay'
 
 describe('taskCenterDisplay', () => {
   it('reuses the guest-ready operation id for the same authoritative version', () => {
     expect(guestReadyOperationId({ orderId: 'order-1', action: 'mark', expectedVersion: 4 }))
-      .toBe('guest-ready:mark:4:order-1')
+      .toBe('guest-ready:orders:mark:4:order-1')
     expect(guestReadyOperationId({ orderId: 'order-1', action: 'mark', expectedVersion: 5 }))
-      .toBe('guest-ready:mark:5:order-1')
+      .toBe('guest-ready:orders:mark:5:order-1')
+    expect(guestReadyOperationId({ sourceType: 'cleaning_tasks', sourceId: 'manual-checkin-1', action: 'mark', expectedVersion: 0 }))
+      .toBe('guest-ready:cleaning_tasks:mark:0:manual-checkin-1')
     expect(guestReadyOperationId({ orderId: '', action: 'mark', expectedVersion: 4 })).toBeNull()
+  })
+
+  it('binds manual-task mutations and delayed receipts to the current exact authority', () => {
+    const manualTask = {
+      order_id_checkin: null,
+      guest_ready_notification: {
+        source_type: 'cleaning_tasks' as const,
+        source_id: 'manual-checkin-1',
+        task_id: 'manual-checkin-1',
+        order_id: null,
+        status: 'not_notified' as const,
+        version: 0,
+      },
+    }
+    const manualAction = { id: 'record_guest_ready_notified', source_type: 'cleaning_tasks', source_id: 'manual-checkin-1' }
+    expect(taskCenterGuestReadyMutationTarget(manualTask, manualAction)).toEqual({
+      sourceType: 'cleaning_tasks', sourceId: 'manual-checkin-1', expectedVersion: 0,
+    })
+    expect(taskCenterGuestReadyMutationTarget(manualTask, { ...manualAction, source_id: 'wrong-task' })).toBeNull()
+    expect(taskCenterTaskMatchesGuestReadyTarget(manualTask, 'cleaning_tasks', 'manual-checkin-1', 0)).toBe(true)
+    expect(taskCenterTaskMatchesGuestReadyTarget({
+      ...manualTask,
+      guest_ready_notification: { ...manualTask.guest_ready_notification, version: 1 },
+    }, 'cleaning_tasks', 'manual-checkin-1', 0)).toBe(false)
+
+    const linkedAfterRequest = {
+      ...manualTask,
+      order_id_checkin: 'order-1',
+      guest_ready_notification: {
+        source_type: 'orders' as const,
+        source_id: 'order-1',
+        task_id: null,
+        order_id: 'order-1',
+        status: 'not_notified' as const,
+        version: 0,
+      },
+    }
+    expect(taskCenterTaskMatchesGuestReadyTarget(linkedAfterRequest, 'cleaning_tasks', 'manual-checkin-1', 0)).toBe(false)
+    expect(taskCenterGuestReadyMutationTarget(linkedAfterRequest, manualAction)).toBeNull()
+    expect(taskCenterGuestReadyMutationTarget(linkedAfterRequest, { id: 'record_guest_ready_notified', source_type: 'orders', source_id: 'order-1' })).toEqual({
+      sourceType: 'orders', sourceId: 'order-1', expectedVersion: 0,
+    })
   })
 
   it('treats deferred inspection tasks as inspection-oriented display', () => {
@@ -249,6 +293,23 @@ describe('taskCenterDisplay', () => {
       label: '已通知客人',
       tone: 'success',
       detail: '客服 A · 2026-10-04T01:02:03.000Z',
+    })
+    expect(guestReadyNotificationPresentation({
+      guest_ready_notification: {
+        status: 'not_notified',
+        prior_task_notification: {
+          status: 'notified',
+          notified_at: '2026-11-01T01:00:00.000Z',
+          notified_by_name: '客服 B',
+          last_action: 'mark',
+          last_action_at: '2026-11-01T01:00:00.000Z',
+          last_actor_name: '客服 B',
+        },
+      },
+    }, 'customer_service')).toEqual({
+      label: '客人未通知',
+      tone: 'pending',
+      detail: '关联订单前任务记录：已通知（客服 B · 2026-11-01T01:00:00.000Z）；该历史不会自动覆盖订单状态。',
     })
     for (const role of ['admin', 'offline_manager', 'cleaner', 'cleaning_inspector']) {
       expect(guestReadyNotificationPresentation({ guest_ready_notification: { status: 'not_notified' } }, role)).toBeNull()

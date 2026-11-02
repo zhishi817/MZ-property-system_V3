@@ -3,19 +3,21 @@ import { z } from 'zod'
 import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { addAudit, db } from '../store'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
-import { activeCleaningTaskWhereSql, backfillCleaningTasks, ensureCleaningSchemaV2, isCancelledCleaningTaskStatus, lockCleaningTurnoverKey, syncCheckoutOldCodeFromCheckinNewCode, syncOrderToCleaningTasks, validCleaningTaskOrderWhereSql } from '../services/cleaningSync'
+import { activeCleaningTaskWhereSql, assertPasswordAuthorityTaskMutable, backfillCleaningTasks, claimTaskPasswordAuthorityFields, confirmTaskPasswordAuthority, ensureCleaningSchemaV2, invalidatePasswordDependentsForSourceTask, isCancelledCleaningTaskStatus, lockCleaningPasswordChainKey, lockCleaningTurnoverKey, normalizeCleaningPasswordChainKeys, reconcilePasswordAuthorityAfterTaskTopologyChange, syncCheckoutOldCodeFromCheckinNewCode, syncNextCheckinOldCodeFromSourceOrder, syncOrderToCleaningTasks, validCleaningTaskOrderWhereSql, type PasswordAuthorityAuditContext } from '../services/cleaningSync'
 import { v4 as uuid } from 'uuid'
 import { emitNotificationEvent } from '../services/notificationEvents'
 import { buildCleaningTaskVisibilityHints, buildMz031CleaningArrangementRevision, buildWorkTaskVisibilityHints, emitWorkTaskEvent } from '../services/workTaskEvents'
 import { canonicalCleaningTurnoverPairs, canonicalKeyHandoverSourceIds, defaultInspectionModeForTaskType, deferredProjectionDate, effectiveInspectionMode, normalizeInspectionMode, normalizeInspectionScope } from '../lib/cleaningInspection'
 import { buildWebTaskCapabilityPayload } from '../lib/webTaskCapabilities'
 import { assignedStatusFromAssignees, isCheckinSiteExecutionTask } from '../lib/cleaningAssignmentStatus'
-import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
+import { buildCleaningTurnoverDisplay, cleaningTaskNewCodeForDisplay, cleaningTaskOldCodeForDisplay } from '../lib/cleaningTurnoverDisplay'
 import { shouldIgnoreNightsOverrideForAutoCheckinTask } from '../lib/cleaningTaskNightOverride'
 import { isTaskExecutorEligibleRoleNames } from '../services/taskExecutorEligibility'
 import { emitDeferredInspectionCheckinConflictAlerts, isDeferredInspectionCheckinConflictRelevantChange, reconcileDeferredInspectionCheckinReplacement } from '../services/deferredInspectionCheckinConflict'
 import { requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
+import { isPasswordAuthoritySchemaReady } from '../lib/passwordAuthoritySchema'
 import { inspectionAssignmentConflictPayload } from '../lib/inspectionAssignmentConflict'
+import { redactPasswordAuditValues } from '../lib/passwordAudit'
 
 export const router = Router()
 
@@ -336,8 +338,14 @@ function buildCleaningTaskUpdateNoticeDetails(before: any, after: any) {
     lines.push(formatCleaningTaskFieldChange(label, afterValue, beforeValue))
   }
 
-  add('password', '旧密码', before?.old_code, after?.old_code)
-  add('password', '新密码', before?.new_code, after?.new_code)
+  if (cleanNotificationText(before?.old_code) !== cleanNotificationText(after?.old_code)) {
+    changes.push('password')
+    lines.push('旧密码：已更新（值已隐藏）')
+  }
+  if (cleanNotificationText(before?.new_code) !== cleanNotificationText(after?.new_code)) {
+    changes.push('password')
+    lines.push('新密码：已更新（值已隐藏）')
+  }
   add('time', '退房时间', before?.checkout_time, after?.checkout_time)
   add('time', '入住时间', before?.checkin_time, after?.checkin_time)
   add('note', '客人需求', before?.guest_special_request, after?.guest_special_request)
@@ -420,10 +428,16 @@ function buildCleaningTaskCreateNoticeDetails(after: any) {
 
   if (taskType === 'checkout_clean') {
     add('time', '退房时间', after?.checkout_time)
-    add('password', '旧密码', after?.old_code)
+    if (cleanNotificationText(after?.old_code)) {
+      changes.push('password')
+      lines.push('旧密码：已填写（值已隐藏）')
+    }
   } else if (taskType === 'checkin_clean') {
     add('time', '入住时间', after?.checkin_time)
-    add('password', '新密码', after?.new_code)
+    if (cleanNotificationText(after?.new_code)) {
+      changes.push('password')
+      lines.push('新密码：已填写（值已隐藏）')
+    }
   } else if (taskType === 'stayover_clean') {
     add('time', '入住中清洁时间', after?.checkin_time)
   }
@@ -1259,7 +1273,30 @@ router.delete('/offline-tasks/:id', requirePerm('cleaning.schedule.manage'), asy
   }
 })
 
+function projectCleaningTaskPasswordDisplay(row: any) {
+  const taskType = String(row?.task_type || row?.type || '').trim().toLowerCase()
+  const turnoverDisplay = buildCleaningTurnoverDisplay({
+    checkoutTask: taskType === 'checkout_clean' || taskType === 'checkout' ? row : null,
+    checkinTask: taskType === 'checkin_clean' || taskType === 'checkin' ? row : null,
+  })
+  return {
+    ...row,
+    old_code: turnoverDisplay.old_code,
+    new_code: cleaningTaskNewCodeForDisplay(row),
+    old_code_authority_status: taskType === 'checkout_clean' || taskType === 'checkout'
+      ? (turnoverDisplay.old_code_authority_status || 'needs_review')
+      : 'not_applicable',
+    new_code_authority_status: taskType === 'checkin_clean' || taskType === 'checkin'
+      ? (row?.new_code_authority_status || row?.password_authority?.new_code_status || 'needs_review')
+      : 'not_applicable',
+    old_code_source_task_id: turnoverDisplay.old_code_source_task_id,
+    old_code_source_order_id: turnoverDisplay.old_code_source_order_id,
+    old_code_source_field: turnoverDisplay.old_code_source_field,
+  }
+}
+
 router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage', 'cleaning.task.assign']), requireR5TaskRuntimeSchema, async (req, res) => {
+  if (!isPasswordAuthoritySchemaReady()) return res.status(503).json({ code: 'password_authority_schema_not_ready' })
   const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
   const parsed = dateSchema.safeParse((req.query as any)?.date)
   const date = parsed.success ? parsed.data : undefined
@@ -1280,7 +1317,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
         return res.json((r?.rows || []).map((x: any) => {
           if (x?.order_id && x?.order_keys_required != null) x.keys_required = Number(x.order_keys_required)
           delete x.order_keys_required
-          return x
+          return projectCleaningTaskPasswordDisplay(x)
         }))
       }
       const r = await pgPool.query(
@@ -1294,7 +1331,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
       return res.json((r?.rows || []).map((x: any) => {
         if (x?.order_id && x?.order_keys_required != null) x.keys_required = Number(x.order_keys_required)
         delete x.order_keys_required
-        return x
+        return projectCleaningTaskPasswordDisplay(x)
       }))
     }
     const rows = (db.cleaningTasks as any[]).slice()
@@ -1304,7 +1341,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
       if (executionState && executionState !== 'active') return false
       return true
     })
-    if (!date) return res.json(activeRows)
+    if (!date) return res.json(activeRows.map(projectCleaningTaskPasswordDisplay))
     const orders = (db.orders || []) as any[]
     const byId = new Map<string, any>()
     for (const o of orders) byId.set(String(o.id), o)
@@ -1313,7 +1350,7 @@ router.get('/tasks', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manage'
       const oid = String(out.order_id || '').trim()
       const o = oid ? byId.get(oid) : null
       if (o && o.keys_required != null) out.keys_required = Number(o.keys_required) >= 2 ? 2 : 1
-      return out
+      return projectCleaningTaskPasswordDisplay(out)
     }))
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'query_failed' })
@@ -1351,7 +1388,7 @@ router.get('/history', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manag
         LIMIT $4
       `
       const r = await pgPool.query(sql, [propertyId, from, to, limit])
-      return res.json(r?.rows || [])
+      return res.json((r?.rows || []).map(projectCleaningTaskPasswordDisplay))
     }
     const rows = (db.cleaningTasks as any[]).slice().filter((t: any) => String(t.property_id || '') === propertyId)
     const filtered = rows.filter((t: any) => {
@@ -1361,7 +1398,7 @@ router.get('/history', requireAnyPerm(['cleaning.view', 'cleaning.schedule.manag
     filtered.sort((a: any, b: any) => String(b.task_date || b.date || '').localeCompare(String(a.task_date || a.date || '')) || String(b.id || '').localeCompare(String(a.id || '')))
     const props = ((db as any).properties || []) as any[]
     const p = props.find((x: any) => String(x.id) === propertyId) || null
-    const out = filtered.slice(0, limit).map((t: any) => ({ ...t, property_code: p?.code || t?.property_code || null, property_region: p?.region || t?.property_region || null }))
+    const out = filtered.slice(0, limit).map((t: any) => projectCleaningTaskPasswordDisplay({ ...t, property_code: p?.code || t?.property_code || null, property_region: p?.region || t?.property_region || null }))
     return res.json(out)
   } catch (e: any) {
     return res.status(500).json({ message: e?.message || 'history_failed' })
@@ -1431,7 +1468,30 @@ const patchTaskSchema = z.object({
   scheduled_at: z.union([z.string().min(1), z.null()]).optional(),
   guest_special_request: z.union([z.string(), z.null()]).optional(),
   note: z.union([z.string(), z.null()]).optional(),
+  password_verification: z.object({
+    fields: z.array(z.enum(['old_code', 'new_code'])).min(1).max(2),
+    request_id: z.string().trim().min(1).max(100),
+    client: z.enum(['web', 'mobile', 'api']),
+  }).strict().optional(),
 }).strict()
+
+type CleaningPasswordField = 'old_code' | 'new_code'
+
+function cleaningPasswordFieldApplies(taskTypeValue: any, field: CleaningPasswordField) {
+  const taskType = String(taskTypeValue || '').trim().toLowerCase()
+  return (taskType === 'checkout_clean' && field === 'old_code')
+    || (taskType === 'checkin_clean' && field === 'new_code')
+}
+
+function assertCleaningPasswordFieldsApplicable(taskType: any, fields: CleaningPasswordField[]) {
+  const unique = Array.from(new Set(fields))
+  if (unique.some((field) => !cleaningPasswordFieldApplies(taskType, field))) {
+    const error: any = new Error('password_field_not_applicable')
+    error.status = 400
+    throw error
+  }
+  return unique
+}
 
 async function isValidStaffId(id: any, kind: 'cleaner' | 'inspector'): Promise<boolean> {
   if (!id) return true
@@ -1477,6 +1537,7 @@ async function isValidAnyStaffId(id: any): Promise<boolean> {
 }
 
 router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRuntimeSchema, async (req, res) => {
+  if (!isPasswordAuthoritySchemaReady()) return res.status(503).json({ code: 'password_authority_schema_not_ready' })
   const { id } = req.params
   const operationId = uuid()
   const opNow = new Date().toISOString()
@@ -1495,6 +1556,8 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
       }
 
       const patch: any = { ...parsed.data }
+      const passwordVerification = patch.password_verification
+      delete patch.password_verification
       if (patch.guest_special_request === undefined && patch.note !== undefined) patch.guest_special_request = patch.note
       delete patch.note
       if (patch.keys_required === null) patch.keys_required = 1
@@ -1542,14 +1605,43 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
       }
       patch.updated_at = new Date().toISOString()
 
-      const keys = Object.keys(patch).filter((k) => patch[k] !== undefined)
       const transactionResult = await pgRunInTransaction(async (client) => {
+        const hasPasswordWrite = parsed.data.old_code !== undefined || parsed.data.new_code !== undefined || !!passwordVerification?.fields?.length
+        const topologyTouched = patch.property_id !== undefined || patch.task_date !== undefined || patch.status !== undefined
+        let lockedPasswordProperties: string[] = []
+        if (hasPasswordWrite || topologyTouched) {
+          lockedPasswordProperties = await normalizeCleaningPasswordChainKeys(client, [
+            String(before.property_id || '').trim(),
+            String(patch.property_id || '').trim(),
+          ])
+          for (const propertyId of lockedPasswordProperties) await lockCleaningPasswordChainKey(client, propertyId)
+        }
         const initialTurnoverTarget = turnoverInspectionScopeTarget(before, patch)
         if (initialTurnoverTarget) {
           await lockCleaningTurnoverKey(client, initialTurnoverTarget.propertyId, initialTurnoverTarget.taskDate)
         }
         const locked = await client.query('SELECT * FROM cleaning_tasks WHERE id = $1 LIMIT 1 FOR UPDATE', [String(id)])
         const lockedBefore = locked?.rows?.[0] || before
+        if (hasPasswordWrite || topologyTouched) {
+          const verifiedProperties = await normalizeCleaningPasswordChainKeys(client, [lockedBefore.property_id, patch.property_id])
+          if (verifiedProperties.some((propertyId) => !lockedPasswordProperties.includes(propertyId))) {
+            const error: any = new Error('password_chain_topology_changed_retry')
+            error.status = 409
+            throw error
+          }
+          if (patch.property_id !== undefined && String(lockedBefore.order_id || '').trim()) {
+            const currentProperty = String(lockedBefore.property_id || '').trim()
+            const requestedProperty = String(patch.property_id || '').trim()
+            const propertyIdentityChanged = !currentProperty || !requestedProperty
+              ? currentProperty !== requestedProperty
+              : verifiedProperties.length !== 1
+            if (propertyIdentityChanged) {
+              const error: any = new Error('order_linked_task_property_managed_by_order')
+              error.status = 400
+              throw error
+            }
+          }
+        }
         const lockedTurnoverTarget = turnoverInspectionScopeTarget(lockedBefore, patch)
         if (
           lockedTurnoverTarget
@@ -1560,17 +1652,62 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
           await lockCleaningTurnoverKey(client, lockedTurnoverTarget.propertyId, lockedTurnoverTarget.taskDate)
         }
         await assertPgTurnoverInspectionScope(client, String(id), lockedBefore, patch)
-        const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
-        const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
-        const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
-        const r1 = await client.query(sql, [...values, String(id)])
-        const updated = r1?.rows?.[0] || lockedBefore
+        const requestedPasswordFields = Array.from(new Set([
+          ...(parsed.data.old_code !== undefined ? ['old_code' as const] : []),
+          ...(parsed.data.new_code !== undefined ? ['new_code' as const] : []),
+          ...((passwordVerification?.fields || []) as Array<'old_code' | 'new_code'>),
+        ]))
+        const lockedTaskType = String(lockedBefore?.task_type || lockedBefore?.type || '').trim().toLowerCase()
+        const passwordFields = assertCleaningPasswordFieldsApplicable(lockedTaskType, requestedPasswordFields)
+        if (passwordFields.length) assertPasswordAuthorityTaskMutable({ ...lockedBefore, ...patch })
+        const passwordAudit: PasswordAuthorityAuditContext = {
+          requestId: passwordVerification?.request_id || operationId,
+          actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+          actorRole: roleNamesOfRequest(req).join(',') || null,
+          client: passwordVerification?.client || 'web',
+        }
+        const claimedPasswordFields = passwordFields.length
+          ? await claimTaskPasswordAuthorityFields({ taskId: String(id), fields: passwordFields, client, audit: passwordAudit })
+          : []
+        const transactionPatch: any = { ...patch }
+        for (const field of requestedPasswordFields) {
+          if (!claimedPasswordFields.includes(field)) delete transactionPatch[field]
+        }
+        const substantiveKeys = Object.keys(transactionPatch).filter((key) => key !== 'updated_at' && transactionPatch[key] !== undefined)
+        if (!substantiveKeys.length) delete transactionPatch.updated_at
+        const keys = Object.keys(transactionPatch).filter((key) => transactionPatch[key] !== undefined)
+        let updated = lockedBefore
+        if (keys.length) {
+          const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
+          const values = keys.map((k) => (transactionPatch[k] === undefined ? null : transactionPatch[k]))
+          const sql = `UPDATE cleaning_tasks SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
+          const r1 = await client.query(sql, [...values, String(id)])
+          updated = r1?.rows?.[0] || lockedBefore
+        }
+        let confirmedPasswordFields: Array<'old_code' | 'new_code'> = []
+        if (claimedPasswordFields.length) {
+          const confirmed = await confirmTaskPasswordAuthority({
+            taskId: String(id),
+            fields: claimedPasswordFields,
+            claimedFields: claimedPasswordFields,
+            client,
+            audit: passwordAudit,
+          })
+          confirmedPasswordFields = confirmed.updatedFields
+          updated = confirmed.task || updated
+        }
         if (
-          parsed.data.new_code !== undefined &&
+          confirmedPasswordFields.includes('new_code') &&
           String(updated?.order_id || '').trim() &&
           String(updated?.task_type || updated?.type || '').trim().toLowerCase() === 'checkin_clean'
         ) {
-          await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(updated.order_id), client })
+          await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(updated.order_id), client, audit: passwordAudit })
+          await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: String(updated.order_id), client, audit: passwordAudit })
+        }
+        if (topologyTouched) {
+          await reconcilePasswordAuthorityAfterTaskTopologyChange({ before: lockedBefore, after: updated, client, audit: passwordAudit })
+          const refreshed = await client.query('SELECT * FROM cleaning_tasks WHERE id = $1 LIMIT 1', [String(id)])
+          updated = refreshed?.rows?.[0] || updated
         }
         if (parsed.data.keys_required !== undefined) {
           const orderId = String(updated?.order_id || '').trim()
@@ -1624,35 +1761,37 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
           actorUserId: String((req as any)?.user?.sub || '').trim() || null,
         }))
       }
-      try {
-        const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, updated)
-        const propertyId = String(updated.property_id || '').trim()
-        if (changes.length && propertyId) {
-          const title = lines.length ? '任务信息更新' : null
-          const body = lines.length ? lines.join('\n') : null
-          const data = lines.length
-            ? { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'cleaning_task_manager_fields_updated' }
-            : { entity: 'cleaning_task', entityId: String(id), action: 'open_task' }
-          enqueueNotification(async () =>
-            emitNotificationEvent(
-              {
-                type: 'CLEANING_TASK_UPDATED',
-                policyKey: 'task_requirements_changed',
-                entity: 'cleaning_task',
-                entityId: String(id),
-                propertyId,
-                updatedAt: opNow,
-                changes,
-                title,
-                body,
-                data,
-                actorUserId: (req as any).user?.sub,
-              },
-              { operationId },
-            ),
-          )
-        }
-      } catch {}
+      if (actualChangedFields.length) {
+        try {
+          const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, updated)
+          const propertyId = String(updated.property_id || '').trim()
+          if (changes.length && propertyId) {
+            const title = lines.length ? '任务信息更新' : null
+            const body = lines.length ? lines.join('\n') : null
+            const data = lines.length
+              ? { entity: 'cleaning_task', entityId: String(id), action: 'open_task', kind: 'cleaning_task_manager_fields_updated' }
+              : { entity: 'cleaning_task', entityId: String(id), action: 'open_task' }
+            enqueueNotification(async () =>
+              emitNotificationEvent(
+                {
+                  type: 'CLEANING_TASK_UPDATED',
+                  policyKey: 'task_requirements_changed',
+                  entity: 'cleaning_task',
+                  entityId: String(id),
+                  propertyId,
+                  updatedAt: opNow,
+                  changes,
+                  title,
+                  body,
+                  data,
+                  actorUserId: (req as any).user?.sub,
+                },
+                { operationId },
+              ),
+            )
+          }
+        } catch {}
+      }
       return res.json(updated)
     }
 
@@ -1664,8 +1803,17 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
     }
     if ((parsed.data as any).keys_required === null) (parsed.data as any).keys_required = 1
     const localPatch: any = { ...parsed.data }
+    const localPasswordVerification = localPatch.password_verification
+    delete localPatch.password_verification
     if (localPatch.guest_special_request === undefined && localPatch.note !== undefined) localPatch.guest_special_request = localPatch.note
     delete localPatch.note
+    if (localPatch.property_id !== undefined
+      && String((task as any).order_id || '').trim()
+      && String(localPatch.property_id || '').trim() !== String((task as any).property_id || '').trim()) {
+      const error: any = new Error('order_linked_task_property_managed_by_order')
+      error.status = 400
+      throw error
+    }
     assertMemoryTurnoverInspectionScope(String(id), task, localPatch)
     const isCheckinSiteExecution = isCheckinSiteExecutionTask({
       task_type: localPatch.task_type ?? task.task_type,
@@ -1675,6 +1823,26 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
     if (isCheckinSiteExecution && !(await isValidAnyStaffId(localPatch.assignee_id ?? null))) return res.status(400).json({ message: '无效的执行人' })
     if (isCheckinSiteExecution && !(await isValidAnyStaffId(localPatch.inspector_id ?? null))) return res.status(400).json({ message: '无效的执行人' })
     validateAndApplyInspectionPatch({ patch: localPatch as any, current: task })
+    const localRequestedPasswordFields = Array.from(new Set([
+      ...(localPatch.old_code !== undefined ? ['old_code' as const] : []),
+      ...(localPatch.new_code !== undefined ? ['new_code' as const] : []),
+      ...((localPasswordVerification?.fields || []) as Array<'old_code' | 'new_code'>),
+    ]))
+    const localTaskType = String(localPatch.task_type || localPatch.type || (task as any).task_type || (task as any).type || '').trim().toLowerCase()
+    const localPasswordFields = assertCleaningPasswordFieldsApplicable(localTaskType, localRequestedPasswordFields)
+    if (localPasswordFields.length) assertPasswordAuthorityTaskMutable({ ...task, ...localPatch })
+    const localPasswordAudit: PasswordAuthorityAuditContext = {
+      requestId: localPasswordVerification?.request_id || operationId,
+      actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+      actorRole: roleNamesOfRequest(req).join(',') || null,
+      client: localPasswordVerification?.client || 'web',
+    }
+    const localClaimedPasswordFields = localPasswordFields.length
+      ? await claimTaskPasswordAuthorityFields({ taskId: String(id), fields: localPasswordFields, audit: localPasswordAudit })
+      : []
+    for (const field of localRequestedPasswordFields) {
+      if (!localClaimedPasswordFields.includes(field)) delete localPatch[field]
+    }
     if (localPatch.property_id !== undefined) task.property_id = localPatch.property_id
     if (localPatch.task_date !== undefined) { task.task_date = localPatch.task_date; task.date = localPatch.task_date }
     if (localPatch.status !== undefined) task.status = localPatch.status
@@ -1701,12 +1869,23 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
     }
     if (localPatch.scheduled_at !== undefined) task.scheduled_at = localPatch.scheduled_at
     if (localPatch.guest_special_request !== undefined) task.guest_special_request = localPatch.guest_special_request
+    let localConfirmedPasswordFields: Array<'old_code' | 'new_code'> = []
+    if (localClaimedPasswordFields.length) {
+      const confirmed = await confirmTaskPasswordAuthority({
+        taskId: String(id),
+        fields: localClaimedPasswordFields,
+        claimedFields: localClaimedPasswordFields,
+        audit: localPasswordAudit,
+      })
+      localConfirmedPasswordFields = confirmed.updatedFields
+    }
     if (
-      localPatch.new_code !== undefined &&
+      localConfirmedPasswordFields.includes('new_code') &&
       String((task as any).order_id || '').trim() &&
       String((task as any).task_type || (task as any).type || '').trim().toLowerCase() === 'checkin_clean'
     ) {
-      await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String((task as any).order_id) })
+      await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String((task as any).order_id), audit: localPasswordAudit })
+      await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: String((task as any).order_id), audit: localPasswordAudit })
     }
     {
       const beforeStatus = String((before as any).status || 'pending')
@@ -1737,6 +1916,9 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
           ;(t as any).keys_required = nextK
         }
       }
+    }
+    if (localPatch.property_id !== undefined || localPatch.task_date !== undefined || localPatch.status !== undefined) {
+      await reconcilePasswordAuthorityAfterTaskTopologyChange({ before, after: task, audit: localPasswordAudit })
     }
     try {
       const actualChangedFields = actualCleaningTaskChangedFields(before, task, Object.keys(localPatch || {}))
@@ -1789,7 +1971,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
     if (sendTurnoverInspectionScopeConflict(res, e)) return
     const conflict = inspectionAssignmentConflictPayload(e)
     if (conflict) return res.status(409).json(conflict)
-    return res.status(500).json({ message: e?.message || 'update_failed' })
+    return res.status(Number(e?.status || 500)).json({ message: e?.message || 'update_failed' })
   }
 })
 
@@ -1827,6 +2009,7 @@ const createTaskSchema = z.object({
 }).strict()
 
 router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSchema, async (req, res) => {
+  if (!isPasswordAuthoritySchemaReady()) return res.status(503).json({ code: 'password_authority_schema_not_ready' })
   const parsed = createTaskSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!(await isValidStaffId((parsed.data as any).cleaner_id ?? null, 'cleaner'))) return res.status(400).json({ message: '无效的清洁人员' })
@@ -1847,6 +2030,12 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
       [String(taskType)]
     if (types.includes('checkout_clean') && types.includes('checkin_clean') && (parsed.data as any).inspection_scope === 'password_only') {
       return res.status(400).json({ code: TURNOVER_INSPECTION_SCOPE_CONFLICT, message: '同日退房入住任务必须检查后挂钥匙' })
+    }
+    if (parsed.data.old_code !== undefined && !types.includes('checkout_clean')) {
+      return res.status(400).json({ message: 'password_field_not_applicable' })
+    }
+    if (parsed.data.new_code !== undefined && !types.includes('checkin_clean')) {
+      return res.status(400).json({ message: 'password_field_not_applicable' })
     }
 
     const createdRows: any[] = []
@@ -1884,8 +2073,9 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
         ? 'inspect_and_hang'
         : ((parsed.data as any).inspection_scope ?? null),
       scheduled_at: parsed.data.scheduled_at ?? null,
-      old_code: parsed.data.old_code ?? null,
-      new_code: parsed.data.new_code ?? null,
+      old_code_source_task_id: null,
+      old_code_source_order_id: null,
+      old_code_source_field: null,
       checkout_time: parsed.data.checkout_time ?? null,
       checkin_time: parsed.data.checkin_time ?? null,
       keys_required: parsed.data.keys_required == null ? 1 : parsed.data.keys_required,
@@ -1902,6 +2092,10 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
       const client = await pgPool.connect()
       try {
         await client.query('BEGIN')
+        // Creating a task changes the property's password-source topology.
+        // Serialize it with every save/sync/cancel path before taking any
+        // cleaning-task row or turnover lock.
+        await lockCleaningPasswordChainKey(client, normalizedPropertyId)
         if (types.length === 1 && types[0] === 'checkin_clean') {
           // All turnover mutations take the same advisory lock before any
           // cleaning_tasks row lock. This matches order sync and prevents a
@@ -1937,6 +2131,10 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
             ...base,
             task_type: tt,
             type: tt,
+            old_code: tt === 'checkout_clean' ? (parsed.data.old_code ?? null) : null,
+            new_code: tt === 'checkin_clean' ? (parsed.data.new_code ?? null) : null,
+            old_code_authority_status: tt === 'checkout_clean' ? 'needs_review' : 'not_applicable',
+            new_code_authority_status: tt === 'checkin_clean' ? 'needs_review' : 'not_applicable',
             inspection_mode: normalizeInspectionMode((parsed.data as any).inspection_mode) || defaultInspectionModeForTaskType(tt),
             inspection_due_date: (parsed.data as any).inspection_due_date ?? null,
           }
@@ -2042,6 +2240,10 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
         ...base,
         task_type: tt,
         type: tt,
+        old_code: tt === 'checkout_clean' ? (parsed.data.old_code ?? null) : null,
+        new_code: tt === 'checkin_clean' ? (parsed.data.new_code ?? null) : null,
+        old_code_authority_status: tt === 'checkout_clean' ? 'needs_review' : 'not_applicable',
+        new_code_authority_status: tt === 'checkin_clean' ? 'needs_review' : 'not_applicable',
         inspection_mode: normalizeInspectionMode((parsed.data as any).inspection_mode) || defaultInspectionModeForTaskType(tt),
         inspection_due_date: (parsed.data as any).inspection_due_date ?? null,
       }
@@ -2068,14 +2270,44 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRu
   const { id } = req.params
   const actor = (req as any).user
   const actorId = actor?.sub ? String(actor.sub) : undefined
+  const operationId = uuid()
   try {
     if (hasPg && pgPool) {
       const deleted = await pgRunInTransaction(async (client) => {
+        const snapshotResult = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [String(id)])
+        const snapshot = snapshotResult?.rows?.[0] || null
+        if (!snapshot) return null
+        const lockedPropertyIds = await normalizeCleaningPasswordChainKeys(client, [snapshot.property_id])
+        for (const propertyId of lockedPropertyIds) await lockCleaningPasswordChainKey(client, propertyId)
         const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1 FOR UPDATE', [String(id)])
         const before = r0?.rows?.[0] || null
         if (!before) return null
+        const verifiedPropertyIds = await normalizeCleaningPasswordChainKeys(client, [before.property_id])
+        if (verifiedPropertyIds.some((propertyId) => !lockedPropertyIds.includes(propertyId))) {
+          const error: any = new Error('password_chain_topology_changed_retry')
+          error.status = 409
+          throw error
+        }
         const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [String(id)])
         const after = r1?.rows?.[0] || null
+        const taskType = String(before.task_type || before.type || '').trim().toLowerCase()
+        const orderId = String(before.order_id || '').trim()
+        if (taskType === 'checkin_clean' && orderId) {
+          const audit: PasswordAuthorityAuditContext = {
+            requestId: operationId,
+            actorUserId: actorId || null,
+            actorRole: roleNamesOfRequest(req).join(',') || null,
+            client: 'web',
+          }
+          await invalidatePasswordDependentsForSourceTask({
+            sourceTaskId: String(id),
+            sourceOrderId: orderId,
+            reason: 'source_task_cancelled',
+            client,
+            audit,
+          })
+          await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: orderId, client, audit })
+        }
         await emitWorkTaskEvent({
           taskId: `cleaning_task:${String(id)}`,
           sourceType: 'cleaning_tasks',
@@ -2121,14 +2353,14 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRu
               },
               actorUserId: actorId || null,
             },
-            { operationId: uuid() },
+            { operationId },
           )
           logNotificationEmissionOutcome('cleaning_task_deleted', String(id), notificationResult)
         }
       } catch (error: any) {
         logNotificationEmissionFailure('cleaning_task_deleted', String(id), error)
       }
-      addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
+      addAudit('cleaning_task', String(id), 'delete', redactPasswordAuditValues(before).value, redactPasswordAuditValues(after).value, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
       return res.json({ ok: true })
     }
     const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
@@ -2137,10 +2369,25 @@ router.delete('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRu
     task.status = 'cancelled'
     task.execution_state = 'cancelled'
     task.auto_sync_enabled = false
-    addAudit('cleaning_task', String(id), 'delete', before, { ...task }, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
+    if (String(task.task_type || task.type || '').trim().toLowerCase() === 'checkin_clean' && String(task.order_id || '').trim()) {
+      const audit: PasswordAuthorityAuditContext = {
+        requestId: operationId,
+        actorUserId: actorId || null,
+        actorRole: roleNamesOfRequest(req).join(',') || null,
+        client: 'web',
+      }
+      await invalidatePasswordDependentsForSourceTask({
+        sourceTaskId: String(id),
+        sourceOrderId: String(task.order_id),
+        reason: 'source_task_cancelled',
+        audit,
+      })
+      await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: String(task.order_id), audit })
+    }
+    addAudit('cleaning_task', String(id), 'delete', redactPasswordAuditValues(before).value, redactPasswordAuditValues({ ...task }).value, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
     return res.json({ ok: true })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'delete_failed' })
+    return res.status(Number(e?.status || 500)).json({ message: e?.message || 'delete_failed' })
   }
 })
 
@@ -2151,17 +2398,54 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), requireR5
   const actor = (req as any).user
   const actorId = actor?.sub ? String(actor.sub) : undefined
   const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)))
+  const operationId = uuid()
   try {
     if (hasPg && pgPool) {
       const client = await pgPool.connect()
       try {
         await client.query('BEGIN')
+        const snapshots = await client.query(
+          `SELECT t.*, COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS normalized_property_id
+           FROM cleaning_tasks t
+           LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+           LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+           WHERE t.id::text = ANY($1::text[])`,
+          [ids],
+        )
+        const propertyIds = Array.from(new Set((snapshots?.rows || [])
+          .map((row: any) => String(row.normalized_property_id || '').trim())
+          .filter(Boolean))).sort()
+        for (const propertyId of propertyIds) await lockCleaningPasswordChainKey(client, propertyId)
         for (const id of ids) {
-          const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+          const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1 FOR UPDATE', [id])
           const before = r0?.rows?.[0] || null
           if (!before) continue
+          const verifiedPropertyIds = await normalizeCleaningPasswordChainKeys(client, [before.property_id])
+          if (verifiedPropertyIds.some((propertyId) => !propertyIds.includes(propertyId))) {
+            const error: any = new Error('password_chain_topology_changed_retry')
+            error.status = 409
+            throw error
+          }
           const r1 = await client.query(`UPDATE cleaning_tasks SET status='cancelled', execution_state='cancelled', auto_sync_enabled=false, updated_at=now() WHERE id=$1 RETURNING *`, [id])
           const after = r1?.rows?.[0] || null
+          const taskType = String(before.task_type || before.type || '').trim().toLowerCase()
+          const orderId = String(before.order_id || '').trim()
+          if (taskType === 'checkin_clean' && orderId) {
+            const audit: PasswordAuthorityAuditContext = {
+              requestId: operationId,
+              actorUserId: actorId || null,
+              actorRole: roleNamesOfRequest(req).join(',') || null,
+              client: 'web',
+            }
+            await invalidatePasswordDependentsForSourceTask({
+              sourceTaskId: id,
+              sourceOrderId: orderId,
+              reason: 'source_task_cancelled',
+              client,
+              audit,
+            })
+            await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: orderId, client, audit })
+          }
           await emitWorkTaskEvent({
             taskId: `cleaning_task:${String(id)}`,
             sourceType: 'cleaning_tasks',
@@ -2206,7 +2490,7 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), requireR5
           } catch (error: any) {
             logNotificationEmissionFailure('cleaning_task_bulk_deleted', String(id), error)
           }
-          addAudit('cleaning_task', String(id), 'delete', before, after, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
+          addAudit('cleaning_task', String(id), 'delete', redactPasswordAuditValues(before).value, redactPasswordAuditValues(after).value, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
         }
         await reconcileDeferredInspectionCheckinReplacement({
           taskIds: ids,
@@ -2230,17 +2514,127 @@ router.post('/tasks/bulk-delete', requirePerm('cleaning.task.assign'), requireR5
       task.status = 'cancelled'
       task.execution_state = 'cancelled'
       task.auto_sync_enabled = false
-      addAudit('cleaning_task', String(id), 'delete', before, { ...task }, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
+      if (String(task.task_type || task.type || '').trim().toLowerCase() === 'checkin_clean' && String(task.order_id || '').trim()) {
+        const audit: PasswordAuthorityAuditContext = {
+          requestId: operationId,
+          actorUserId: actorId || null,
+          actorRole: roleNamesOfRequest(req).join(',') || null,
+          client: 'web',
+        }
+        await invalidatePasswordDependentsForSourceTask({
+          sourceTaskId: id,
+          sourceOrderId: String(task.order_id),
+          reason: 'source_task_cancelled',
+          audit,
+        })
+        await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: String(task.order_id), audit })
+      }
+      addAudit('cleaning_task', String(id), 'delete', redactPasswordAuditValues(before).value, redactPasswordAuditValues({ ...task }).value, actorId, { ip: String(req.ip || ''), user_agent: String(req.headers['user-agent'] || '') })
       cnt++
     }
     return res.json({ ok: true, deleted: cnt })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'bulk_delete_failed' })
+    return res.status(Number(e?.status || 500)).json({ message: e?.message || 'bulk_delete_failed' })
+  }
+})
+
+const passwordAuthorityVerifySchema = z.object({
+  items: z.array(z.object({
+    task_id: z.string().trim().min(1),
+    fields: z.array(z.enum(['old_code', 'new_code'])).min(1).max(2),
+  }).strict()).min(1).max(50),
+  request_id: z.string().trim().min(1).max(100),
+  client: z.literal('web'),
+}).strict()
+
+router.post('/tasks/password-verify', requirePerm('cleaning.task.assign'), requireR5TaskRuntimeSchema, async (req, res) => {
+  if (!isPasswordAuthoritySchemaReady()) return res.status(503).json({ code: 'password_authority_schema_not_ready' })
+  const parsed = passwordAuthorityVerifySchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
+  const itemMap = new Map<string, Set<'old_code' | 'new_code'>>()
+  for (const item of parsed.data.items) {
+    const fields = itemMap.get(item.task_id) || new Set<'old_code' | 'new_code'>()
+    for (const field of item.fields) fields.add(field)
+    itemMap.set(item.task_id, fields)
+  }
+  const ids = Array.from(itemMap.keys()).sort()
+  try {
+    const result = await pgRunInTransaction(async (client) => {
+      const snapshotResult = await client.query(
+        `SELECT t.*, COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS normalized_property_id
+         FROM cleaning_tasks t
+         LEFT JOIN properties p_id ON p_id.id::text = t.property_id::text
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(t.property_id::text)
+         WHERE t.id::text = ANY($1::text[])
+           AND ${activeCleaningTaskWhereSql('t')}`,
+        [ids],
+      )
+      const snapshots = snapshotResult?.rows || []
+      if (snapshots.length !== ids.length) {
+        const error: any = new Error('password_authority_task_not_found')
+        error.status = 404
+        throw error
+      }
+      const propertyIds = Array.from(new Set(snapshots.map((row: any) => String(row.normalized_property_id || '').trim()).filter(Boolean))).sort()
+      for (const propertyId of propertyIds) await lockCleaningPasswordChainKey(client, propertyId)
+      const lockedResult = await client.query(
+        `SELECT * FROM cleaning_tasks
+         WHERE id::text = ANY($1::text[])
+           AND ${activeCleaningTaskWhereSql('')}
+         ORDER BY id
+         FOR UPDATE`,
+        [ids],
+      )
+      const lockedById = new Map((lockedResult?.rows || []).map((row: any) => [String(row.id), row]))
+      if (lockedById.size !== ids.length) {
+        const error: any = new Error('password_authority_task_changed')
+        error.status = 409
+        throw error
+      }
+      const verifiedPropertyIds = await normalizeCleaningPasswordChainKeys(
+        client,
+        Array.from(lockedById.values()).map((row: any) => row?.property_id),
+      )
+      if (verifiedPropertyIds.some((propertyId) => !propertyIds.includes(propertyId))) {
+        const error: any = new Error('password_chain_topology_changed_retry')
+        error.status = 409
+        throw error
+      }
+      const audit: PasswordAuthorityAuditContext = {
+        requestId: parsed.data.request_id,
+        actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+        actorRole: roleNamesOfRequest(req).join(',') || null,
+        client: 'web',
+      }
+      const updatedTaskIds: string[] = []
+      const sourceOrderIds = new Set<string>()
+      for (const id of ids) {
+        const task: any = lockedById.get(id)
+        const taskType = String(task?.task_type || task?.type || '').trim().toLowerCase()
+        const requested = Array.from(itemMap.get(id) || [])
+        const fields = assertCleaningPasswordFieldsApplicable(taskType, requested)
+        const confirmed = await confirmTaskPasswordAuthority({ taskId: id, fields, client, audit })
+        if (confirmed.updatedFields.length) updatedTaskIds.push(id)
+        if (taskType === 'checkin_clean' && confirmed.updatedFields.includes('new_code') && String(task.order_id || '').trim()) {
+          sourceOrderIds.add(String(task.order_id))
+        }
+      }
+      for (const orderId of Array.from(sourceOrderIds).sort()) {
+        await syncCheckoutOldCodeFromCheckinNewCode({ orderId, client, audit })
+        await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: orderId, client, audit })
+      }
+      return { updated_task_ids: updatedTaskIds, replayed: updatedTaskIds.length === 0 }
+    })
+    return res.json({ ok: true, ...result })
+  } catch (error: any) {
+    return res.status(Number(error?.status || 500)).json({ message: String(error?.message || 'password_authority_verify_failed') })
   }
 })
 
 const bulkPatchSchema = z.object({ ids: z.array(z.string().min(1)).min(1), patch: patchTaskSchema }).strict()
 router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5TaskRuntimeSchema, async (req, res) => {
+  if (!isPasswordAuthoritySchemaReady()) return res.status(503).json({ code: 'password_authority_schema_not_ready' })
   const parsed = bulkPatchSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!(await isValidStaffId((parsed.data.patch as any).cleaner_id ?? null, 'cleaner'))) return res.status(400).json({ message: '无效的清洁人员' })
@@ -2248,6 +2642,8 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
   if (!(await isValidAnyStaffId((parsed.data.patch as any).assignee_id ?? null))) return res.status(400).json({ message: '无效的执行人' })
   const ids = Array.from(new Set(parsed.data.ids.map((x) => String(x).trim()).filter(Boolean)))
   const basePatch: any = { ...parsed.data.patch }
+  const bulkPasswordVerification = basePatch.password_verification
+  delete basePatch.password_verification
   if (basePatch.guest_special_request === undefined && basePatch.note !== undefined) basePatch.guest_special_request = basePatch.note
   delete basePatch.note
   if (basePatch.keys_required === null) basePatch.keys_required = 1
@@ -2281,6 +2677,16 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
           const snapshotResult = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
           const snapshot = snapshotResult?.rows?.[0] || null
           if (!snapshot) return null
+          const hasPasswordWrite = basePatch.old_code !== undefined || basePatch.new_code !== undefined || !!bulkPasswordVerification?.fields?.length
+          const topologyTouched = basePatch.property_id !== undefined || basePatch.task_date !== undefined || basePatch.status !== undefined
+          let lockedPasswordProperties: string[] = []
+          if (hasPasswordWrite || topologyTouched) {
+            lockedPasswordProperties = await normalizeCleaningPasswordChainKeys(client, [
+              String(snapshot.property_id || '').trim(),
+              String(basePatch.property_id || '').trim(),
+            ])
+            for (const propertyId of lockedPasswordProperties) await lockCleaningPasswordChainKey(client, propertyId)
+          }
           const initialTurnoverTarget = turnoverInspectionScopeTarget(snapshot, basePatch)
           if (initialTurnoverTarget) {
             await lockCleaningTurnoverKey(client, initialTurnoverTarget.propertyId, initialTurnoverTarget.taskDate)
@@ -2288,6 +2694,26 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
           const r0 = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1 FOR UPDATE', [id])
           const before = r0?.rows?.[0] || snapshot
           if (!before) return null
+          if (hasPasswordWrite || topologyTouched) {
+            const verifiedProperties = await normalizeCleaningPasswordChainKeys(client, [before.property_id, basePatch.property_id])
+            if (verifiedProperties.some((propertyId) => !lockedPasswordProperties.includes(propertyId))) {
+              const error: any = new Error('password_chain_topology_changed_retry')
+              error.status = 409
+              throw error
+            }
+            if (basePatch.property_id !== undefined && String(before.order_id || '').trim()) {
+              const currentProperty = String(before.property_id || '').trim()
+              const requestedProperty = String(basePatch.property_id || '').trim()
+              const propertyIdentityChanged = !currentProperty || !requestedProperty
+                ? currentProperty !== requestedProperty
+                : verifiedProperties.length !== 1
+              if (propertyIdentityChanged) {
+                const error: any = new Error('order_linked_task_property_managed_by_order')
+                error.status = 400
+                throw error
+              }
+            }
+          }
           const patch: any = { ...basePatch }
           const isCheckinSiteExecution = isCheckinSiteExecutionTask({
             task_type: patch.task_type ?? before.task_type,
@@ -2332,46 +2758,98 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
               patch.status = assignedStatusFromAssignees(nextCleanerId, nextInspectorId)
             }
           }
-          patch.updated_at = new Date().toISOString()
+          const requestedPasswordFields = Array.from(new Set([
+            ...(basePatch.old_code !== undefined ? ['old_code' as const] : []),
+            ...(basePatch.new_code !== undefined ? ['new_code' as const] : []),
+            ...((bulkPasswordVerification?.fields || []) as Array<'old_code' | 'new_code'>),
+          ]))
+          const nextTaskType = String(patch.task_type || patch.type || before?.task_type || before?.type || '').trim().toLowerCase()
+          const passwordFields = assertCleaningPasswordFieldsApplicable(nextTaskType, requestedPasswordFields)
+          if (passwordFields.length) assertPasswordAuthorityTaskMutable({ ...before, ...patch })
+          const passwordAudit: PasswordAuthorityAuditContext = {
+            requestId: bulkPasswordVerification?.request_id || uuid(),
+            actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+            actorRole: roleNamesOfRequest(req).join(',') || null,
+            client: bulkPasswordVerification?.client || 'web',
+          }
+          const claimedPasswordFields = passwordFields.length
+            ? await claimTaskPasswordAuthorityFields({ taskId: String(id), fields: passwordFields, client, audit: passwordAudit })
+            : []
+          for (const field of requestedPasswordFields) {
+            if (!claimedPasswordFields.includes(field)) delete patch[field]
+          }
+          const substantiveKeys = Object.keys(patch).filter((key) => key !== 'updated_at' && patch[key] !== undefined)
+          if (substantiveKeys.length) patch.updated_at = new Date().toISOString()
+          else delete patch.updated_at
           const keys = Object.keys(patch).filter((k) => patch[k] !== undefined)
-          if (!keys.length) return before
-          const set = keys.map((k, i) => `"${k}"=$${i + 1}`).join(', ')
-          const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
-          const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`
-          const r1 = await client.query(sql, [...values, id])
-          const after = r1?.rows?.[0] || before
+          let after = before
+          if (keys.length) {
+            const set = keys.map((k, i) => `"${k}"=$${i + 1}`).join(', ')
+            const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]))
+            const sql = `UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`
+            const r1 = await client.query(sql, [...values, id])
+            after = r1?.rows?.[0] || before
+          }
+          let confirmedPasswordFields: Array<'old_code' | 'new_code'> = []
+          if (claimedPasswordFields.length) {
+            const confirmed = await confirmTaskPasswordAuthority({
+              taskId: String(id),
+              fields: claimedPasswordFields,
+              claimedFields: claimedPasswordFields,
+              client,
+              audit: passwordAudit,
+            })
+            confirmedPasswordFields = confirmed.updatedFields
+            after = confirmed.task || after
+          }
           if (
-            basePatch.new_code !== undefined &&
+            confirmedPasswordFields.includes('new_code') &&
             String(after?.order_id || '').trim() &&
             String(after?.task_type || after?.type || '').trim().toLowerCase() === 'checkin_clean'
           ) {
-            await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(after.order_id), client })
+            await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(after.order_id), client, audit: passwordAudit })
+            await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: String(after.order_id), client, audit: passwordAudit })
+          }
+          if (topologyTouched) {
+            await reconcilePasswordAuthorityAfterTaskTopologyChange({ before, after, client, audit: passwordAudit })
+            const refreshed = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+            after = refreshed?.rows?.[0] || after
           }
           const changedFields = Object.keys(patch || {}).filter((key) => patch[key] !== undefined)
-          const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key))
-          const arrangementRevision = buildMz031CleaningArrangementRevision(
-            before,
-            after,
-            mz031ManagementStatusArrangementReasons(before, after, basePatch.status !== undefined),
-          )
-          await emitWorkTaskEvent({
-            taskId: `cleaning_task:${String(id)}`,
-            sourceType: 'cleaning_tasks',
-            sourceRefIds: [String(id)],
-            eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : (String(after?.status || '').trim().toLowerCase() === 'cancelled' ? 'TASK_REMOVED' : 'TASK_UPDATED'),
-            changeScope: assignmentChanged ? 'membership' : (String(after?.status || '').trim().toLowerCase() === 'cancelled' ? 'membership' : 'list'),
-            changedFields,
-            patch: Object.fromEntries(changedFields.map((field) => [field, (after as any)?.[field]])),
-            payload: arrangementRevision ? { arrangement_revision: arrangementRevision } : undefined,
-            causedByUserId: String((req as any)?.user?.sub || '').trim() || null,
-            visibilityHints: buildCleaningTaskVisibilityHints(after || before),
-          }, client)
+          if (changedFields.length) {
+            const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => changedFields.includes(key))
+            const arrangementRevision = buildMz031CleaningArrangementRevision(
+              before,
+              after,
+              mz031ManagementStatusArrangementReasons(before, after, basePatch.status !== undefined),
+            )
+            await emitWorkTaskEvent({
+              taskId: `cleaning_task:${String(id)}`,
+              sourceType: 'cleaning_tasks',
+              sourceRefIds: [String(id)],
+              eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : (String(after?.status || '').trim().toLowerCase() === 'cancelled' ? 'TASK_REMOVED' : 'TASK_UPDATED'),
+              changeScope: assignmentChanged ? 'membership' : (String(after?.status || '').trim().toLowerCase() === 'cancelled' ? 'membership' : 'list'),
+              changedFields,
+              patch: Object.fromEntries(changedFields.map((field) => [field, (after as any)?.[field]])),
+              payload: arrangementRevision ? { arrangement_revision: arrangementRevision } : undefined,
+              causedByUserId: String((req as any)?.user?.sub || '').trim() || null,
+              visibilityHints: buildCleaningTaskVisibilityHints(after || before),
+            }, client)
+          }
           return after
           })
         }
         const task = (db.cleaningTasks as any[]).find((t: any) => String(t.id) === String(id))
         if (!task) return null
+        const memoryBefore = { ...task }
         const patch: any = { ...basePatch }
+        if (patch.property_id !== undefined
+          && String((task as any).order_id || '').trim()
+          && String(patch.property_id || '').trim() !== String((task as any).property_id || '').trim()) {
+          const error: any = new Error('order_linked_task_property_managed_by_order')
+          error.status = 400
+          throw error
+        }
         const isCheckinSiteExecution = isCheckinSiteExecutionTask({
           task_type: patch.task_type ?? task.task_type,
           inspection_scope: patch.inspection_scope ?? task.inspection_scope,
@@ -2381,6 +2859,26 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
         }
         validateAndApplyInspectionPatch({ patch, current: task })
         assertMemoryTurnoverInspectionScope(String(id), task, patch)
+        const requestedPasswordFields = Array.from(new Set([
+          ...(basePatch.old_code !== undefined ? ['old_code' as const] : []),
+          ...(basePatch.new_code !== undefined ? ['new_code' as const] : []),
+          ...((bulkPasswordVerification?.fields || []) as Array<'old_code' | 'new_code'>),
+        ]))
+        const memoryTaskType = String(patch.task_type || patch.type || task.task_type || task.type || '').trim().toLowerCase()
+        const passwordFields = assertCleaningPasswordFieldsApplicable(memoryTaskType, requestedPasswordFields)
+        if (passwordFields.length) assertPasswordAuthorityTaskMutable({ ...task, ...patch })
+        const passwordAudit: PasswordAuthorityAuditContext = {
+          requestId: bulkPasswordVerification?.request_id || uuid(),
+          actorUserId: String((req as any)?.user?.sub || '').trim() || null,
+          actorRole: roleNamesOfRequest(req).join(',') || null,
+          client: bulkPasswordVerification?.client || 'web',
+        }
+        const claimedPasswordFields = passwordFields.length
+          ? await claimTaskPasswordAuthorityFields({ taskId: String(id), fields: passwordFields, audit: passwordAudit })
+          : []
+        for (const field of requestedPasswordFields) {
+          if (!claimedPasswordFields.includes(field)) delete patch[field]
+        }
         if (patch.property_id !== undefined) task.property_id = patch.property_id
         if (patch.task_date !== undefined) { task.task_date = patch.task_date; task.date = patch.task_date }
         if (patch.status !== undefined) task.status = patch.status
@@ -2395,12 +2893,21 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
         if (patch.new_code !== undefined) task.new_code = patch.new_code
         if (patch.scheduled_at !== undefined) task.scheduled_at = patch.scheduled_at
         if (patch.guest_special_request !== undefined) task.guest_special_request = patch.guest_special_request
-        if (
-          patch.new_code !== undefined &&
-          String((task as any).order_id || '').trim() &&
-          String((task as any).task_type || (task as any).type || '').trim().toLowerCase() === 'checkin_clean'
-        ) {
-          await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String((task as any).order_id) })
+        let confirmedPasswordFields: Array<'old_code' | 'new_code'> = []
+        if (claimedPasswordFields.length) {
+          const confirmed = await confirmTaskPasswordAuthority({
+            taskId: String(id),
+            fields: claimedPasswordFields,
+            claimedFields: claimedPasswordFields,
+            audit: passwordAudit,
+          })
+          confirmedPasswordFields = confirmed.updatedFields
+        }
+        if (confirmedPasswordFields.includes('new_code')
+          && String((task as any).order_id || '').trim()
+          && String((task as any).task_type || (task as any).type || '').trim().toLowerCase() === 'checkin_clean') {
+          await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String((task as any).order_id), audit: passwordAudit })
+          await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: String((task as any).order_id), audit: passwordAudit })
         }
         {
           const beforeStatus = String((task as any).status || 'pending')
@@ -2419,6 +2926,9 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
             const inspector = String(task.inspector_id || '').trim()
             ;(task as any).status = assignedStatusFromAssignees(cleaner, inspector)
           }
+        }
+        if (patch.property_id !== undefined || patch.task_date !== undefined || patch.status !== undefined) {
+          await reconcilePasswordAuthorityAfterTaskTopologyChange({ before: memoryBefore, after: task, audit: passwordAudit })
         }
         return task
       })()
@@ -2440,7 +2950,7 @@ router.post('/tasks/bulk-patch', requirePerm('cleaning.task.assign'), requireR5T
     if (sendTurnoverInspectionScopeConflict(res, e)) return
     const conflict = inspectionAssignmentConflictPayload(e)
     if (conflict) return res.status(409).json(conflict)
-    return res.status(500).json({ message: e?.message || 'bulk_patch_failed' })
+    return res.status(Number(e?.status || 500)).json({ message: e?.message || 'bulk_patch_failed' })
   }
 })
 
@@ -2591,7 +3101,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
            COALESCE(p_id.code::text, p_code.code::text) AS property_code,
            COALESCE(p_id.region::text, p_code.region::text) AS property_region,
-           t.task_type,
+           COALESCE(NULLIF(t.task_type, ''), NULLIF(t.type, '')) AS task_type,
            t.linked_checkout_task_id,
            COALESCE(t.task_date, t.date)::text AS task_date,
            t.status,
@@ -2611,6 +3121,11 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
            t.auto_sync_enabled,
 	           t.old_code,
 	           t.new_code,
+	           t.old_code_authority_status,
+	           t.new_code_authority_status,
+	           t.old_code_source_task_id,
+	           t.old_code_source_order_id,
+	           t.old_code_source_field,
 	           t.guest_special_request,
 	         t.note,
 	         (o.confirmation_code::text) AS order_code,
@@ -2694,7 +3209,7 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
              id::text AS id,
              superseded_by::text AS superseded_by,
              property_id::text AS property_id,
-             task_type,
+             COALESCE(NULLIF(task_type, ''), NULLIF(type, '')) AS task_type,
              COALESCE(task_date, date)::text AS task_date,
              checkout_time,
              checkin_time,
@@ -2784,8 +3299,15 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
           key_photo_uploaded_at: row.key_photo_uploaded_at ? String(row.key_photo_uploaded_at) : null,
           has_key_photo: !!row.has_key_photo,
           auto_sync_enabled: row.auto_sync_enabled !== false,
-          old_code: row.old_code != null ? String(row.old_code || '') : null,
-          new_code: row.new_code != null ? String(row.new_code || '') : null,
+          old_code: turnoverDisplay.old_code,
+          new_code: cleaningTaskNewCodeForDisplay(row),
+          password_authority: {
+            old_code_status: rawType === 'checkout_clean' ? (turnoverDisplay.old_code_authority_status || 'needs_review') : 'not_applicable',
+            new_code_status: rawType === 'checkin_clean' ? (row.new_code_authority_status || 'needs_review') : 'not_applicable',
+            old_code_source_task_id: turnoverDisplay.old_code_source_task_id || null,
+            old_code_source_order_id: turnoverDisplay.old_code_source_order_id || null,
+            old_code_source_field: turnoverDisplay.old_code_source_field || null,
+          },
           guest_special_request: row.guest_special_request != null ? String(row.guest_special_request || '') : null,
           note: row.note != null ? String(row.note || '') : null,
           nights: row.nights != null ? Number(row.nights) : null,
@@ -2921,8 +3443,15 @@ router.get('/calendar-range', requireAnyPerm(['cleaning.view', 'cleaning.schedul
         inspector_id: t.inspector_id ? String(t.inspector_id) : null,
         scheduled_at: t.scheduled_at ? String(t.scheduled_at) : null,
         auto_sync_enabled: t.auto_sync_enabled !== false,
-        old_code: t.old_code != null ? String(t.old_code || '') : null,
-        new_code: t.new_code != null ? String(t.new_code || '') : null,
+        old_code: cleaningTaskOldCodeForDisplay(t),
+        new_code: cleaningTaskNewCodeForDisplay(t),
+        password_authority: {
+          old_code_status: rawType === 'checkout_clean' ? (t.old_code_authority_status || 'needs_review') : 'not_applicable',
+          new_code_status: rawType === 'checkin_clean' ? (t.new_code_authority_status || 'needs_review') : 'not_applicable',
+          old_code_source_task_id: t.old_code_source_task_id || null,
+          old_code_source_order_id: t.old_code_source_order_id || null,
+          old_code_source_field: t.old_code_source_field || null,
+        },
         guest_special_request: t.guest_special_request != null ? String(t.guest_special_request || '') : null,
         note: t.note != null ? String(t.note || '') : null,
         nights: t.nights_override != null ? Number(t.nights_override) : (order?.nights != null ? Number(order.nights) : null),

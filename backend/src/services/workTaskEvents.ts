@@ -4,6 +4,7 @@ import { Pool, PoolClient } from 'pg'
 import { v4 as uuid } from 'uuid'
 import { hasPg, pgPool } from '../dbAdapter'
 import { assertR5TaskRuntimeSchemaReady } from '../lib/r5RequestSchema'
+import { passwordAuditChangedFields, redactPasswordAuditValues } from '../lib/passwordAudit'
 
 export type WorkTaskEventType =
   | 'TASK_CREATED'
@@ -404,15 +405,20 @@ export async function emitWorkTaskEvent(input: EmitWorkTaskEventInput, client?: 
   const taskVersion = Number(versionResult?.rows?.[0]?.last_version || 1)
   const seqResult = await executor.query(`SELECT nextval('work_task_events_sequence_no_seq') AS sequence_no`)
   const sequenceNo = Number(seqResult?.rows?.[0]?.sequence_no || 0)
+  const sanitizedPatch = redactPasswordAuditValues(input.patch && typeof input.patch === 'object' ? input.patch : {})
+  const sanitizedPayload = redactPasswordAuditValues(input.payload && typeof input.payload === 'object' ? input.payload : {})
+  const redactedFields = Array.from(new Set([...sanitizedPatch.redactedFields, ...sanitizedPayload.redactedFields])).sort()
+  const changedFields = passwordAuditChangedFields(input.changedFields, redactedFields)
   const payload = {
     task_id: input.taskId,
     source_type: input.sourceType,
     source_ref_ids: toArray(input.sourceRefIds),
     event_type: input.eventType,
     change_scope: input.changeScope,
-    changed_fields: toArray(input.changedFields),
-    patch: input.patch && typeof input.patch === 'object' ? input.patch : {},
-    ...(input.payload && typeof input.payload === 'object' ? input.payload : {}),
+    changed_fields: changedFields,
+    patch: sanitizedPatch.value,
+    ...sanitizedPayload.value,
+    ...(redactedFields.length ? { credential_values_redacted: true, credential_fields: redactedFields } : {}),
     occurred_at: occurredAt,
     task_version: taskVersion,
     sequence_no: sequenceNo,
@@ -432,7 +438,7 @@ export async function emitWorkTaskEvent(input: EmitWorkTaskEventInput, client?: 
       toArray(input.sourceRefIds),
       input.eventType,
       input.changeScope,
-      toArray(input.changedFields),
+      changedFields,
       JSON.stringify(payload),
       occurredAt,
       input.causedByUserId || null,

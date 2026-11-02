@@ -13,17 +13,22 @@ import {
   mergeTurnoverTaskPlan,
   resolveBoardInspectionDueDate,
 } from '../lib/cleaningInspection'
-import { buildCleaningTurnoverDisplay } from '../lib/cleaningTurnoverDisplay'
+import { buildCleaningTurnoverDisplay, cleaningTaskNewCodeForDisplay, cleaningTaskOldCodeForDisplay } from '../lib/cleaningTurnoverDisplay'
 import { projectDailyTaskStats, type DailyTaskStatsGroup } from '../lib/dailyTaskExecutionStats'
 import {
   GUEST_READY_NOTIFICATION_PERMISSION,
+  buildPriorTaskGuestReadyNotification,
   buildGuestReadyNotificationProjection,
   buildGuestReadyOutsideKeyProjection,
+  buildTaskGuestReadyNotificationProjection,
   guestReadyNotificationAction,
   guestReadyOutsideKeyAction,
+  hasCurrentGuestReadyReadinessEvidence,
   isGuestReadyNotificationCustomerServiceRole,
+  isCurrentUnlinkedGuestReadyTaskProjection,
   isGuestReadyNotificationRequirementBindingCurrent,
   loadGuestReadyNotificationOrderStates,
+  loadGuestReadyNotificationTaskStates,
   type GuestReadyNotificationAction,
   type GuestReadyNotificationProjection,
   type GuestReadyOutsideKeyAction,
@@ -127,6 +132,13 @@ type BoardTask = {
   can_configure_inspection?: boolean
   old_code?: string | null
   new_code?: string | null
+  password_authority?: {
+    old_code_status?: string | null
+    new_code_status?: string | null
+    old_code_source_task_id?: string | null
+    old_code_source_order_id?: string | null
+    old_code_source_field?: string | null
+  }
   nights?: number | null
   summary_checkout_time?: string | null
   summary_checkin_time?: string | null
@@ -155,6 +167,7 @@ type BoardTask = {
   daily_stats_group?: DailyTaskStatsGroup | null
   daily_stats_key?: string | null
   property_ready_for_guest_notification?: boolean
+  guest_ready_checkin_task_id?: string | null
   guest_ready_notification?: GuestReadyNotificationProjection | null
   guest_ready_outside_key?: GuestReadyOutsideKeyProjection | null
   available_actions?: Array<GuestReadyNotificationAction | GuestReadyOutsideKeyAction>
@@ -1496,6 +1509,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
           order_id: checkin.order_id || null,
           order_id_checkout: deferred.order_id_checkout || deferred.order_id || null,
           order_id_checkin: checkin.order_id_checkin || checkin.order_id || null,
+          guest_ready_checkin_task_id: checkinTaskId,
           inspection_mode: checkin.inspection_mode,
           inspection_scope: checkin.inspection_scope,
           inspection_due_date: null,
@@ -1651,6 +1665,7 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         order_id: null,
         order_id_checkout: turnoverDisplay.checkout_order_id,
         order_id_checkin: turnoverDisplay.checkin_order_id,
+        guest_ready_checkin_task_id: checkin.task_ids[0] || checkin.source_id || null,
         auto_sync_enabled: autoSync,
         has_key_photo: all.some((x) => !!x.has_key_photo),
         key_photo_uploaded_at: all.find((x) => text(x.key_photo_uploaded_at))?.key_photo_uploaded_at || null,
@@ -1659,6 +1674,13 @@ function mergeCleaningTasks(list: BoardTask[]): BoardTask[] {
         inspection_due_date: turnoverPlan.inspectionDueDate,
         old_code: turnoverDisplay.old_code,
         new_code: turnoverDisplay.new_code,
+        password_authority: {
+          old_code_status: turnoverDisplay.old_code_authority_status || 'needs_review',
+          new_code_status: turnoverDisplay.new_code_authority_status || 'needs_review',
+          old_code_source_task_id: turnoverDisplay.old_code_source_task_id || null,
+          old_code_source_order_id: turnoverDisplay.old_code_source_order_id || null,
+          old_code_source_field: turnoverDisplay.old_code_source_field || null,
+        },
         guest_special_request: turnoverDisplay.guest_request_summary,
         guest_request_checkout: turnoverDisplay.guest_request_checkout,
         guest_request_checkin: turnoverDisplay.guest_request_checkin,
@@ -1716,7 +1738,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id,
          COALESCE(p_id.code::text, p_code.code::text) AS property_code,
          COALESCE(p_id.region::text, p_code.region::text) AS property_region,
-         t.task_type,
+         COALESCE(NULLIF(t.task_type, ''), NULLIF(t.type, '')) AS task_type,
          COALESCE(t.task_date, t.date)::text AS task_date,
          t.status,
          t.checked_out_at,
@@ -1746,6 +1768,11 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
          t.auto_sync_enabled,
          t.old_code,
          t.new_code,
+         t.old_code_authority_status,
+         t.new_code_authority_status,
+         t.old_code_source_task_id,
+         t.old_code_source_order_id,
+         t.old_code_source_field,
          (o.confirmation_code::text) AS order_code,
          o.status::text AS order_status,
          o.checkin::text AS order_checkin,
@@ -1803,7 +1830,7 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
            id::text AS id,
            superseded_by::text AS superseded_by,
            property_id::text AS property_id,
-           task_type,
+           COALESCE(NULLIF(task_type, ''), NULLIF(type, '')) AS task_type,
            COALESCE(task_date, date)::text AS task_date,
            checkout_time,
            checkin_time,
@@ -1811,7 +1838,12 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
            nights_override,
            guest_special_request,
            old_code,
-           new_code
+          new_code,
+          old_code_authority_status,
+          new_code_authority_status,
+          old_code_source_task_id,
+          old_code_source_order_id,
+          old_code_source_field
          FROM cleaning_tasks
          WHERE execution_state = 'superseded'
            AND superseded_by::text = ANY($1::text[])
@@ -1892,14 +1924,22 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           auto_sync_enabled: row.auto_sync_enabled !== false,
           has_key_photo: !!row.has_key_photo,
           key_photo_uploaded_at: row.key_photo_uploaded_at ? String(row.key_photo_uploaded_at) : null,
-          old_code: row.old_code != null ? String(row.old_code || '') : null,
-          new_code: row.new_code != null ? String(row.new_code || '') : null,
+          old_code: cleaningTaskOldCodeForDisplay(row),
+          new_code: cleaningTaskNewCodeForDisplay(row),
+          password_authority: {
+            old_code_status: rawType === 'checkout_clean' ? (row.old_code_authority_status || 'needs_review') : 'not_applicable',
+            new_code_status: rawType === 'checkin_clean' ? (row.new_code_authority_status || 'needs_review') : 'not_applicable',
+            old_code_source_task_id: row.old_code_source_task_id || null,
+            old_code_source_order_id: row.old_code_source_order_id || null,
+            old_code_source_field: row.old_code_source_field || null,
+          },
           guest_special_request: row.guest_special_request != null ? String(row.guest_special_request || '') : null,
           keys_required: row.order_keys_required == null ? (row.keys_required == null ? 1 : Number(row.keys_required)) : Number(row.order_keys_required),
           keys_required_checkout: rawType === 'checkout_clean' ? (row.order_keys_required == null ? (row.keys_required == null ? 1 : Number(row.keys_required)) : Number(row.order_keys_required)) : null,
           keys_required_checkin: rawType === 'checkin_clean' ? (row.order_keys_required == null ? (row.keys_required == null ? 1 : Number(row.keys_required)) : Number(row.order_keys_required)) : null,
           order_id_checkout: rawType === 'checkout_clean' && row.order_id ? String(row.order_id) : null,
           order_id_checkin: rawType === 'checkin_clean' && row.order_id ? String(row.order_id) : null,
+          guest_ready_checkin_task_id: rawType === 'checkin_clean' ? sourceId : null,
           inspection_scope: rawType === 'checkin_clean' ? normalizeInspectionScope(row.inspection_scope) : null,
           nights: row.nights != null ? Number(row.nights) : null,
           summary_checkout_time: text(row.checkout_time) || DEFAULT_SUMMARY_CHECKOUT_TIME,
@@ -1997,8 +2037,15 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
           auto_sync_enabled: row.auto_sync_enabled !== false,
           has_key_photo: !!row.has_key_photo,
           key_photo_uploaded_at: row.key_photo_uploaded_at ? String(row.key_photo_uploaded_at) : null,
-          old_code: row.old_code != null ? String(row.old_code || '') : null,
-          new_code: row.new_code != null ? String(row.new_code || '') : null,
+          old_code: cleaningTaskOldCodeForDisplay(row),
+          new_code: cleaningTaskNewCodeForDisplay(row),
+          password_authority: {
+            old_code_status: rawType === 'checkout_clean' ? (row.old_code_authority_status || 'needs_review') : 'not_applicable',
+            new_code_status: rawType === 'checkin_clean' ? (row.new_code_authority_status || 'needs_review') : 'not_applicable',
+            old_code_source_task_id: row.old_code_source_task_id || null,
+            old_code_source_order_id: row.old_code_source_order_id || null,
+            old_code_source_field: row.old_code_source_field || null,
+          },
           inspection_scope: rawType === 'checkin_clean' ? normalizeInspectionScope(row.inspection_scope) : null,
           nights: row.nights != null ? Number(row.nights) : null,
           checkout_task_date: d,
@@ -2086,14 +2133,22 @@ async function loadCleaningTasks(date: string, includeOverdue: boolean, includeF
         order_id: row.order_id ? String(row.order_id) : null,
         order_id_checkout: lower(row.task_type) === 'checkout_clean' && row.order_id ? String(row.order_id) : null,
         order_id_checkin: lower(row.task_type) === 'checkin_clean' && row.order_id ? String(row.order_id) : null,
+        guest_ready_checkin_task_id: lower(row.task_type) === 'checkin_clean' ? String(row.id) : null,
         order_code: order?.confirmation_code ? String(order.confirmation_code) : null,
         checkin_sync_status: lower(row.task_type) === 'checkin_clean' ? (row.order_id ? 'synced' : 'pending') : null,
         scheduled_at: row.scheduled_at ? String(row.scheduled_at) : null,
         auto_sync_enabled: row.auto_sync_enabled !== false,
         has_key_photo: false,
         key_photo_uploaded_at: null,
-        old_code: row.old_code != null ? String(row.old_code || '') : null,
-        new_code: row.new_code != null ? String(row.new_code || '') : null,
+        old_code: cleaningTaskOldCodeForDisplay(row),
+        password_authority: {
+          old_code_status: lower(row.task_type || row.type) === 'checkout_clean' ? (row.old_code_authority_status || 'needs_review') : 'not_applicable',
+          new_code_status: lower(row.task_type || row.type) === 'checkin_clean' ? (row.new_code_authority_status || 'needs_review') : 'not_applicable',
+          old_code_source_task_id: row.old_code_source_task_id || null,
+          old_code_source_order_id: row.old_code_source_order_id || null,
+          old_code_source_field: row.old_code_source_field || null,
+        },
+        new_code: cleaningTaskNewCodeForDisplay(row),
         inspection_scope: lower(row.task_type) === 'checkin_clean' ? normalizeInspectionScope(row.inspection_scope) : null,
         nights: row.nights_override != null ? Number(row.nights_override) : null,
         summary_checkout_time: text(row.checkout_time) || DEFAULT_SUMMARY_CHECKOUT_TIME,
@@ -2627,15 +2682,27 @@ export async function buildTaskCenterDay(
   const guestReadyStatesByOrder = canManageGuestReadyNotification && hasPg && pgPool
     ? await loadGuestReadyNotificationOrderStates(pgPool, visibleCleaningTasks.map((task) => task.order_id_checkin))
     : new Map<string, any>()
+  const guestReadyTaskIds = visibleCleaningTasks.map((task) => {
+    const orderId = text(task.order_id_checkin)
+    const orderState = orderId ? guestReadyStatesByOrder.get(orderId) : null
+    return text(orderState?.current_checkin_task_id || task.guest_ready_checkin_task_id)
+  })
+  const guestReadyStatesByTask = canManageGuestReadyNotification && hasPg && pgPool
+    ? await loadGuestReadyNotificationTaskStates(pgPool, guestReadyTaskIds)
+    : new Map<string, any>()
   const projectedCleaningTasks = visibleCleaningTasks.map((task) => {
     const orderIdCheckin = text(task.order_id_checkin)
     const state = orderIdCheckin ? guestReadyStatesByOrder.get(orderIdCheckin) : null
+    const guestReadyTaskId = text(state?.current_checkin_task_id || task.guest_ready_checkin_task_id)
+    const taskState = guestReadyTaskId ? guestReadyStatesByTask.get(guestReadyTaskId) : null
     const currentCheckin = state?.current_checkin_count === 1
     const notificationBindingCurrent = isGuestReadyNotificationRequirementBindingCurrent({
       notifiedCheckinTaskId: state?.notified_checkin_task_id,
       notifiedRequirementVersion: state?.notified_requirement_version,
       currentCheckinTaskId: state?.current_checkin_task_id,
       currentRequirementVersion: state?.current_requirement_version,
+      notifiedAt: state?.notified_at,
+      latestLegacyAssignmentChangedAt: state?.latest_legacy_assignment_changed_at,
     })
     const guestReadyOutsideKey = canManageGuestReadyNotification && orderIdCheckin
       ? buildGuestReadyOutsideKeyProjection({
@@ -2648,6 +2715,24 @@ export async function buildTaskCenterDay(
           currentCheckin,
         })
       : null
+    const priorTaskNotification = orderIdCheckin && taskState
+      ? buildPriorTaskGuestReadyNotification({
+          taskId: guestReadyTaskId,
+          notifiedAt: taskState.notified_at,
+          notifiedByUserId: taskState.notified_by_user_id,
+          notifiedByName: taskState.notified_by_name,
+          version: taskState.version,
+          lastAction: taskState.last_action,
+          lastActionAt: taskState.last_action_at,
+          lastActorUserId: taskState.last_actor_user_id,
+          lastActorName: taskState.last_actor_name,
+        })
+      : null
+    const currentUnlinkedCheckin = isCurrentUnlinkedGuestReadyTaskProjection({
+      orderId: orderIdCheckin,
+      taskId: guestReadyTaskId,
+      taskDate: task.task_date,
+    })
     const guestReadyNotification = canManageGuestReadyNotification && orderIdCheckin
       ? buildGuestReadyNotificationProjection({
           orderId: orderIdCheckin,
@@ -2655,13 +2740,34 @@ export async function buildTaskCenterDay(
           notifiedByUserId: state?.notified_by_user_id,
           notifiedByName: state?.notified_by_name,
           version: state?.version,
-          propertyReady: task.property_ready_for_guest_notification === true || lower(task.status) === 'ready',
+          propertyReady: hasCurrentGuestReadyReadinessEvidence({
+            propertyReady: task.property_ready_for_guest_notification === true || lower(task.status) === 'ready',
+            currentCheckinTaskKeyHandoverComplete: taskState?.key_handover_complete === true,
+          }),
           currentCheckin,
           automaticEarlyArrival: task.is_early_checkin === true,
           outsideKeyRequired: guestReadyOutsideKey?.required === true,
           notificationBindingCurrent,
+          includeAllOrderBoundCheckins: true,
+          priorTaskNotification,
         })
-      : null
+      : canManageGuestReadyNotification && guestReadyTaskId
+        ? buildTaskGuestReadyNotificationProjection({
+            taskId: guestReadyTaskId,
+            notifiedAt: taskState?.notified_at,
+            notifiedByUserId: taskState?.notified_by_user_id,
+            notifiedByName: taskState?.notified_by_name,
+            version: taskState?.version,
+            lastAction: taskState?.last_action,
+            lastActionAt: taskState?.last_action_at,
+            lastActorUserId: taskState?.last_actor_user_id,
+            lastActorName: taskState?.last_actor_name,
+            keyHandoverComplete: taskState?.key_handover_complete === true,
+            currentUnlinkedCheckin,
+            notificationBindingCurrent: taskState?.notification_binding_current === true,
+            unavailableReason: currentUnlinkedCheckin ? undefined : 'checkin_order_changed',
+          })
+        : null
     const guestAction = guestReadyNotificationAction(guestReadyNotification, canManageGuestReadyNotification)
     const outsideKeyAction = guestReadyOutsideKeyAction(guestReadyOutsideKey, canManageGuestReadyNotification)
     const guestReadyActions = [guestAction, outsideKeyAction].filter(
@@ -3659,7 +3765,12 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
               inspection_due_date: task.inspection_due_date ?? null,
               status: task.status,
             },
-            payload: diff.arrangementRevision ? { arrangement_revision: diff.arrangementRevision } : undefined,
+            payload: diff.arrangementRevision ? {
+              arrangement_revision: {
+                ...diff.arrangementRevision,
+                guest_ready_requirement_version: Number(task.guest_ready_checkin_requirement_version || 0),
+              },
+            } : undefined,
             causedByUserId: String(user.sub || '').trim() || null,
             visibilityHints: buildCleaningTaskVisibilityHints(task),
           })
