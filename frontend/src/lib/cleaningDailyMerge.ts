@@ -27,6 +27,89 @@ export type ManualCheckinLinkSelection = {
 
 export type ManualCheckinCandidateLoadState = 'loading' | 'ready' | 'error'
 
+export type ManualCheckinCandidateScope = {
+  property_id: string
+  task_date: string
+}
+
+export type ManualCheckinCheckoutCandidate = {
+  id: string
+  property_id: string
+  property_code: string
+  task_date: string
+  checkout_time: string | null
+  status: string | null
+}
+
+const MANUAL_CHECKIN_LINK_STALE_ERROR_CODES = new Set([
+  'manual_checkin_checkout_link_conflict',
+  'manual_checkin_checkout_link_decision_required',
+])
+
+export function manualCheckinLinkErrorNeedsCandidateRefresh(error: any): boolean {
+  return MANUAL_CHECKIN_LINK_STALE_ERROR_CODES.has(String(error?.code || '').trim())
+}
+
+export function clearManualCheckinLinkSelection<T extends ManualCheckinLinkSelection>(current: T): T {
+  return {
+    ...current,
+    linked_checkout_task_id: null,
+    checkin_link_decision: null,
+    checkin_link_decision_user_selected: false,
+  }
+}
+
+export function sameManualCheckinCandidateScope(
+  left: ManualCheckinCandidateScope | null,
+  right: ManualCheckinCandidateScope | null,
+): boolean {
+  if (!left || !right) return false
+  return String(left.property_id || '').trim() === String(right.property_id || '').trim()
+    && dayOnly(left.task_date) === dayOnly(right.task_date)
+}
+
+export function normalizeManualCheckinCheckoutCandidates(
+  payload: any,
+  expectedPropertyId0?: string,
+  expectedTaskDate0?: string,
+): ManualCheckinCheckoutCandidate[] {
+  const expectedPropertyId = String(expectedPropertyId0 || '').trim()
+  const expectedTaskDate = expectedTaskDate0 ? dayOnly(expectedTaskDate0) : null
+  if (!payload || !Array.isArray(payload.items)) throw new Error('invalid_checkin_link_candidates_response')
+  const rows = payload.items
+  const seen = new Set<string>()
+  const out: ManualCheckinCheckoutCandidate[] = []
+  for (const row of rows) {
+    const id = String(row?.id || '').trim()
+    const propertyId = String(row?.property_id || '').trim()
+    const taskDate = dayOnly(row?.task_date)
+    if (!id || !propertyId || !taskDate) throw new Error('invalid_checkin_link_candidate')
+    if (expectedPropertyId && propertyId !== expectedPropertyId) throw new Error('invalid_checkin_link_candidate_context')
+    if (expectedTaskDate && taskDate !== expectedTaskDate) throw new Error('invalid_checkin_link_candidate_context')
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push({
+      id,
+      property_id: propertyId,
+      property_code: String(row?.property_code || '').trim(),
+      task_date: taskDate,
+      checkout_time: String(row?.checkout_time || '').trim() || null,
+      status: String(row?.status || '').trim() || null,
+    })
+  }
+  return out
+}
+
+export function clearManualCheckinLinkSelectionForScopeChange<T extends ManualCheckinLinkSelection>(
+  current: T,
+  previousScope: ManualCheckinCandidateScope | null,
+  nextScope: ManualCheckinCandidateScope,
+): T {
+  if (!previousScope) return current
+  if (sameManualCheckinCandidateScope(previousScope, nextScope)) return current
+  return clearManualCheckinLinkSelection(current)
+}
+
 export function reconcileManualCheckinLinkSelection<T extends ManualCheckinLinkSelection>(
   current: T,
   candidateIds0: string[],
