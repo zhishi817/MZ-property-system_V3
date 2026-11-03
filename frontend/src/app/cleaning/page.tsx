@@ -3,12 +3,13 @@
 import { Alert, Button, Checkbox, Col, DatePicker, Divider, Drawer, Empty, Form, Image, Input, InputNumber, Modal, Row, Segmented, Select, Skeleton, Space, Upload, message } from 'antd'
 import type { UploadFile } from 'antd/es/upload/interface'
 import { DeleteOutlined, EditOutlined, LeftOutlined, PictureOutlined, ReloadOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
 import { isOrderLinkedAutoCheckinNightsAuthoritative, manualCheckinCheckoutCandidates, reconcileManualCheckinLinkSelection, splitTurnoverMerge, type ManualCheckinCandidateLoadState } from '../../lib/cleaningDailyMerge'
 import { checkinTimingLabel, checkoutTimingLabel, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, selfCompleteDailyStatusMeta, visibleDailyDisplayBadges } from '../../lib/cleaningDailyTaskStatus'
+import { manualCreatePasswordPayload } from '../../lib/cleaningManualCreate'
 import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
 
@@ -604,6 +605,7 @@ export default function CleaningPage() {
   const [offlineEditOpen, setOfflineEditOpen] = useState(false)
   const [offlineEditForm, setOfflineEditForm] = useState<OfflineTaskForm | null>(null)
   const [savingAction, setSavingAction] = useState<CleaningSaveAction | null>(null)
+  const manualCreateSubmissionRef = useRef(false)
   const [backfillOpen, setBackfillOpen] = useState(false)
   const [backfillFrom, setBackfillFrom] = useState<Dayjs>(() => dayjs().subtract(90, 'day'))
   const [backfillTo, setBackfillTo] = useState<Dayjs>(() => dayjs().add(365, 'day'))
@@ -1682,7 +1684,7 @@ export default function CleaningPage() {
 
   const submitManualCreate = useCallback(async () => {
     if (!manualCreateForm) return
-    if (savingAction) return
+    if (savingAction || manualCreateSubmissionRef.current) return
     if (!manualCreateForm.property_id) {
       message.warning('请选择房号')
       return
@@ -1695,6 +1697,7 @@ export default function CleaningPage() {
       message.warning('请选择要合并的退房任务，或明确创建独立入住')
       return
     }
+    manualCreateSubmissionRef.current = true
     setSavingAction('manualCreate')
     try {
       const isStayover = manualCreateForm.create_mode === 'stayover'
@@ -1702,8 +1705,11 @@ export default function CleaningPage() {
         create_mode: manualCreateForm.create_mode,
         task_date: selectedDateStr,
         property_id: String(manualCreateForm.property_id),
-        old_code: isStayover ? null : (manualCreateForm.checkout_password.trim() ? manualCreateForm.checkout_password.trim() : null),
-        new_code: isStayover ? null : (manualCreateForm.checkin_password.trim() ? manualCreateForm.checkin_password.trim() : null),
+        ...manualCreatePasswordPayload(
+          manualCreateForm.create_mode,
+          manualCreateForm.checkout_password,
+          manualCreateForm.checkin_password,
+        ),
         nights_override: manualCreateForm.nights_override != null ? Number(manualCreateForm.nights_override) : null,
         checkout_time: manualCreateForm.checkout_time ? String(manualCreateForm.checkout_time) : null,
         checkin_time: isStayover ? null : (manualCreateForm.checkin_time ? String(manualCreateForm.checkin_time) : null),
@@ -1720,6 +1726,7 @@ export default function CleaningPage() {
       setManualCreateForm(null)
       loadRangeItems().catch(() => {})
     } finally {
+      manualCreateSubmissionRef.current = false
       setSavingAction((current) => current === 'manualCreate' ? null : current)
     }
   }, [calendarRangeLoadState, loadRangeItems, manualCreateForm, savingAction, selectedDateStr])
