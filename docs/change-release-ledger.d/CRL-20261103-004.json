@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "crl": "CRL-20261103-004",
+  "title": "Root paired Mobile canonical full gate",
+  "repository": "root",
+  "request": "Repair the failing Root PR quality check without weakening coverage or increasing individual Jest timeouts.",
+  "outcome": "Root paired full regression now delegates to the Mobile repository's canonical full gate, preserving all Mobile audits, type checks, lint, button checks, fast tests, and the complete 826-test Jest suite while running the full suite serially as the Mobile release gate defines.",
+  "implementation": [
+    "Replace Root's ad-hoc Mobile typecheck, lint, and default parallel Jest command with the Mobile repository's maintained check:full contract.",
+    "Keep the Mobile repository responsible for its own full-gate composition, including serial full Jest execution, instead of duplicating a divergent Root-side command.",
+    "Add a Root quality-contract regression that fails if check:mobile returns to raw parallel npm test or stops invoking Mobile check:full."
+  ],
+  "files": [
+    "docs/change-release-ledger.d/CRL-20261103-004.json",
+    "package.json",
+    "scripts/tests/test_root_quality_workflow_contract.py"
+  ],
+  "impact_dependencies": [
+    "CI only: no runtime API, database, migration, environment, package-lock, dependency, web, backend, or Mobile application behavior change.",
+    "Paired validation depends on Mobile Dev at 2f30696ee160f17c2774e5be0039bf79ed74d0d2.",
+    "Related release units: root/CRL-20261103-003 and mobile/CRL-20261103-005."
+  ],
+  "validation": [
+    "The former Root command was reproduced against current Mobile Dev: default parallel Jest changed the timeout failure to InspectionPanelScreen while the affected business suites passed, proving resource-sensitive orchestration rather than one failed assertion.",
+    "python3 scripts/tests/test_root_quality_workflow_contract.py passed 10 tests.",
+    "CI=true npm run check:mobile passed the canonical Mobile gate: ledger tests and audit, typecheck, lint with zero errors, button audit, 8 suites / 138 fast tests, and 84 suites / 826 full tests.",
+    "CI=true npm run check:full passed the exact paired Root chain: backend build and contract suite, Web 57 files / 314 tests plus production build, and Mobile canonical 84 suites / 826 tests."
+  ],
+  "staged_hunks": [
+    {
+      "path": "package.json",
+      "sha256": "412445a1c78b271ab9ce0f8aac93f743cffe8065a09ca760edfab9474ecbe27a"
+    },
+    {
+      "path": "scripts/tests/test_root_quality_workflow_contract.py",
+      "sha256": "1d376cae00d0aa10dee9dae106bfabf7dd1a4a804f45fff699b6484712b9c15c"
+    },
+    {
+      "path": "scripts/tests/test_root_quality_workflow_contract.py",
+      "sha256": "63c68ec02673520c914e81dfabf4cad6d7c6f90b5780f4e1c861067abeb54caa"
+    },
+    {
+      "path": "scripts/tests/test_root_quality_workflow_contract.py",
+      "sha256": "7ccf57b46a53d2cdccd9539da6c1402e508fee233d9970dc3a9c35c1f900f400"
+    }
+  ],
+  "risks": [
+    "The canonical Mobile gate performs more governance checks than the former ad-hoc command and may add CI duration; rollback is the package.json command plus its contract test.",
+    "Existing non-failing Mobile lint warnings and React act warnings remain visible and are not suppressed.",
+    "The historical ledger remains byte-for-byte unchanged and is not included in this change; no secret, credential, production record, or generated artifact is added."
+  ],
+  "release_attempt": {
+    "id": "RA-20261103-004",
+    "intended_action": "commit",
+    "branch": "codex/root-mobile-canonical-gate-20261103",
+    "base_sha": "d2a8e4d1ab4f159185143e75518d9e3761aca3dd",
+    "fetched_at": "2026-11-03T10:05:03Z",
+    "candidate_patch_sha256": "82e8d5d27ece41770659211a93f728e01d0663165be257e691b9b27a257b9071",
+    "commit_sha": "not committed",
+    "dependencies": "mobile Dev 2f30696ee160f17c2774e5be0039bf79ed74d0d2",
+    "required_validation": "PASS; evidence: exact paired Root check:full, Web 57 files / 314 tests, Root workflow contract 10/10, and canonical paired Mobile full gate 84 suites / 826 tests",
+    "shared_hunk_review": "not applicable; evidence: three new-task paths in a clean worktree",
+    "generated_file_review": "not applicable; evidence: no generated paths",
+    "technical_state": "verified",
+    "user_authorization": "selected-for-commit",
+    "independent_review": "GO; evidence: independent review found P0/P1/P2/P3 zero after generated-output and temporary-worktree cleanup",
+    "action_conclusion": "GO",
+    "blockers": "none"
+  }
+}
