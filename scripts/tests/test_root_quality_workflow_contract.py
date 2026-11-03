@@ -2,6 +2,7 @@
 """Protect the event layering and paired-mobile contract of Root Quality Gate."""
 
 from pathlib import Path
+import json
 import os
 import subprocess
 import tempfile
@@ -10,6 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/quality.yml"
+PACKAGE = ROOT / "package.json"
 RISK_CLASSIFIER = ROOT / "scripts/ci/classify_pr_risk.sh"
 MOBILE_REF_RESOLVER = ROOT / "scripts/ci/resolve_mobile_ci_ref.sh"
 
@@ -22,6 +24,12 @@ def job_section(workflow: str, job: str, next_job: str | None = None) -> str:
 
 
 class RootQualityWorkflowContractTests(unittest.TestCase):
+    def test_paired_mobile_uses_the_mobile_repository_canonical_full_gate(self) -> None:
+        package = json.loads(PACKAGE.read_text(encoding="utf-8"))
+        check_mobile = package["scripts"]["check:mobile"]
+        self.assertIn("npm run check:full --prefix mz-cleaning-app-frontend", check_mobile)
+        self.assertNotIn("npm run test --prefix mz-cleaning-app-frontend", check_mobile)
+
     def test_pull_requests_target_dev_while_integration_pushes_cover_dev_and_main(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         trigger = workflow[:workflow.index("\nconcurrency:")]
