@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dayjs, { type Dayjs } from 'dayjs'
 import { API_BASE, authHeaders, deleteJSON, getJSON, patchJSON, postJSON } from '../../lib/api'
 import { cleaningColorKind } from '../../lib/cleaningColor'
-import { isOrderLinkedAutoCheckinNightsAuthoritative, manualCheckinCheckoutCandidates, reconcileManualCheckinLinkSelection, splitTurnoverMerge, type ManualCheckinCandidateLoadState } from '../../lib/cleaningDailyMerge'
+import { clearManualCheckinLinkSelection, clearManualCheckinLinkSelectionForScopeChange, isOrderLinkedAutoCheckinNightsAuthoritative, manualCheckinLinkErrorNeedsCandidateRefresh, normalizeManualCheckinCheckoutCandidates, reconcileManualCheckinLinkSelection, sameManualCheckinCandidateScope, splitTurnoverMerge, type ManualCheckinCandidateLoadState, type ManualCheckinCandidateScope, type ManualCheckinCheckoutCandidate } from '../../lib/cleaningDailyMerge'
 import { checkinTimingLabel, checkoutTimingLabel, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, selfCompleteDailyStatusMeta, visibleDailyDisplayBadges } from '../../lib/cleaningDailyTaskStatus'
 import { manualCreatePasswordPayload } from '../../lib/cleaningManualCreate'
 import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
@@ -580,7 +580,8 @@ export default function CleaningPage() {
   const [selectedDate, setSelectedDate] = useState<Dayjs>(() => dayjs())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [calendarRangeLoadState, setCalendarRangeLoadState] = useState<ManualCheckinCandidateLoadState>('loading')
+  const [manualCandidateLoadState, setManualCandidateLoadState] = useState<ManualCheckinCandidateLoadState>('loading')
+  const [manualCheckoutCandidates, setManualCheckoutCandidates] = useState<ManualCheckinCheckoutCandidate[]>([])
   const [items, setItems] = useState<CalendarItem[]>([])
   const [staff, setStaff] = useState<Staff[]>([])
   const [filterRoom, setFilterRoom] = useState('')
@@ -606,6 +607,8 @@ export default function CleaningPage() {
   const [offlineEditForm, setOfflineEditForm] = useState<OfflineTaskForm | null>(null)
   const [savingAction, setSavingAction] = useState<CleaningSaveAction | null>(null)
   const manualCreateSubmissionRef = useRef(false)
+  const manualCandidateRequestRef = useRef(0)
+  const manualCandidateScopeRef = useRef<ManualCheckinCandidateScope | null>(null)
   const [backfillOpen, setBackfillOpen] = useState(false)
   const [backfillFrom, setBackfillFrom] = useState<Dayjs>(() => dayjs().subtract(90, 'day'))
   const [backfillTo, setBackfillTo] = useState<Dayjs>(() => dayjs().add(365, 'day'))
@@ -659,13 +662,11 @@ export default function CleaningPage() {
   const manualCheckoutLinkOptions = useMemo(() => {
     if (manualCreateMode !== 'checkin' || !manualCreatePropertyId) return []
     const propertyId = String(manualCreatePropertyId)
-    return manualCheckinCheckoutCandidates(items, propertyId, selectedDateStr).map((item) => {
-      const ids = Array.isArray(item.entity_ids) && item.entity_ids.length ? item.entity_ids : [item.entity_id]
-      const id = String(ids[0] || '').trim()
+    return manualCheckoutCandidates.map((item) => {
       const propertyLabel = item.property_code || properties.find((property) => String(property.id) === propertyId)?.code || propertyId
-      return { value: id, label: `${propertyLabel} · ${item.summary_checkout_time || '10am'}退房` }
+      return { value: item.id, label: `${propertyLabel} · ${item.checkout_time || '10am'}退房` }
     })
-  }, [items, manualCreateMode, manualCreatePropertyId, properties, selectedDateStr])
+  }, [manualCheckoutCandidates, manualCreateMode, manualCreatePropertyId, properties])
 
   useEffect(() => {
     setManualCreateForm((current) => {
@@ -673,10 +674,10 @@ export default function CleaningPage() {
       return reconcileManualCheckinLinkSelection(
         current,
         manualCheckoutLinkOptions.map((option) => String(option.value)),
-        calendarRangeLoadState,
+        manualCandidateLoadState,
       )
     })
-  }, [calendarRangeLoadState, manualCheckoutLinkOptions])
+  }, [manualCandidateLoadState, manualCheckoutLinkOptions])
 
   const visibleRange = useMemo(() => {
     if (view === 'day') {
@@ -1046,16 +1047,32 @@ export default function CleaningPage() {
     setProperties(Array.isArray(p) ? p : [])
   }, [])
 
+  const loadManualCheckoutCandidates = useCallback(async (propertyId0: string, taskDate: string) => {
+    const propertyId = String(propertyId0 || '').trim()
+    const requestId = ++manualCandidateRequestRef.current
+    setManualCheckoutCandidates([])
+    setManualCandidateLoadState('loading')
+    if (!propertyId) return
+    try {
+      const payload = await getJSON<any>(`/cleaning/tasks/checkin-link-candidates?property_id=${encodeURIComponent(propertyId)}&task_date=${encodeURIComponent(taskDate)}`)
+      if (requestId !== manualCandidateRequestRef.current) return
+      setManualCheckoutCandidates(normalizeManualCheckinCheckoutCandidates(payload, propertyId, taskDate))
+      setManualCandidateLoadState('ready')
+    } catch {
+      if (requestId !== manualCandidateRequestRef.current) return
+      setManualCheckoutCandidates([])
+      setManualCandidateLoadState('error')
+    }
+  }, [])
+
   const loadRangeItems = useCallback(async () => {
     setLoading(true)
     setError(null)
-    setCalendarRangeLoadState('loading')
     try {
       const from = visibleRange.start.format('YYYY-MM-DD')
       const to = visibleRange.end.format('YYYY-MM-DD')
       const rows = await getJSON<CalendarItem[]>(`/cleaning/calendar-range?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
       setItems(Array.isArray(rows) ? rows : [])
-      setCalendarRangeLoadState('ready')
       setTasksMinMaxError(null)
       const today = dayjs().format('YYYY-MM-DD')
       getJSON<any>(`/cleaning/tasks/minmax?from=${encodeURIComponent(today)}`)
@@ -1070,7 +1087,6 @@ export default function CleaningPage() {
     } catch (e: any) {
       setError(e?.message || '加载失败')
       setItems([])
-      setCalendarRangeLoadState('error')
     } finally {
       setLoading(false)
     }
@@ -1085,6 +1101,26 @@ export default function CleaningPage() {
   useEffect(() => {
     loadRangeItems().catch(() => {})
   }, [loadRangeItems])
+
+  useEffect(() => {
+    if (!manualCreateOpen || manualCreateMode !== 'checkin' || !manualCreatePropertyId) {
+      manualCandidateRequestRef.current += 1
+      manualCandidateScopeRef.current = null
+      setManualCheckoutCandidates([])
+      setManualCandidateLoadState('loading')
+      return
+    }
+    const nextScope = { property_id: String(manualCreatePropertyId), task_date: selectedDateStr }
+    const previousScope = manualCandidateScopeRef.current
+    manualCandidateScopeRef.current = nextScope
+    setManualCreateForm((current) => current
+      ? clearManualCheckinLinkSelectionForScopeChange(current, previousScope, nextScope)
+      : current)
+    loadManualCheckoutCandidates(String(manualCreatePropertyId), selectedDateStr).catch(() => {})
+    return () => {
+      manualCandidateRequestRef.current += 1
+    }
+  }, [loadManualCheckoutCandidates, manualCreateMode, manualCreateOpen, manualCreatePropertyId, selectedDateStr])
 
   const openEdit = useCallback(async (it: CalendarItem) => {
     if (it.source !== 'cleaning_tasks') return
@@ -1689,13 +1725,17 @@ export default function CleaningPage() {
       message.warning('请选择房号')
       return
     }
-    if (manualCreateForm.create_mode === 'checkin' && calendarRangeLoadState !== 'ready') {
-      message.warning(calendarRangeLoadState === 'error' ? '任务关系加载失败，请重试成功后再保存' : '任务关系仍在加载，请稍后再保存')
+    if (manualCreateForm.create_mode === 'checkin' && manualCandidateLoadState !== 'ready') {
+      message.warning(manualCandidateLoadState === 'error' ? '任务关系加载失败，请重试成功后再保存' : '任务关系仍在加载，请稍后再保存')
       return
     }
     if (manualCreateForm.create_mode === 'checkin' && !manualCreateForm.checkin_link_decision) {
       message.warning('请选择要合并的退房任务，或明确创建独立入住')
       return
+    }
+    const submittedCandidateScope: ManualCheckinCandidateScope = {
+      property_id: String(manualCreateForm.property_id),
+      task_date: selectedDateStr,
     }
     manualCreateSubmissionRef.current = true
     setSavingAction('manualCreate')
@@ -1725,11 +1765,21 @@ export default function CleaningPage() {
       setManualCreateOpen(false)
       setManualCreateForm(null)
       loadRangeItems().catch(() => {})
+    } catch (error: any) {
+      if (manualCreateForm.create_mode === 'checkin'
+        && manualCheckinLinkErrorNeedsCandidateRefresh(error)
+        && sameManualCheckinCandidateScope(manualCandidateScopeRef.current, submittedCandidateScope)) {
+        setManualCandidateLoadState('loading')
+        setManualCheckoutCandidates([])
+        setManualCreateForm((current) => current ? clearManualCheckinLinkSelection(current) : current)
+        await loadManualCheckoutCandidates(String(manualCreateForm.property_id), selectedDateStr)
+      }
+      throw error
     } finally {
       manualCreateSubmissionRef.current = false
       setSavingAction((current) => current === 'manualCreate' ? null : current)
     }
-  }, [calendarRangeLoadState, loadRangeItems, manualCreateForm, savingAction, selectedDateStr])
+  }, [loadManualCheckoutCandidates, loadRangeItems, manualCandidateLoadState, manualCreateForm, savingAction, selectedDateStr])
 
   const updateTaskQuick = useCallback(async (ids: string[], patch: any) => {
     const normIds = Array.from(new Set(ids.map((x) => String(x)).filter(Boolean)))
@@ -3265,7 +3315,7 @@ export default function CleaningPage() {
         title="新增清洁任务"
         okText={manualCreateSaving ? '创建中...' : '创建'}
         confirmLoading={manualCreateSaving}
-        okButtonProps={{ disabled: manualCreateSaving || (manualCreateForm?.create_mode === 'checkin' && calendarRangeLoadState !== 'ready') }}
+        okButtonProps={{ disabled: manualCreateSaving || (manualCreateForm?.create_mode === 'checkin' && manualCandidateLoadState !== 'ready') }}
         onOk={() => submitManualCreate().catch((e) => message.error(e?.message || '创建失败'))}
         onCancel={() => {
           if (manualCreateSaving) return
@@ -3286,6 +3336,7 @@ export default function CleaningPage() {
               <Select
                 allowClear
                 showSearch
+                disabled={manualCreateSaving}
                 optionFilterProp="label"
                 value={manualCreateForm.area || undefined}
                 onChange={(v) => setManualCreateForm((p) => (p ? { ...p, area: v ? String(v) : null, property_id: null, linked_checkout_task_id: null, checkin_link_decision: null, checkin_link_decision_user_selected: false } : p))}
@@ -3297,6 +3348,7 @@ export default function CleaningPage() {
               <div className={styles.fieldLabel}>房号</div>
               <Select
                 showSearch
+                disabled={manualCreateSaving}
                 optionFilterProp="label"
                 value={manualCreateForm.property_id || undefined}
                 onChange={(v) => setManualCreateForm((p) => (p ? { ...p, property_id: v ? String(v) : null, linked_checkout_task_id: null, checkin_link_decision: null, checkin_link_decision_user_selected: false } : p))}
@@ -3307,6 +3359,7 @@ export default function CleaningPage() {
             <div>
               <div className={styles.fieldLabel}>类型</div>
               <Select
+                disabled={manualCreateSaving}
                 value={manualCreateForm.create_mode}
                 onChange={(v) => setManualCreateForm((p) => (p ? { ...p, create_mode: v as any, linked_checkout_task_id: null, checkin_link_decision: null, checkin_link_decision_user_selected: false } : p))}
                 style={{ width: '100%' }}
@@ -3324,7 +3377,7 @@ export default function CleaningPage() {
                   <div className={styles.fieldLabel}>入住执行方式</div>
                   <Select
                     value={manualCreateForm.linked_checkout_task_id ? 'inspect_and_hang' : manualCreateForm.checkin_inspection_scope}
-                    disabled={!!manualCreateForm.linked_checkout_task_id}
+                    disabled={manualCreateSaving || !!manualCreateForm.linked_checkout_task_id}
                     title={manualCreateForm.linked_checkout_task_id ? '同日退房入住任务必须检查后挂钥匙；无独立检查员时沿用自完成流程' : undefined}
                     onChange={(v) => setManualCreateForm((p) => (p ? { ...p, checkin_inspection_scope: v as 'inspect_and_hang' | 'password_only' } : p))}
                     style={{ width: '100%' }}
@@ -3337,8 +3390,8 @@ export default function CleaningPage() {
                 <div>
                   <div className={styles.fieldLabel}>与退房任务的关系</div>
                   <Select
-                    loading={calendarRangeLoadState === 'loading'}
-                    disabled={calendarRangeLoadState !== 'ready'}
+                    loading={manualCandidateLoadState === 'loading'}
+                    disabled={manualCreateSaving || manualCandidateLoadState !== 'ready'}
                     value={manualCreateForm.checkin_link_decision === 'independent'
                       ? '__independent__'
                       : (manualCreateForm.linked_checkout_task_id || undefined)}
@@ -3356,12 +3409,12 @@ export default function CleaningPage() {
                       { value: '__independent__', label: '明确创建独立入住任务' },
                     ]}
                   />
-                  {calendarRangeLoadState === 'loading' ? (
+                  {manualCandidateLoadState === 'loading' ? (
                     <div>正在核对当天可关联退房任务，加载完成前不能保存。</div>
-                  ) : calendarRangeLoadState === 'error' ? (
+                  ) : manualCandidateLoadState === 'error' ? (
                     <div>
                       任务关系加载失败，不能把未知候选当作独立任务。
-                      <Button type="link" size="small" onClick={() => loadRangeItems().catch(() => {})}>重试</Button>
+                      <Button type="link" size="small" disabled={manualCreateSaving} onClick={() => loadManualCheckoutCandidates(String(manualCreateForm.property_id || ''), selectedDateStr).catch(() => {})}>重试</Button>
                     </div>
                   ) : manualCreateForm.linked_checkout_task_id ? (
                     <div>已选择可靠退房来源；保存后会合并为同一周转，并固定检查后挂钥匙。</div>
@@ -3377,6 +3430,7 @@ export default function CleaningPage() {
               <div>
                 <div className={styles.fieldLabel}>退房时间</div>
                 <Select
+                  disabled={manualCreateSaving}
                   value={manualCreateForm.checkout_time}
                   onChange={(v) => setManualCreateForm((p) => (p ? { ...p, checkout_time: String(v) } : p))}
                   style={{ width: '100%' }}
@@ -3388,6 +3442,7 @@ export default function CleaningPage() {
               <div>
                 <div className={styles.fieldLabel}>入住时间</div>
                 <Select
+                  disabled={manualCreateSaving}
                   value={manualCreateForm.checkin_time}
                   onChange={(v) => setManualCreateForm((p) => (p ? { ...p, checkin_time: String(v) } : p))}
                   style={{ width: '100%' }}
@@ -3400,6 +3455,7 @@ export default function CleaningPage() {
                 <div>
                   <div className={styles.fieldLabel}>退房密码</div>
                   <Input
+                    disabled={manualCreateSaving}
                     value={manualCreateForm.checkout_password}
                     onChange={(e) => setManualCreateForm((p) => (p ? { ...p, checkout_password: e.target.value } : p))}
                     style={{ width: '100%' }}
@@ -3409,6 +3465,7 @@ export default function CleaningPage() {
                 <div>
                   <div className={styles.fieldLabel}>入住密码</div>
                   <Input
+                    disabled={manualCreateSaving}
                     value={manualCreateForm.checkin_password}
                     onChange={(e) => setManualCreateForm((p) => (p ? { ...p, checkin_password: e.target.value } : p))}
                     style={{ width: '100%' }}
@@ -3420,6 +3477,7 @@ export default function CleaningPage() {
             <div>
               <div className={styles.fieldLabel}>客人需求</div>
               <Input.TextArea
+                disabled={manualCreateSaving}
                 value={manualCreateForm.guest_special_request}
                 onChange={(e) => setManualCreateForm((p) => (p ? { ...p, guest_special_request: e.target.value } : p))}
                 style={{ width: '100%' }}

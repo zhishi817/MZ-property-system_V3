@@ -1,3 +1,5 @@
+import { isDueForMonth } from './recurringStartMonth'
+
 export type RecurringLike = {
   cashflow_type?: string
   category?: string
@@ -13,6 +15,17 @@ export type RecurringSnapshotState = {
   amount_mode?: string
   has_snapshot?: boolean
   snapshot_status?: string
+}
+
+export type RecurringSnapshotTemplate = RecurringLike & {
+  status?: string
+  amount_mode?: string
+  start_month_key?: string
+  frequency_months?: number
+}
+
+export type RecurringSnapshotRow = {
+  status?: string
 }
 
 export function isConsumablesRecurring(r: RecurringLike): boolean {
@@ -31,4 +44,18 @@ export function shouldEnsureRecurringSnapshot(state: RecurringSnapshotState): bo
   if (!state.has_snapshot) return true
   return String(state.amount_mode || 'fixed') === 'percent_of_property_total_income'
     && String(state.snapshot_status || '').toLowerCase() !== 'paid'
+}
+
+export function shouldEnsureRecurringTemplateSnapshot(
+  template: RecurringSnapshotTemplate,
+  monthKey: string,
+  snapshot?: RecurringSnapshotRow,
+): boolean {
+  if (String(template?.status || '') === 'paused') return false
+  if (!isDueForMonth(template?.start_month_key, monthKey, template?.frequency_months)) return false
+  return shouldEnsureRecurringSnapshot({
+    amount_mode: template?.amount_mode,
+    has_snapshot: !!snapshot,
+    snapshot_status: snapshot?.status,
+  })
 }

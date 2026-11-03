@@ -951,6 +951,27 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   assert.match(source, /lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null/)
   assert.match(cleaningSource, /changedFields: \['status', 'execution_state', 'lifecycle_state'\][\s\S]*?lifecycle_state: 'deleted'/)
   assert.match(cleaningSource, /pgRunInTransaction\(async \(client\)[\s\S]*?lifecycle_state: 'deleted'[\s\S]*?\}, client\)/)
+  const candidateReadRoute = cleaningSource.slice(
+    cleaningSource.indexOf("router.get('/tasks/checkin-link-candidates'"),
+    cleaningSource.indexOf("router.get('/tasks',"),
+  )
+  assert.ok(candidateReadRoute.length > 0, 'check-in link candidate API must exist')
+  assert.match(candidateReadRoute, /requireCleaningManualCreateAccess, requireR5TaskRuntimeSchema/)
+  assert.match(candidateReadRoute, /SELECT id::text AS id, code FROM properties/)
+  assert.match(candidateReadRoute, /FROM cleaning_tasks t[\s\S]*?LEFT JOIN orders o/)
+  assert.match(candidateReadRoute, /res\.status\(503\)\.json\(\{ code: CHECKIN_LINK_CANDIDATES_UNAVAILABLE \}\)/)
+  assert.doesNotMatch(candidateReadRoute, /ensureCleaningSchemaV2|ensureColumn|backfill|syncOrder|emitNotification|emitWorkTaskEvent|addAudit/)
+  assert.doesNotMatch(candidateReadRoute, /\b(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b/i, 'candidate GET must remain SELECT-only')
+  assert.doesNotMatch(candidateReadRoute, /t\.lifecycle_state/, 'candidate SQL cannot select a lifecycle field that is not present in cleaning_tasks')
+  const deployedCleaningSchema = [
+    fs.readFileSync(path.resolve(__dirname, '../../scripts/schema.sql'), 'utf8'),
+    fs.readFileSync(path.resolve(__dirname, '../migrations/20260629_cleaning_task_execution_state.sql'), 'utf8'),
+    fs.readFileSync(path.resolve(__dirname, '../migrations/20261021_mz065_manual_checkin_turnover_link.sql'), 'utf8'),
+  ].join('\n')
+  const candidateTaskColumns = Array.from(candidateReadRoute.matchAll(/\bt\.([a-z_][a-z0-9_]*)/g), (match) => match[1])
+  for (const column of new Set(candidateTaskColumns)) {
+    assert.match(deployedCleaningSchema, new RegExp(`\\b${column}\\b`), `candidate SQL column ${column} must exist in the deployed cleaning schema`)
+  }
   const manualCreateRoute = cleaningSource.slice(
     cleaningSource.indexOf("router.post('/tasks'"),
     cleaningSource.indexOf("router.delete('/tasks/:id'"),
@@ -959,24 +980,27 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   const advisoryLock = manualCreateRoute.indexOf('lockCleaningTurnoverKey(client, normalizedPropertyId, parsed.data.task_date)', transactionStart)
   const sameDayRowLock = manualCreateRoute.indexOf('FOR UPDATE OF t', transactionStart)
   assert.ok(transactionStart >= 0 && advisoryLock > transactionStart && sameDayRowLock > advisoryLock, 'manual check-in linking must acquire the turnover advisory lock before any task row lock')
+  assert.doesNotMatch(manualCreateRoute, /t\.lifecycle_state/, 'POST revalidation SQL cannot select a nonexistent lifecycle field')
   assert.match(cleaningAppSource, /changedFields: \['status', 'lockbox_video_uploaded_at', 'lockbox_video_url', 'key_handover'\]/)
   assert.match(cleaningAppSource, /lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null/)
   assert.doesNotMatch(source, /lockboxVideoConfirmsCurrentTaskState\([\s\S]{0,240}\) \|\| !!keyHandover/)
   assert.match(cleaningPageSource, /label="入住执行方式"[\s\S]*?value=\{editForm\.checkout_ids\.length > 0 \? 'inspect_and_hang' : editForm\.checkin_inspection_scope\}/, 'existing check-in edit must expose the supported execution mode')
   assert.match(cleaningPageSource, /manualCreateForm\.create_mode === 'checkin'[\s\S]*?入住执行方式[\s\S]*?manualCreateForm\.checkin_inspection_scope/, 'top-level manual check-in create must expose the execution mode')
-  assert.match(cleaningPageSource, /manualCheckinCheckoutCandidates\(items, propertyId, selectedDateStr\)/, 'manual check-in relation choices must use the shared reliable-candidate helper')
+  assert.match(cleaningPageSource, /\/cleaning\/tasks\/checkin-link-candidates\?property_id=/, 'Web manual check-in choices must use the Root candidate authority')
+  assert.doesNotMatch(cleaningPageSource, /manualCheckinCheckoutCandidates\(items,/, 'Web manual check-in choices must not infer candidates from the calendar projection')
   assert.match(cleaningDailyMergeSource, /if \(loadState !== 'ready'\) return current[\s\S]*?candidateIds\.length === 1[\s\S]*?linked_checkout_task_id: candidateIds\[0\][\s\S]*?checkin_link_decision: 'link'/, 'one reliable checkout candidate must be selected only after a successful candidate load')
   assert.match(cleaningDailyMergeSource, /current\.checkin_link_decision === 'independent' && current\.checkin_link_decision_user_selected/, 'an explicit independent choice must be distinguished from an automatic empty-list state')
   assert.match(cleaningDailyMergeSource, /candidateIds\.length === 0[\s\S]*?checkin_link_decision: 'independent'[\s\S]*?checkin_link_decision_user_selected: false/, 'a successfully loaded empty candidate set may create only an automatic independent default')
-  assert.match(cleaningPageSource, /setCalendarRangeLoadState\('loading'\)[\s\S]*?setCalendarRangeLoadState\('ready'\)[\s\S]*?setCalendarRangeLoadState\('error'\)/, 'calendar candidate state must distinguish loading, successful hydration, and load failure')
-  assert.match(cleaningPageSource, /manualCreateForm\.create_mode === 'checkin' && calendarRangeLoadState !== 'ready'/, 'manual check-in save must reject unknown or failed candidate state')
-  assert.match(cleaningPageSource, /calendarRangeLoadState === 'error'[\s\S]*?任务关系加载失败，不能把未知候选当作独立任务。[\s\S]*?loadRangeItems\(\)/, 'failed candidate loads must offer a retry instead of silently creating an independent check-in')
+  assert.match(cleaningPageSource, /setManualCandidateLoadState\('loading'\)[\s\S]*?setManualCandidateLoadState\('ready'\)[\s\S]*?setManualCandidateLoadState\('error'\)/, 'candidate state must distinguish loading, successful hydration, and load failure')
+  assert.match(cleaningPageSource, /manualCreateForm\.create_mode === 'checkin' && manualCandidateLoadState !== 'ready'/, 'manual check-in save must reject unknown or failed candidate state')
+  assert.match(cleaningPageSource, /manualCandidateLoadState === 'error'[\s\S]*?任务关系加载失败，不能把未知候选当作独立任务。[\s\S]*?loadManualCheckoutCandidates\(/, 'failed candidate loads must retry the candidate authority instead of silently creating an independent check-in')
+  assert.match(cleaningPageSource, /const requestId = \+\+manualCandidateRequestRef\.current[\s\S]*?requestId !== manualCandidateRequestRef\.current/, 'stale property/date candidate responses must not overwrite the current selection')
   assert.match(cleaningPageSource, /任务关系仍在加载，请稍后再保存/, 'manual check-in save must fail closed while relation candidates are loading')
   assert.match(cleaningPageSource, /value: '__independent__', label: '明确创建独立入住任务'/, 'multiple checkout candidates must offer an explicit independent choice')
   assert.match(cleaningPageSource, /checkin_link_decision: manualCreateForm\.create_mode === 'checkin' \? manualCreateForm\.checkin_link_decision : null/, 'top-level create must send the explicit link decision')
   assert.match(cleaningPageSource, /linked_checkout_task_id: String\(editForm\.checkout_ids\[0\]\),[\s\S]*?checkin_link_decision: 'link'/, 'checkout-detail add-checkin must declare the exact linked decision')
   assert.match(cleaningPageSource, /inspection_scope: manualCreateForm\.create_mode === 'checkin'[\s\S]*?manualCreateForm\.linked_checkout_task_id \? 'inspect_and_hang' : manualCreateForm\.checkin_inspection_scope/, 'top-level linked check-in must submit the only valid same-day scope')
-  assert.match(cleaningPageSource, /value=\{manualCreateForm\.linked_checkout_task_id \? 'inspect_and_hang' : manualCreateForm\.checkin_inspection_scope\}[\s\S]*?disabled=\{!!manualCreateForm\.linked_checkout_task_id\}/, 'top-level linked check-in must not offer the rejected password-only choice')
+  assert.match(cleaningPageSource, /value=\{manualCreateForm\.linked_checkout_task_id \? 'inspect_and_hang' : manualCreateForm\.checkin_inspection_scope\}[\s\S]*?disabled=\{manualCreateSaving \|\| !!manualCreateForm\.linked_checkout_task_id\}/, 'top-level linked check-in must not offer the rejected password-only choice and must stay locked during submission')
   assert.match(cleaningPageSource, /linked_checkout_task_id: v === '__independent__' \? null : String\(v \|\| ''\),[\s\S]*?checkin_link_decision: v === '__independent__' \? 'independent' : 'link',[\s\S]*?v !== '__independent__' \? \{ checkin_inspection_scope: 'inspect_and_hang' as const \} : \{\}/, 'choosing a checkout must immediately normalize the visible execution mode')
   assert.match(cleaningPageSource, /pending_add_checkin[\s\S]*?inspection_scope: editForm\.checkout_ids\.length > 0[\s\S]*?\? 'inspect_and_hang'[\s\S]*?: editForm\.checkin_inspection_scope/, 'checkout-side add-checkin entry must persist the supported mode')
   assert.match(cleaningPageSource, /value=\{editForm\.checkout_ids\.length > 0 \? 'inspect_and_hang' : editForm\.checkin_inspection_scope\}/, 'turnover editing must not offer a mode that the backend rejects')
@@ -1375,6 +1399,22 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   const decisionCheckoutIndependentId = 'test-manual-link-decision-independent'
   const decisionCheckoutAmbiguousAId = 'test-manual-link-decision-ambiguous-a'
   const decisionCheckoutAmbiguousBId = 'test-manual-link-decision-ambiguous-b'
+  const completedCandidateId = 'test-manual-link-candidate-completed'
+  const keysHungCandidateId = 'test-manual-link-candidate-keys-hung'
+  const inspectedCandidateId = 'test-manual-link-candidate-inspected'
+  const cleanedCandidateId = 'test-manual-link-candidate-cleaned'
+  const invalidOrderCandidateId = 'test-manual-link-candidate-invalid-order'
+  const cancelledOrderCandidateId = 'test-manual-link-candidate-cancelled-order'
+  const wrongPropertyOrderCandidateId = 'test-manual-link-candidate-wrong-property-order'
+  const wrongBoundaryOrderCandidateId = 'test-manual-link-candidate-wrong-boundary-order'
+  const missingOrderCandidateId = 'test-manual-link-candidate-missing-order'
+  const canonicalOccupiedCheckoutId = 'test-manual-link-candidate-canonical-occupied'
+  const canonicalOccupiedCheckinId = 'test-manual-link-candidate-canonical-checkin'
+  const canonicalAmbiguousCheckinId = 'test-manual-link-candidate-canonical-checkin-2'
+  const explicitlyOccupiedCheckoutId = 'test-manual-link-candidate-explicit-occupied'
+  const explicitlyOccupiedCheckinId = 'test-manual-link-candidate-explicit-checkin'
+  const validOrderedCandidateId = 'test-manual-link-candidate-valid-order'
+  const concurrencyCandidateId = 'test-manual-link-candidate-concurrency'
   const deferredMergeCheckoutId = 'test-deferred-merge-checkout'
   const deferredMergeCheckinId = 'test-deferred-merge-checkin'
   const deferredMergeAssigneeId = 'test-deferred-merge-assignee'
@@ -1402,12 +1442,41 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     { id: decisionCheckoutIndependentId, property_id: testPropertyId, task_date: '2026-09-22', date: '2026-09-22', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
     { id: decisionCheckoutAmbiguousAId, property_id: testPropertyId, task_date: '2026-09-23', date: '2026-09-23', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
     { id: decisionCheckoutAmbiguousBId, property_id: testPropertyId, task_date: '2026-09-23', date: '2026-09-23', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang' },
+    { id: completedCandidateId, property_id: testPropertyId, task_date: '2026-09-25', date: '2026-09-25', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active', lifecycle_state: 'work_record_read_only', checkout_time: '10am', old_code: 'must-not-leak', guest_name: 'must-not-leak' },
+    { id: keysHungCandidateId, property_id: testPropertyId, task_date: '2026-09-25', date: '2026-09-25', task_type: 'checkout_clean', type: 'checkout_clean', status: 'keys_hung', execution_state: 'active', checkout_time: '10:30am' },
+    { id: inspectedCandidateId, property_id: testPropertyId, task_date: '2026-09-25', date: '2026-09-25', task_type: 'checkout_clean', type: 'checkout_clean', status: 'inspected', execution_state: 'active', checkout_time: '11am' },
+    { id: cleanedCandidateId, property_id: testPropertyId, task_date: '2026-09-25', date: '2026-09-25', task_type: 'checkout_clean', type: 'checkout_clean', status: 'cleaned', execution_state: 'active', checkout_time: '9am' },
+    { id: invalidOrderCandidateId, property_id: testPropertyId, task_date: '2026-09-26', date: '2026-09-26', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active', order_id: 'test-order-invalid' },
+    { id: cancelledOrderCandidateId, property_id: testPropertyId, task_date: '2026-09-26', date: '2026-09-26', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active', order_id: 'test-order-cancelled' },
+    { id: wrongPropertyOrderCandidateId, property_id: testPropertyId, task_date: '2026-09-26', date: '2026-09-26', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active', order_id: 'test-order-wrong-property' },
+    { id: wrongBoundaryOrderCandidateId, property_id: testPropertyId, task_date: '2026-09-26', date: '2026-09-26', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active', order_id: 'test-order-wrong-boundary' },
+    { id: missingOrderCandidateId, property_id: testPropertyId, task_date: '2026-09-26', date: '2026-09-26', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active', order_id: 'test-order-missing' },
+    { id: canonicalOccupiedCheckoutId, property_id: testPropertyId, task_date: '2026-09-27', date: '2026-09-27', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active', order_id: 'test-order-canonical-outgoing' },
+    { id: canonicalOccupiedCheckinId, property_id: testPropertyId, task_date: '2026-09-27', date: '2026-09-27', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', order_id: 'test-order-canonical-incoming' },
+    { id: canonicalAmbiguousCheckinId, property_id: testPropertyId, task_date: '2026-09-27', date: '2026-09-27', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', order_id: 'test-order-canonical-incoming-2' },
+    { id: explicitlyOccupiedCheckoutId, property_id: testPropertyId, task_date: '2026-09-28', date: '2026-09-28', task_type: 'checkout_clean', type: 'checkout_clean', status: 'keys_hung', execution_state: 'active' },
+    { id: explicitlyOccupiedCheckinId, property_id: testPropertyId, task_date: '2026-09-28', date: '2026-09-28', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', linked_checkout_task_id: explicitlyOccupiedCheckoutId },
+    { id: validOrderedCandidateId, property_id: testPropertyId, task_date: '2026-09-29', date: '2026-09-29', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active', order_id: 'test-order-valid', checkout_time: '10am' },
+    { id: 'test-manual-link-candidate-cancelled', property_id: testPropertyId, task_date: '2026-09-30', date: '2026-09-30', task_type: 'checkout_clean', type: 'checkout_clean', status: 'cancelled', execution_state: 'active' },
+    { id: 'test-manual-link-candidate-superseded', property_id: testPropertyId, task_date: '2026-09-30', date: '2026-09-30', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'superseded' },
+    { id: 'test-manual-link-candidate-lifecycle-deleted', property_id: testPropertyId, task_date: '2026-09-30', date: '2026-09-30', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active', lifecycle_state: 'deleted' },
+    { id: concurrencyCandidateId, property_id: testPropertyId, task_date: '2026-10-01', date: '2026-10-01', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active' },
     { id: deferredMergeCheckoutId, property_id: deferredMergePropertyId, task_date: '2026-09-18', date: '2026-09-18', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', cleaner_id: 'test-original-cleaner', inspector_id: 'test-deferred-plan-inspector', inspection_mode: 'deferred', inspection_due_date: '2026-09-19', inspection_scope: 'inspect_and_hang', guest_special_request: '延期任务旧要求' },
     { id: deferredMergeCheckinId, property_id: deferredMergePropertyId, task_date: '2026-09-19', date: '2026-09-19', task_type: 'checkin_clean', type: 'checkin_clean', status: 'pending', execution_state: 'active', assignee_id: null, inspector_id: null, linked_checkout_task_id: deferredMergeCheckoutId, inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang', guest_special_request: '入住任务优先要求', checkin_time: '3pm' },
   )
   ;((db as any).properties ||= []).push(
     { id: testPropertyId, code: 'TEST-TURNOVER', region: 'Melbourne' },
     { id: deferredMergePropertyId, code: 'TEST-DEFERRED-SAVE', region: 'Melbourne' },
+  )
+  ;((db as any).orders ||= []).push(
+    { id: 'test-order-invalid', property_id: testPropertyId, status: 'invalid', checkin: '2026-09-20', checkout: '2026-09-26' },
+    { id: 'test-order-cancelled', property_id: testPropertyId, status: 'booking_cancelled', checkin: '2026-09-20', checkout: '2026-09-26' },
+    { id: 'test-order-wrong-property', property_id: 'different-property', status: 'confirmed', checkin: '2026-09-20', checkout: '2026-09-26' },
+    { id: 'test-order-wrong-boundary', property_id: testPropertyId, status: 'confirmed', checkin: '2026-09-20', checkout: '2026-09-27' },
+    { id: 'test-order-canonical-outgoing', property_id: testPropertyId, status: 'confirmed', checkin: '2026-09-20', checkout: '2026-09-27' },
+    { id: 'test-order-canonical-incoming', property_id: testPropertyId, status: 'confirmed', checkin: '2026-09-27', checkout: '2026-09-30' },
+    { id: 'test-order-canonical-incoming-2', property_id: testPropertyId, status: 'confirmed', checkin: '2026-09-27', checkout: '2026-10-02' },
+    { id: 'test-order-valid', property_id: testPropertyId, status: 'confirmed', checkin: '2026-09-20', checkout: '2026-09-29' },
   )
   ;((db as any).users ||= []).push({
     id: deferredMergeAssigneeId,
@@ -1466,6 +1535,10 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     })
+    return { status: response.status, body: await response.json() as any }
+  }
+  const getJson = async (path: string) => {
+    const response = await fetch(`${base}${path}`)
     return { status: response.status, body: await response.json() as any }
   }
   try {
@@ -1565,6 +1638,85 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     assert.equal(checkoutHistoryRead.status, 200)
     const checkoutHistoryRows = await checkoutHistoryRead.json() as any[]
     assert.equal(checkoutHistoryRows.find((item) => item.id === turnoverCheckoutId)?.new_code, null, 'history API must hide a legacy checkout new_code')
+
+    const completedCandidates = await getJson(`/cleaning/tasks/checkin-link-candidates?property_id=${testPropertyId}&task_date=2026-09-25`)
+    assert.equal(completedCandidates.status, 200)
+    assert.deepEqual(
+      completedCandidates.body.items.map((item: any) => item.id).sort(),
+      [completedCandidateId, keysHungCandidateId, inspectedCandidateId, cleanedCandidateId].sort(),
+      'completed, keys-hung, inspected and cleaned checkout tasks remain linkable',
+    )
+    assert.deepEqual(
+      Object.keys(completedCandidates.body.items.find((item: any) => item.id === completedCandidateId)).sort(),
+      ['checkout_time', 'id', 'property_code', 'property_id', 'status', 'task_date'],
+      'candidate DTO must not expose order, guest or password fields',
+    )
+    assert.equal(completedCandidates.body.items.find((item: any) => item.id === completedCandidateId)?.property_code, 'TEST-TURNOVER')
+
+    const invalidOrderCandidates = await getJson(`/cleaning/tasks/checkin-link-candidates?property_id=${testPropertyId}&task_date=2026-09-26`)
+    assert.equal(invalidOrderCandidates.status, 200)
+    assert.deepEqual(invalidOrderCandidates.body.items, [], 'invalid, cancelled, missing, cross-property and wrong-boundary orders fail closed')
+    const canonicalOccupiedCandidates = await getJson(`/cleaning/tasks/checkin-link-candidates?property_id=${testPropertyId}&task_date=2026-09-27`)
+    assert.equal(canonicalOccupiedCandidates.status, 200)
+    assert.deepEqual(canonicalOccupiedCandidates.body.items, [], 'one or multiple valid incoming booking boundaries conservatively occupy the checkout')
+    const explicitlyOccupiedCandidates = await getJson(`/cleaning/tasks/checkin-link-candidates?property_id=${testPropertyId}&task_date=2026-09-28`)
+    assert.equal(explicitlyOccupiedCandidates.status, 200)
+    assert.deepEqual(explicitlyOccupiedCandidates.body.items, [], 'an explicit active check-in link already occupies its checkout')
+    const validOrderedCandidates = await getJson(`/cleaning/tasks/checkin-link-candidates?property_id=${testPropertyId}&task_date=2026-09-29`)
+    assert.equal(validOrderedCandidates.status, 200)
+    assert.deepEqual(validOrderedCandidates.body.items.map((item: any) => item.id), [validOrderedCandidateId])
+    const inactiveCandidates = await getJson(`/cleaning/tasks/checkin-link-candidates?property_id=${testPropertyId}&task_date=2026-09-30`)
+    assert.equal(inactiveCandidates.status, 200)
+    assert.deepEqual(inactiveCandidates.body.items, [], 'cancelled, superseded and lifecycle-deleted tasks are not candidates')
+    assert.equal((await getJson(`/cleaning/tasks/checkin-link-candidates?property_id=${testPropertyId}&task_date=not-a-date`)).status, 400)
+    assert.equal((await getJson('/cleaning/tasks/checkin-link-candidates?property_id=missing-property&task_date=2026-09-25')).status, 400)
+
+    const completedLinked = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-25',
+      property_id: testPropertyId,
+      linked_checkout_task_id: completedCandidateId,
+      checkin_link_decision: 'link',
+      inspection_scope: 'inspect_and_hang',
+    })
+    assert.equal(completedLinked.status, 200, JSON.stringify(completedLinked.body))
+    assert.equal(completedLinked.body.linked_checkout_task_id, completedCandidateId, 'POST shares the candidate rule and accepts a completed checkout')
+    const invalidOrderLinked = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-26',
+      property_id: testPropertyId,
+      linked_checkout_task_id: invalidOrderCandidateId,
+      checkin_link_decision: 'link',
+      inspection_scope: 'inspect_and_hang',
+    })
+    assert.equal(invalidOrderLinked.status, 409)
+    assert.equal(invalidOrderLinked.body.code, 'manual_checkin_checkout_link_conflict')
+    const canonicalOccupiedLinked = await postJson('/cleaning/tasks', {
+      create_mode: 'checkin',
+      task_date: '2026-09-27',
+      property_id: testPropertyId,
+      linked_checkout_task_id: canonicalOccupiedCheckoutId,
+      checkin_link_decision: 'link',
+      inspection_scope: 'inspect_and_hang',
+    })
+    assert.equal(canonicalOccupiedLinked.status, 409)
+    assert.equal(canonicalOccupiedLinked.body.code, 'manual_checkin_checkout_link_conflict')
+
+    const concurrentLinkPayload = {
+      create_mode: 'checkin',
+      task_date: '2026-10-01',
+      property_id: testPropertyId,
+      linked_checkout_task_id: concurrencyCandidateId,
+      checkin_link_decision: 'link',
+      inspection_scope: 'inspect_and_hang',
+    }
+    const concurrentLinks = await Promise.all([
+      postJson('/cleaning/tasks', concurrentLinkPayload),
+      postJson('/cleaning/tasks', concurrentLinkPayload),
+    ])
+    assert.deepEqual(concurrentLinks.map((result) => result.status).sort(), [200, 409], 'only one concurrent check-in may claim a checkout')
+    assert.equal(concurrentLinks.find((result) => result.status === 409)?.body?.code, 'manual_checkin_checkout_link_conflict')
+
     const dateMoveIndependent = await postJson(`/cleaning/tasks/${pureCheckinId}`, { task_date: '2026-09-17' }, 'PATCH')
     assert.equal(dateMoveIndependent.status, 200, 'same room and date alone must not invent a turnover relation')
     assert.equal((db.cleaningTasks as any[]).find((item) => item.id === pureCheckinId)?.task_date, '2026-09-17')
@@ -1732,7 +1884,7 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     const index = db.cleaningTasks.findIndex((item) => item.id === taskId)
     if (index >= 0) db.cleaningTasks.splice(index, 1)
-    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId, decisionCheckoutUniqueId, decisionCheckoutIndependentId, decisionCheckoutAmbiguousAId, decisionCheckoutAmbiguousBId, deferredMergeCheckoutId, deferredMergeCheckinId]) {
+    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId, decisionCheckoutUniqueId, decisionCheckoutIndependentId, decisionCheckoutAmbiguousAId, decisionCheckoutAmbiguousBId, completedCandidateId, keysHungCandidateId, inspectedCandidateId, cleanedCandidateId, invalidOrderCandidateId, cancelledOrderCandidateId, wrongPropertyOrderCandidateId, wrongBoundaryOrderCandidateId, missingOrderCandidateId, canonicalOccupiedCheckoutId, canonicalOccupiedCheckinId, canonicalAmbiguousCheckinId, explicitlyOccupiedCheckoutId, explicitlyOccupiedCheckinId, validOrderedCandidateId, concurrencyCandidateId, 'test-manual-link-candidate-cancelled', 'test-manual-link-candidate-superseded', 'test-manual-link-candidate-lifecycle-deleted', deferredMergeCheckoutId, deferredMergeCheckinId]) {
       const fixtureIndex = db.cleaningTasks.findIndex((item) => item.id === id)
       if (fixtureIndex >= 0) db.cleaningTasks.splice(fixtureIndex, 1)
     }
@@ -1742,6 +1894,8 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     }
     const userIndex = ((db as any).users || []).findIndex((item: any) => item.id === deferredMergeAssigneeId)
     if (userIndex >= 0) (db as any).users.splice(userIndex, 1)
+    const testOrderIds = new Set(['test-order-invalid', 'test-order-cancelled', 'test-order-wrong-property', 'test-order-wrong-boundary', 'test-order-canonical-outgoing', 'test-order-canonical-incoming', 'test-order-canonical-incoming-2', 'test-order-valid'])
+    ;(db as any).orders = ((db as any).orders || []).filter((item: any) => !testOrderIds.has(String(item?.id || '')))
   }
 }
 
