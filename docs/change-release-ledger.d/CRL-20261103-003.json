@@ -1,0 +1,359 @@
+{
+  "schema_version": 1,
+  "crl": "CRL-20261103-003",
+  "repository": "root",
+  "title": "MZ-065 and MZ-098 integrated Root release",
+  "request": "Release the reviewed Root fixes for authoritative temporary check-in linkage and complete ordinary fixed-expense monthly snapshot selection together, without uploading the historical ledger or performing production data repair.",
+  "outcome": "Completed same-day checkouts remain valid explicit link targets for temporary check-ins under one server-authoritative fail-closed contract, while ordinary and zero-value consumables again enter the existing idempotent current-month snapshot flow alongside unchanged Referral behavior.",
+  "implementation": [
+    "Add one authenticated SELECT-only checkout-candidate contract and reuse its order, lifecycle, occupancy, and ambiguity predicate in the locked manual check-in create transaction.",
+    "Keep completed, inspected, cleaned, and keys-hung checkout sources linkable without reopening them, while rejecting invalid, occupied, wrong-boundary, or ambiguous sources.",
+    "Move the Web manual check-in flow to the Root candidate contract with loading and error fail-closed behavior, stale-response isolation, conflict refresh, and form-input retention.",
+    "Restore one shared recurring-template predicate for ordinary fixed expenses, fixed income, zero-value templates, and unpaid Referral percentage refresh candidates.",
+    "Keep the existing authorized recurring page's current-month write-on-load flow and idempotent ensure-snapshot endpoint; add no scheduler, schema change, or write-on-read behavior to the revenue or property-expense pages."
+  ],
+  "impact_dependencies": [
+    "The MZ-065 Mobile behavior depends on the paired mobile/CRL-20261103-005 candidate and Root must merge first.",
+    "MZ-098 has no cross-repository runtime dependency and changes no API, schema, migration, permission, environment, package, or native input.",
+    "October and November missing production snapshots remain untouched and require a separate exact dry-run and production-write authorization."
+  ],
+  "validation": [
+    "MZ-065 backend loopback contract and Web candidate selection passed; a dedicated loopback PostgreSQL 16 database plus two concurrent real HTTP requests proved exactly one active linked check-in and one task-created event, with the loser returning 409 and no deadlock.",
+    "MZ-098 recurring-payment rules passed 9 tests; byte-identical source evidence on the same base proved three concurrent real Express requests create one AUD 60 snapshot and a zero-value template creates one zero snapshot in isolated PostgreSQL 16.",
+        "CI=true npm run check:full passed the complete Root chain, Web 57 files / 314 tests, and the exact paired Mobile candidate 84 suites / 826 tests; exact ledger/registry/diff gates passed."
+  ],
+  "risks": [
+    "Physical-device linkage, real browser account flow, and weak-network behavior remain unverified; isolated PostgreSQL concurrency uses synthetic local-only data.",
+    "Snapshot generation remains current-month and page-triggered; historical or unopened-month gaps are not repaired by this release.",
+    "No production API, finance page with write side effects, database repair, deployment, or OTA action is part of this candidate.",
+    "The historical ledger remains byte-for-byte unchanged and is not included in this change."
+  ],
+  "files": [
+    "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+    "backend/src/modules/cleaning.ts",
+    "docs/change-release-ledger.d/CRL-20261103-003.json",
+    "docs/feature-regression-registry.md",
+    "frontend/src/app/cleaning/page.tsx",
+    "frontend/src/app/finance/recurring/page.tsx",
+    "frontend/src/lib/cleaningDailyMerge.test.ts",
+    "frontend/src/lib/cleaningDailyMerge.ts",
+    "frontend/src/lib/recurringPaymentRules.test.ts",
+    "frontend/src/lib/recurringPaymentRules.ts"
+  ],
+  "staged_hunks": [
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "206a167a1a5e90a37df416f4f823770d2c2dc90b8470357036525535c9fc4163"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "321d3a24975554b02d6ea19791947544dbe4cd376a02d46e753f413bfecfd74a"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "3f30f81a4da005c6804e95381aedb0ae5334a3973495cb49a70692d282fa4eaa"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "41040fb22c48677143c659959d2734a7ef8bb47171303124a7c7977bbdae03fc"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "57bdfadcacdcf124e987ab01ce8127bf5f0027d080eaaf5e73734762723a48c8"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "5e88211488b4bf121e718bd9fb165d7faa5c2175d2737984e9e5af4abe328ea5"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "6c45129411576407baa9618e37eabbdabe95c2481a448b91147b6448306f9d88"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "6e98d5423483c3c09f10b95e34e3f6e6cd8c938e433271fb16d024c03aed96c6"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "76070cef281d2b340ca414c13abac666041c779dd225979f478f57ee4a096cc6"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "7a9a99b319b717a96aea3ce0df88bb438325fe56649403ca8699622d3782a68e"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "c4652538810b06eecc5fdb326fe15efb6c3d27697acbd3abc08e396ac66938bc"
+    },
+    {
+      "path": "backend/scripts/tests/test_cleaning_inspection_merge.ts",
+      "sha256": "f4854a12c978c8d92c3fe1400af9288e5fb432b449c5115b0249c7b489857dec"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "19bb4f7815f462fc2a22e9302b8f5ca7d5f67d3fe0c615d6cf82013b4067492b"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "3122ba94baee07dff0fd5a9fb98c5aecb833b5beb2ae2b12695eb036b6665541"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "34d8ec23ac66766a46837cb22478db9d43191492b96664555db7f4340c6f9d4e"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "358904f825f3453f34cdeca4ee0ab43fa85b3045dab090d2014342a45bdca548"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "449f6b6e996c7e25b1b7841ab681dfd76f0e73ecf30a3ab314fb54220d1ff8a2"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "858bf803bf9f1dc8eb15ba4d18fdb9f9aea8fa24fc349b0598c373431a53d2e3"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "ad92b8f42d21df31571bd91f50699217b5f1fb438a8d52edb77d878b1d23a406"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "adba1e2ca13c4dd5a5eb8705abf0dc6c67ef7614596cf9afa450c42eeaf3ce4a"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "c9f4ebd5552dd56570bdba1e3be3726589ccd54052d3e559f106b79d89901020"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "d0cbf2515179ba11741de9c2c4c58656aa2aa7beeed2331912e70854997754d3"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "e5941e4617f27eeb56d844dfbdc840c6923bbfe930ff16708ee5afdcbc952505"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "e63138cce26253a111761c6506e8c345df5368660b50fc3a3977783d1c06e8df"
+    },
+    {
+      "path": "backend/src/modules/cleaning.ts",
+      "sha256": "f905343d877df553246468482f8f830c670830205c01fcb28e369f4dcb5960e8"
+    },
+    {
+      "path": "docs/feature-regression-registry.md",
+      "sha256": "5dd859f2d5ad30a46e2093947199c5489911158baa2e36e58bd9c546d1f57b83"
+    },
+    {
+      "path": "docs/feature-regression-registry.md",
+      "sha256": "a33a6ca405f3f360dd1b236e4b4c5185bee8f0fb14988406c4a7358c0ac38050"
+    },
+    {
+      "path": "docs/feature-regression-registry.md",
+      "sha256": "a9bba1981441f819dd556c0c9c0c535b7b40708cde242a060f0ac03c21dc0bc3"
+    },
+    {
+      "path": "docs/feature-regression-registry.md",
+      "sha256": "aa07a473552fb326bbcc4ef02fe7728d03d7840503dd74c11dfd6dfd52601e7c"
+    },
+    {
+      "path": "docs/feature-regression-registry.md",
+      "sha256": "ced754364fa8e1328339a843ad1fefe0f3869cd37f2f7204302615dfeacfc819"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "0c5c7f8252737fd4ac8cc56e1e7027d397788be9e96f0e3f8a57993be1244b16"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "11824bd31d4629b8c91b1f55d7159a64f76ef291391fe62cfa46f2fc9cfe99a0"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "1e4bc72c535c9c6f50a6554534108649851c88504e9c0c610ed4bc87378b0b6a"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "243f1f3a5023bb4d6f08307e7f0c1b579332af03f1a49233f4d43b9f5a4adab6"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "3262ad120824e55a232df6918fd6288178d1a1dcf139e6b386ba705ce0984e89"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "3f7b4be8e94f1421a82064720c6cb5f282bbd212dc9621d25312ba9cc7169968"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "4222b92144d55ffc697a704c89e59aa7e956345921f125bc34c4d82abe33b16b"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "4a3e0fd6fdc3bee4ab15b35582fdd9d6bc60695df98a8d0b9d5a52a7fdeedb04"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "4ff7a733bef87f258ded2166f208460d4d2cc895d5e50eb88a65a38f1130d1dd"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "593f7c2446d2f7006ef93f9d6ae82318304471fe822074ca344f3e68813ee120"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "602c66eb64ba3a46af046e66790393b120d9c9472409b4f3d6110e64a14ead5d"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "82c96ae128872516be1636bfb3684edae01c66839c8ff13478023f14a19ede41"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "9076a7dfe4da0acba63e4bb904f93cfdd84b73f3dc3d186d0ab12791cc884583"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "943ad2c16cb89b2a67e14b210893117db1057ff801c720118cc87721f5d5604a"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "964b4a1e64d00fc2120dc71852faaae12d607d1b522896e841dca27a28168c5b"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "984205f563c2fb607cfc9d7da15ad4a40731c44d5559c673d6115e6db460d1ea"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "9a18738d84903a01d66e72d6bc9f864cc26bdaaf0b275f049dc437f78bf85878"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "9a26e0933a0f0a293858aca1e0e91c8eed91fe0b0737ba75fe49d2e0bb88d7ef"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "9cab2405e687fd1723872bcc2ce998b4f885b08419b907fcd8f744c35db95d76"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "b965d8c17fde69036056d6634210f96a185b0992db3c0dc14d226b7a71725bfd"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "be5846b6c7e1f9fc510060abccbe709c146e19db3d8fd7af9d9054de4227dc4c"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "bee1d3459abba7f63bf0a0929612ed469602e52b0692e10474379c1ece1b2568"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "cc2c3e199baf476115d1083033b849d831b58fcc99eed92c4bef69d5ab977078"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "d1dd8bf6544a3654b83d3096c53ac7d81f3ba8d6d61467b04236d92bac002ab6"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "d3d6cf4168743c7941a8cc96de728945462716e30f2468f9e432dd137badb11c"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "d797d188a3235104e5e7d5e54cd45752f9059b9fff8e99de1aef2d9e0fdca95a"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "d8db8309e1597abec9d126d38bd1e459788ade1aed2b4c5021579a7480ceebb2"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "df670a67f950b2162dee27ba16abf843d09d8c873059156d295cd3532edadcfd"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "e5e5832beddda275970f4b15a2581d502dcaf5fb59450985c4301880515202d2"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "f11317b59bd4c4886a4a2830b187bebd84addfb5105c1990acee5ce9ad8fad2e"
+    },
+    {
+      "path": "frontend/src/app/cleaning/page.tsx",
+      "sha256": "fc8226cf1d9fdd1dd3bbe5363e8e518fe2961531fb75feba750d61d22fdcda94"
+    },
+    {
+      "path": "frontend/src/app/finance/recurring/page.tsx",
+      "sha256": "00e2a0b000ee4a4a2ba68ba19c58179ce58dbaddd1dcc392833a42c9673f3864"
+    },
+    {
+      "path": "frontend/src/app/finance/recurring/page.tsx",
+      "sha256": "f3bfd9b3b5526dbb525ef531084be697207ae274c807a86587726e91283307d4"
+    },
+    {
+      "path": "frontend/src/lib/cleaningDailyMerge.test.ts",
+      "sha256": "0a50a9b44665e38cd94d2550a01271c2ee97cdff18822e98c8082bec59d538c2"
+    },
+    {
+      "path": "frontend/src/lib/cleaningDailyMerge.test.ts",
+      "sha256": "6e8268556555fbdbdb8dc2c02a72bcebc3bcc90300e39a29d002a2ce76b1dae6"
+    },
+    {
+      "path": "frontend/src/lib/cleaningDailyMerge.test.ts",
+      "sha256": "7e33fdee2eda7186fce8134feaf3762b5d5d5693ed3125ee5e6dbb99e9ffe7f5"
+    },
+    {
+      "path": "frontend/src/lib/cleaningDailyMerge.test.ts",
+      "sha256": "9eeaf845fef85c2044f51276ed15b95e696c34a0c0ad52bd42481b04a8bd7222"
+    },
+    {
+      "path": "frontend/src/lib/cleaningDailyMerge.test.ts",
+      "sha256": "f90ca355cfc701d8d27d7f30ea535658a7265ffd3e95bfbe510e8fbb7af3605f"
+    },
+    {
+      "path": "frontend/src/lib/cleaningDailyMerge.ts",
+      "sha256": "1dba142bf56dc32f159f90ee61a912ac609195bb1ff2d59cb6827035646846fb"
+    },
+    {
+      "path": "frontend/src/lib/recurringPaymentRules.test.ts",
+      "sha256": "88f66e7b1d1f221b54c07237d3f998bc781b70f229b91001ff85c11589fac702"
+    },
+    {
+      "path": "frontend/src/lib/recurringPaymentRules.test.ts",
+      "sha256": "a62eb10f1cb20d584136a373f87b686b8ef57317bfd6e391cdc0969cb4c69498"
+    },
+    {
+      "path": "frontend/src/lib/recurringPaymentRules.ts",
+      "sha256": "250ab3dc75011d57ff66170cb6ff537c8a9a27cf3f351dc86fc3ebdc6ad56827"
+    },
+    {
+      "path": "frontend/src/lib/recurringPaymentRules.ts",
+      "sha256": "8b2087505f22538884923bc6bd0be05cbb2b248e0f03298784f438dee431a7cd"
+    },
+    {
+      "path": "frontend/src/lib/recurringPaymentRules.ts",
+      "sha256": "bed84df34f7a695d94779178c67a883fabc24341407a90ef578a56e15a6416b8"
+    }
+  ],
+  "release_attempt": {
+    "id": "RA-20261103-007",
+    "intended_action": "commit",
+    "branch": "codex/mz065-mz098-20261103",
+    "base_sha": "89c92d83e11736e7f731de06777b49af8bb80527",
+    "fetched_at": "2026-11-03T17:40:00Z",
+    "candidate_patch_sha256": "51fe9407f559ec143c74148b51a1414834e1e63b05f2eaf562ba0f83895b7fb8",
+    "commit_sha": "not committed",
+    "dependencies": "paired mobile/CRL-20261103-005 must release after this Root candidate for MZ-065; MZ-098 is Root-only",
+        "required_validation": "PASS; complete Root and paired Mobile gates, Web 57/314, Mobile 84/826, MZ-065 two-request PostgreSQL HTTP concurrency, transferred byte-identical MZ-098 PostgreSQL concurrency, registry, ledger, diff, and generated-file checks passed",
+    "shared_hunk_review": "PASS; the combined scope was rebuilt from exact reviewed source candidates on the current Dev base",
+    "generated_file_review": "PASS; no generated path is selected",
+    "technical_state": "candidate",
+    "user_authorization": "approved-for-push",
+        "independent_review": "GO; exact post-fix review found P0=0, P1=0, P2=0, P3=0 after verifying the isolated PostgreSQL concurrency evidence, CRL accuracy, registry mapping, exact fingerprint, and complete paired gates",
+        "action_conclusion": "GO",
+        "blockers": "none for commit, push, and authorized Dev merge; physical-device, real-browser account-flow, and weak-network validation remain follow-up acceptance gaps"
+  }
+}

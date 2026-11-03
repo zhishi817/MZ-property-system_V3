@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react'
 import { API_BASE, getJSON, authHeaders } from '../../../lib/api'
 import { sortActivePropertiesByRegionThenCode } from '../../../lib/properties'
 import { isDueForMonth, shouldIncludeForMonth } from '../../../lib/recurringStartMonth'
-import { isAutoPaidInRent, isRecurringIncome } from '../../../lib/recurringPaymentRules'
+import { isAutoPaidInRent, isRecurringIncome, shouldEnsureRecurringTemplateSnapshot } from '../../../lib/recurringPaymentRules'
 import AuditTrail from '../../../components/AuditTrail'
 
 type Recurring = { id: string; cashflow_type?: 'expense'|'income'; property_id?: string; property_ids?: string[]; scope?: 'company'|'property'; vendor?: string; category?: string; category_detail?: string; amount?: number; amount_mode?: 'fixed'|'percent_of_property_total_income'; due_day_of_month?: number; frequency_months?: number; remind_days_before?: number; status?: string; last_paid_date?: string; next_due_date?: string; pay_account_name?: string; pay_bsb?: string; pay_account_number?: string; pay_ref?: string; payment_type?: 'bank_account'|'bpay'|'payid'|'rent_deduction'|'cash'; bpay_code?: string; pay_mobile_number?: string; expense_id?: string; expense_resource?: 'company_expenses'|'property_expenses'|'finance_transactions'; fixed_expense_id?: string; report_category?: string; start_month_key?: string; template_kind?: string; bill_account_no?: string; note?: string; is_paid?: boolean; is_due_month?: boolean; created_at?: string }
@@ -617,17 +617,9 @@ export default function RecurringPage() {
       setSnapKey(monthKey)
       setSnapLoading(true)
       try {
-        const candidates = templatesForMonth
-          .filter((t) => String((t as any).status || '') !== 'paused')
-          .filter((t) => {
-            const startKey = String((t as any).start_month_key || '')
-            return isDueForMonth(startKey || undefined, monthKey, Number((t as any).frequency_months || 1))
-          })
-          .filter((t) => {
-            const mode = String((t as any).amount_mode || 'fixed')
-            const hasRow = !!expByFixed[String(t.id)]
-            return (isRecurringIncome(t) || mode === 'percent_of_property_total_income') && !hasRow
-          })
+        const candidates = templatesForMonth.filter((t) => (
+          shouldEnsureRecurringTemplateSnapshot(t, monthKey, expByFixed[String(t.id)])
+        ))
         const limit = Math.max(1, Math.min(2, Number((window as any).__ensureSnapConcurrency || 1)))
         let idx = 0
         let ok = 0
