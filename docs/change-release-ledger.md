@@ -1,5 +1,291 @@
 # Change Release Ledger
 
+## CRL-20261104-007 — MZ-065/091/106/107 Root 统一特性分支发布单元
+
+- **Repository:** `root`
+- **Status:** integrated on current `Dev`; full applicable local gates passed; user-authorized independent feature-branch commit/push only; not merged, deployed, migrated or production-verified
+- **Board items:** `MZ-065`, `MZ-091`, `MZ-106`, `MZ-107`
+- **Updated:** 2026-11-04 UTC
+- **Outcome:** 将四个已独立审查的候选整合到单一当前 Dev 分支。MZ-107 的 inspection receipt 兼容查询与 MZ-065/106 的清洁专属权限边界合并为同一实现；两条 receipt-aware / legacy fallback 查询都使用 `allowAllCleaningTasks`，不回退到通用管理角色。
+
+### Implementation / Scope
+
+- MZ-065：手工退房与入住双向显式关联、创建回执、订单拓扑失效解绑/取消、锁域与管理提醒；migration 仅随代码准备，未执行。
+- MZ-091：空密码仍投影精确写入目标，歧义 fail closed。
+- MZ-106：password-only 历史挂钥匙视频及精确媒体 capability。
+- MZ-107：正式检查提交清除旧视频快照中的检查照片缺项，旧隔离库缺 receipt 表时安全回退。
+- Canonical details and per-file mappings remain in `root/CRL-20261104-003` through `006` and the Feature Regression Registry.
+
+### Validation
+
+- Root CRL audit — PASS（25/25 changed paths）；Feature Registry audit — PASS（40 FRs / 319 mappings）；`git diff --check` — PASS。
+- Backend TypeScript no-emit compile — PASS。
+- Focused synthetic contracts — PASS：cleaning sync v2、daily execution visibility、cleaning inspection merge、turnover display、MZ App media/form-photo routes/read、cleaning candidate scope。
+- Web full suite — PASS（60 files / 327 tests）；lint 0 errors（existing warnings only）；production build — PASS（96 routes）。
+- Dedicated PostgreSQL migration/two-connection/deadlock/rollback verification and production API/database replay — NOT RUN；no safe isolated PostgreSQL was available and production writes remain forbidden。
+
+### Publication / Dependencies
+
+- Authorized target: independent Root feature branch only. Final commit and remote SHA are recorded in the handoff because a commit cannot self-record its own immutable SHA.
+- Paired Mobile branch must ship with Root for MZ-065、MZ-091 and MZ-106；MZ-107 requires no Mobile source change。
+- Merge to `Dev`/`main`, deployment, migration execution, production data repair and production verification remain separate actions requiring approval.
+
+### Risks / Release Notes
+
+- Source is suitable for feature-branch publication, but production release remains blocked on isolated real PostgreSQL validation for the prepared MZ-065 receipt migration and SQL concurrency paths, plus paired device acceptance.
+- No credentials, environment values, production payloads, media URLs or real passwords were added.
+
+## CRL-20261104-005 — MZ-091 空密码写入目标投影修复
+
+- **Repository:** `root`
+- **Status:** ready isolated local candidate; targeted, paired fast aggregate, governance audits and independent review passed; not committed, pushed, merged, deployed or production-verified
+- **Board item:** `MZ-091`
+- **Updated:** 2026-11-04 17:20 UTC
+- **Request:** 不论是否安排检查、是否有检查员或当前密码是否为空，原权限允许编辑的当前任务都必须能更新适用的新旧密码；保持角色、终态只读、同订单传播及后端 task type 校验不变。
+- **Outcome:** Root 周转投影把旧/新密码的显示值与写入目标分离。唯一 canonical checkout/check-in 即使密码为空也返回精确目标；合并出现多个不同目标时置空并 fail closed，且不扩大 active execution sources。
+
+### Implementation
+
+- Previous behavior: `old_code_task_id` 只有旧密码通过权威显示门禁时才存在，`new_code_task_id` 只有新密码非空时才存在；首次填写空密码时 Mobile 可能只剩 checkout 执行 source 并命中后端 `password_field_not_applicable`。
+- New behavior: canonical checkout/check-in source 的身份独立投影为密码写入目标；密码值、authority 状态与来源展示规则保持不变。合并后的目标必须唯一，相互冲突的候选不猜测。
+- Protected behavior: MZ App 后端继续按 `checkout_clean` / `checkin_clean` 严格校验字段；同订单入住新密码传播、人工旧密码本地纠正、终态/取消拒绝、receipt 幂等、角色权限和 active source 范围不变。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningTurnoverDisplay.ts` — modified: 值无关的精确密码目标与多目标 fail-closed 合并。
+- `backend/scripts/tests/test_cleaning_turnover_display.ts` — modified: 空/非空、checkout-only active source、唯一与多候选目标回归。
+- `docs/feature-regression-registry.md` — modified: FR-002 写入目标不变量与测试映射。
+- `docs/change-release-ledger.md` — modified: 本发布单元记录。
+
+### Impact / Dependencies
+
+- API: 既有 `turnover_display.old_code_task_id/new_code_task_id` 字段语义纠正；无新路由或 payload 字段。
+- Database / migration: none。
+- Config / environment / dependencies: none。
+- Related units: `root/CRL-20261102-001`, paired `mobile/CRL-20261104-002`, FR-002。
+- Release order: Root 必须先于或与 Mobile 配对发布；单独发布 Mobile 不能让旧 Root 补回缺失目标。
+
+### Validation
+
+- `ts-node-dev --transpile-only scripts/tests/test_cleaning_turnover_display.ts` — PASS；空/非空、唯一/多候选及 active source 隔离。
+- `npm run test:mz091-password-authority --prefix backend` — PASS；严格字段类型、事务/预览/receipt 契约保持。
+- `npm run test:cleaning-sync-v2 --prefix backend` — PASS；同订单填入/修改/清空传播、终态/取消保护及重复 receipt。
+- `npm run test:cleaning-inspection-merge --prefix backend` — PASS；首次 sandbox 回环监听被拒，获本机 localhost 测试许可后通过；未连接生产。
+- `npm run build --prefix backend` — PASS；编译生成物已从候选 tracked diff 排除。
+- `npm run check:fast`（配对本地 Mobile 候选）— PASS；Root 质量契约/ledger 53 tests、backend build 与聚合契约、Frontend 58 files / 317 tests、Mobile typecheck 全通过。
+- `python3 scripts/audit_change_release_ledger.py` — PASS，4/4 changed paths recorded；`python3 scripts/audit_feature_regression_registry.py` — PASS，39 FRs / 307 mappings。
+- Candidate patch SHA-256（排除本 ledger）：`ab5a1f9683a056a69f6e52f89f0567b28d575e59429fc458469916e832cc76db`。
+- Independent read-only review — GO for current uncommitted local candidate quality，P0/P1/P2 = 0/0/0；无关 FR 日期与 Root CRL identity collision 已纠正，reviewer 对最终 fingerprint 独立复跑 targeted turnover、4/4 ledger、39 FR / 307 mappings 与 `git diff --check` 均 PASS。此 GO 不授权 commit/push/deploy。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** not prepared
+- **Untracked review:** not prepared；本地 `node_modules` 仅为忽略的测试依赖链接，不属于候选。
+
+### Release Attempts
+
+- None；用户仅授权本地修复与测试，未授权暂存、提交、推送或部署。
+
+### Risks / Release Notes
+
+- 回滚：撤销两个 runtime/test hunk 与本 CRL/FR 更新；无数据迁移。
+- Sensitive-information review: 合成 ID/值；未记录真实密码、手机号、token、cookie、私钥、数据库 URL、`.env`、生产日志或生产数据。
+- Production/API writes: none；未调用生产保存接口或数据库写入。
+- Non-blocking gaps: 未分别显式测试 `old_code_task_id` 的多候选/完全无候选，但其与已覆盖 new-code 场景使用同一对称 helper；未做真实 Root/Mobile HTTP、设备或生产验收。
+- Git state: isolated local branch `codex/mz091-password-target-fix-local`; uncommitted。
+
+## CRL-20261104-004 — MZ-107 正式检查提交清除旧视频缺项
+
+- **Repository:** `root`
+- **Status:** ready uncommitted local candidate; focused synthetic regression and backend TypeScript compile passed; not staged, committed, pushed, merged, deployed or production-verified
+- **Board item:** `MZ-107`
+- **Updated:** 2026-11-04 10:23 UTC
+- **Request:** 修复检查人员页面中检查照片已正式提交并可只读查看，但任务卡仍显示“挂钥匙已完成 / 资料待补：检查照片”的错误提示；保持同 source、正式提交、MZ-073 legacy 补品审计和媒体权限边界，不回填或修改生产数据。
+- **Outcome:** 本地 Root 候选在投影挂钥匙事实时同时核对同一 source task 的有效正式检查审计或 `save_inspection_photos` 回执；正式提交存在后只移除旧视频快照中的 `inspection_photos`，其他清洁缺项不变。缺少旧回执表的隔离/开发数据库会回退到正式审计读取，不阻断任务列表。既有 Mobile 无需改动即可在下次权威刷新后隐藏错误提示。
+
+### Implementation
+
+- Previous behavior: `GET /mzapp/work-tasks` 仅加载当前 source 的最近 `upload_access_video` 审计，`key_handover` 原样复制该上传时点的 `missing_requirements`。OA2804、UT2602 先传视频后正式提交检查照片时，任务和照片回执已完成，但卡片永久保留旧的 `inspection_photos` 缺项；先照片后视频的 EQ2312 不受影响。
+- New behavior: 工作任务候选批量收集同 source 的正式检查提交事实。正式事实只接受 `inspection_submission_complete=true` 且通过既有 `inspectionSubmissionAuditWhereSql` 排除 legacy restock 的检查审计，或精确 `cleaning_task_inspection_photos / save_inspection_photos` 回执；并且提交时间必须不早于当前视频审计。普通媒体存在和早于当前视频的旧回执均不算本次缺项已解决。
+- Compatibility: 正常 schema 先执行包含正式回执的候选查询；仅在 PostgreSQL 返回 `42P01` 时，以同一只读候选查询移除可选回执分支后重试。正式审计仍参与投影，其他缺表/查询错误不会被吞掉。
+- Projection behavior: 有正式提交时，仅从不可变视频审计快照中清除 `inspection_photos`；若仍有 `cleaning_consumables`、`cleaning_property_photo` 等缺项，`workflow_finalization_pending` 和相应提示继续保留。视频完成事实、source、角色动作、媒体 URL 权限、状态机和历史审计均不改变。
+
+### Files / Areas
+
+- `backend/src/lib/cleaningInspection.ts` — modified: `projectCleaningKeyHandover` 接受同 source 正式检查完成事实，只解析当前投影的检查照片缺项，不改写历史审计。
+- `backend/src/modules/mzapp.ts` — modified: work-task 候选 SQL 批量读取精确 source 的正式检查审计/回执并传给挂钥匙投影；旧库缺回执表时仅回退可选回执分支。
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: 增加视频先传、正式照片后传、混合缺项及仅媒体不清除的正反回归，并锁定正式 source/receipt/legacy-restock SQL 契约。
+- `docs/feature-regression-registry.md` — modified: FR-040 登记 MZ-107 不变量与测试映射。
+- `docs/change-release-ledger.md` — modified: 本 Root 修复单元。
+
+### Impact / Dependencies
+
+- API: 路径和响应 schema 不变；已正式提交的任务，其 `key_handover.workflow_finalization_pending` / `missing_requirements` 会反映当前已解决事实。
+- Database / migration / backfill: none；只读取既有 action audit 和 idempotency receipt，不写历史任务、媒体或回执。
+- Mobile: no source change；既有列表/详情已按 `key_handover` 字段显示，权威刷新后消费纠正后的 Root payload。
+- Roles / permissions: unchanged；不扩大任务、视频或照片可见性，不改变 `available_actions`。
+- Config / dependencies: none。
+- Related units: FR-040；MZ-073 `root/CRL-20261022-006` 的 legacy restock 排除规则保持不变；MZ-076 Root/Mobile source 精确恢复规则保持不变。
+
+### Validation
+
+- `DATABASE_URL='' .../ts-node-dev --transpile-only scripts/tests/test_cleaning_inspection_merge.ts` — PASS；只用合成内存数据和本机 loopback，覆盖同 source 正式提交、旧视频缺项、早于当前视频的旧提交 fail-closed、仅媒体、混合清洁缺项、legacy restock 排除、缺回执表 `42P01` 重试静态契约和既有合卡/状态回归。
+- `DATABASE_URL='' .../ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts` — PASS；既有动作、只读和 source 权限契约保持。
+- Backend TypeScript compile with a temporary local config pointing at the already-installed dependency tree — PASS；临时 config 已删除，无依赖安装或仓库残留。
+- `python3 scripts/audit_change_release_ledger.py` — PASS（5/5 changed files covered）。
+- `python3 scripts/audit_feature_regression_registry.py` — PASS（40 FRs；308 test mappings）。
+- `git diff --check` — PASS。
+- First direct TypeScript attempt with only `NODE_PATH` — environment-only FAIL because TypeScript does not resolve declarations through `NODE_PATH`; no product compile error was established. The temporary config rerun above passed.
+- Isolated PostgreSQL parse/plan or execution coverage for the new candidate CTE/fallback — NOT RUN；当前环境没有符合仓库防生产规则的显式随机端口测试数据库，因此 FR 登记保持 `partial`，不把静态 SQL 断言写成数据库集成覆盖。
+- Production database/API replay, migration, device test, OTA and deployment — not run / not authorized。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** not prepared
+- **Untracked review:** none；candidate worktree is isolated from the legacy dirty workspace.
+
+### Release Attempts
+
+- None. The user authorized implementation and testing only; commit, push, PR, merge and deployment remain unauthorized.
+
+### Risks / Release Notes
+
+- Risk is limited to projection truth for already-saved exact-source evidence. If an invalid historical row has neither a valid formal audit nor exact receipt, it remains fail-closed and continues showing the old warning.
+- No production data repair is required; after a future Root deployment, existing records should correct on the next authoritative task refresh.
+- Rollback: revert the three backend source/test hunks and FR/ledger entry; no database rollback.
+- Sensitive-information review: only source, synthetic tests and governance docs; no credentials, environment values, URLs, production payloads, media or user identifiers recorded.
+- Git state: local uncommitted branch `codex/mz107-formal-inspection-clears-stale-pending` based on `origin/Dev@56fcf983474ea232ede3574d689fbce21413a7d6`; not pushed. Canonical unit is `root/CRL-20261104-004`; `003` is reserved by the parallel MZ-106 Root candidate.
+
+## CRL-20261104-003 — MZ-106 仅改密码历史挂钥匙视频恢复
+
+- **Repository:** `root`
+- **Status:** ready local candidate; focused task-list, read-only media, byte-stream and TypeScript checks passed; not committed, pushed, merged or deployed
+- **Board item:** `MZ-106`
+- **Updated:** 2026-11-04 UTC
+- **Request:** 修复检查人员页面中“仅改密码”任务完成后，历史只读记录不显示已经保存的挂钥匙视频；保持精确任务职责、取消状态和媒体来源边界，不能向检查人员开放清洁完成照片。
+- **Outcome:** `checkin_clean + password_only` 的实际执行人在本人历史记录中获得精确 source 的当前挂钥匙视频只读能力；当前视频 uploader 与同事务 `upload_access_video` 审计 actor 作为两项独立合法证据，任一匹配均可恢复本人历史，当前 assignee 保留职责，`inspector_id` 仅在 assignee 为空时兜底。清洁完成照、检查照、钥匙照、补品媒体、旧视频审计、其他 source、其他人员以及取消/删除/被替代任务继续拒绝。
+
+### Implementation
+
+- Previous behavior: 历史只读能力只覆盖 `cleaning` 和 `inspection`；仅改密码记录投影为 `execution` 后返回 `lockbox_video=false / media_scope=none`。即使只打开投影，媒体读取也不把 `password_only` 的 `assignee_id` 识别为该任务的合法现场执行职责。
+- New behavior: 仅对服务端确认的 `execution + checkin_clean + password_only` 本人历史记录签发挂钥匙视频能力；媒体读取把所有 password-only source 强制收窄到全局最新持久化挂钥匙视频的精确 `media_id`，再以当前 assignee、无 assignee 时的 inspector 兜底、当前媒体 uploader、与媒体同事务的 `upload_access_video` 审计分别核定职责。媒体和审计都使用数据库事务级 `created_at`，只有时间完全相同才建立历史职责关联；候选 task id 先按日期收窄，再从该 task 的全部视频中选当前记录，列表与媒体读取不会选到不同版本。
+- Boundaries: 不新增角色或全局媒体 scope；不显示清洁完成照、检查照、钥匙照片或补品媒体；不恢复取消、删除、被替代或跨 source 媒体；checkout、自完成和普通检查的既有视频 uploader 历史入口及 captured-at 排序保持 origin/Dev 行为；不改变上传、删除、任务状态和活动任务动作。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: password-only execution 历史能力、当前视频/同事务审计职责识别、任务列表历史 actor 恢复及精确 media-id 过滤。
+- `backend/src/modules/cleaning_app.ts` — modified: 认证媒体代理把精确媒体 ID 传入共享的 password-only 授权判定。
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — modified: 生产形态 fixture、任务列表到 form-photo/Range 流、assignee / 仅空 assignee inspector 兜底 / 非空不同 uploader 与同事务 audit actor 并列、legacy 空 uploader、旧审计与替换视频、普通检查审计、本人/外人、跨 source、清洁/检查/钥匙/补品照片及取消状态回归。
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — modified: 锁定全局当前视频、同事务上传审计、日期候选先收窄 task id、checkout/自完成/普通检查旧入口保持及 executor 历史 actor 的 SQL 契约。
+- `docs/feature-regression-registry.md` — modified: FR-004 登记 password-only 历史视频职责、改派证据及照片隔离不变量。
+- `docs/change-release-ledger.md` — modified: 本变更登记。
+
+### Impact / Dependencies
+
+- API: `/mzapp/work-tasks` 的匹配历史记录增加已有 `read_only_views.lockbox_video` 和精确 `media_source_ids`；既有 form-photo 与认证媒体 GET 接受同一合法执行人，未新增端点。
+- Database / migration / backfill: none；不修改、迁移或重传生产媒体。
+- Roles / permissions: 复用既有仅改密码现场执行人职责；`inspector_id` 只有在 assignee 为空时兜底且不落入通用检查媒体规则。改派历史只接受与当前视频同事务的上传审计，既兼容 legacy 空 uploader，也拒绝旧演员读取后续替换视频。管理角色、清洁人员、普通检查任务及其他媒体权限不变。
+- Dependency: paired `mobile/CRL-20261104-001` 必须配套发布，确保 `execution` 历史仍进入 `TaskDetail`。旧 Mobile 会把新 `media_scope=inspector` 当作普通检查历史路由，因此发布前必须完成版本兼容计划。
+
+### Validation
+
+- `backend/node_modules/.bin/tsc -p backend --noEmit` — PASS。
+- `npm run test:mzapp-form-photo-routes --prefix backend` — PASS；纯本地 Express/fixture，测试 SQL 明确拒绝写语句，覆盖 `/work-tasks` 历史入口到 form-photo 和认证 Range 流、assignee、仅空 assignee 的 inspector 兜底、非空不同 uploader 与当前视频同事务 audit actor 分别可读、legacy 空 uploader、旧审计/替换视频、普通检查/跨 source 审计拒绝及照片隔离。
+- `npm run test:work-tasks-cleaning-candidate-scope --prefix backend` — PASS；锁定日期只筛 task id、全局当前视频按持久化时间选择、同事务审计独立关联、checkout/自完成/普通检查旧入口与排序保持及 executor 历史 actor 的源码契约。
+- `npm run test:mzapp-media-visibility --prefix backend` — PASS。
+- `npm run check:feature-registry` — PASS（40 FRs；310 test mappings）。
+- `python3 scripts/audit_change_release_ledger.py` 与 `git diff --check` — PASS；6/6 changed paths 均已登记，无 whitespace 错误。
+- Isolated PostgreSQL execution for the new current-video/audit CTE — NOT RUN；当前环境没有获批的专用临时数据库，FR 映射保持 `partial`，不把内存适配器和源码契约写成真实 SQL 集成覆盖。
+- Production database/API writes, migration, replay and deployment — NOT RUN；本候选未连接或写入生产。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** not prepared
+- **Untracked review:** none; clean isolated clone contains only this CRL's tracked changes
+
+### Release Attempts
+
+- None. User authorized implementation and testing only; no commit, push, PR, merge or deployment authorization was inferred.
+
+### Risks / Release Notes
+
+- 未同时存在 current uploader 或与当前视频完全相同数据库事务时间的 upload audit 时保持 fail-closed，不猜测历史 actor；发布前仍建议在专用 PostgreSQL 上执行 CTE 正反例。
+- Root 与 Mobile 必须协调发布；在配套 Mobile 路由修复到位前单独部署 Root 会让旧客户端把 execution 历史误当检查历史页。
+- 回滚为同时撤销本 CRL 的 Root 能力/媒体职责补丁与 paired Mobile 路由补丁；不涉及数据回滚。
+- Sensitive-information review: 测试仅使用合成 ID、房号形态和本地媒体 key；未加入凭据、令牌、生产链接或媒体内容。
+- Git state: isolated branch `codex/mz106-password-only-history-video-dev`, based on `origin/Dev@56fcf983474ea232ede3574d689fbce21413a7d6`; not staged or committed.
+
+## CRL-20261104-006 — 手工退房与入住双向显式周转关联闭环
+
+- **Repository:** `root`
+- **Status:** isolated local source candidate GO after final independent review (0 P0/P1/P2/P3); production release remains NO-GO until isolated real PostgreSQL and device verification complete; not committed, pushed, merged, deployed, released or applied to production data
+- **Board item:** MZ-065 follow-up; does not use MZ-094
+- **Updated:** 2026-11-04 UTC
+- **Request:** 修复先有入住、后新增退房无法合卡，并一并核对任意创建顺序、成对新增、已有两卡补关联、取消重建、多候选、跨日、执行模式、权限、重复提交、并发、编辑一致性、旧客户端与 Mobile。
+- **Outcome:** Root 继续只接受显式 link 或准确双订单边界，不按同房同日盲合；Web/paired Mobile 可从退房侧选择已有入住，成对新增持久化内部关系，已有独立两卡通过专用接口原子补关联；Web 存量场景即使同日有多个可靠候选，也必须显式选定准确的一对。创建回执按 actor + 稳定 request ID + 完整语义 payload 绑定，未知响应可安全重放；若响应丢失后载荷变化触发 replay conflict，Web/Mobile 都冻结原窗口再次提交、刷新权威列表并要求先核对，不能静默换 ID。Web 新增关联任务前禁止夹带现有任务未保存修改，避免部分提交。订单后来改房或改日时，仍可自动同步的活动订单任务继续跟随订单权威值，同一同步事务仅解除已失效的准确旧 link，保留两条源任务、安排和历史证据，并记录关系解除日志/事件，不自动寻找或猜测新对象。经用户确认，`auto_sync_enabled=false` 或终态任务在改房/改日时继续保持原位置和内容；只有关系在另一侧移动后确实失效时才准确解绑，并给拥有 `cleaning.schedule.manage` 的账号写入持久检查提醒，不披露订单新房源/日期。订单取消/删除采用另一条已确认规则：所有尚在待执行生命周期的订单入住/退房任务即使停止自动同步也要软取消并退出活动投影，准确旧关系同时解除；源行、审计、事件及已完成/终态历史保留，不做物理删除。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning.ts` — 增加 SELECT-only 入住候选、单退房反向关联 payload、同事务创建退房并写入住 link、成对新增内部 link、既有任务专用 `/cleaning/tasks/turnover-links`、人工 PATCH 拓扑保护，以及 actor/完整 payload 绑定的创建回执；存量关联事件包含两条 source 并仅向两侧准确参与人和既有管理角色刷新；`create_mode` 与 `task_type` 的语义一致旧请求继续兼容，矛盾组合明确拒绝。
+- `backend/scripts/migrations/20261104_mz065_manual_create_receipts.sql` — 仅准备、未执行：创建 `(actor_user_id, request_id)` 主键回执表，仅保存 HMAC 请求摘要、任务 IDs/types 和完成状态，不保存原始 payload、密码或客资；同时把订单 INSERT 触发器的历史 code / UUID 房源表示规范成同一 UUID 周转锁域，避免与应用侧 canonical 锁分裂。
+- `backend/src/dbAdapter.ts` — 订单更新在取得旧/新边界锁前先规范房源 code / UUID，和手工关联、worker 及新版 INSERT trigger 使用同一 advisory-lock identity。
+- `backend/src/lib/dailyTaskExecutionVisibility.ts`、`backend/src/modules/mzapp.ts` — form-photo 授权查询加载 `linked_checkout_task_id`，使准确显式手工周转可沿用既有参与人/媒体边界；`GET /mzapp/work-tasks?view=all` 对 `cleaning.schedule.manage` 只扩展 `cleaning_tasks`，不扩展普通线下、维修、深清或其他任务池；固定管理角色保持原有 generic + cleaning 范围。
+- `backend/src/services/cleaningSync.ts`、`backend/src/services/cleaningSyncJobs.ts` — 订单同步在取得密码链锁后，按稳定顺序一次性锁定旧关系与新订单边界；周转锁、通知 episode 和关系有效性判断先把历史房源 code / UUID 规范到同一房源身份，表示变化不会误解绑、重复提醒或清空人员/排期，真实改房才解除关系。仍可自动同步的活动订单任务改房/改日会在同一事务解除准确失效 link、更新订单任务、保留配对源任务，并写 `relationship_detached` 同步审计和参与侧可见事件，不自动重连。参与侧事件只披露旧 pair 失效事实，不向已脱离关系的旧侧人员广播新房源/新日期；完整新拓扑仅留在管理审计。锁定或终态任务在改房/改日时不移动；若准确旧关系仍成立则保留，若另一侧移动后关系失效则只解绑；自动密码回填/失效、临时任务接替、延期 replacement 与同日 scope 归一化不得旁路改写锁定任务。订单取消/删除不再由入队层直接裸改状态，而是进入完整 worker 事务：活动订单入住/退房（含 `auto_sync_enabled=false`）软取消、失效显式关系解除并写审计/事件，已完成或其他终态行保持为不可变历史。同步审计、关系事件、管理检查事件和持久通知与任务变更使用同一数据库事务；通知收件人从当前 RBAC 的 `cleaning.schedule.manage` 权限解析，不按固定角色猜测；同一事故的 direct/backfill/跨路径重试复用一个 episode。episode 同时绑定最近一次准确 `linked_checkout_task_id` 写入事件版本；解绑后人工重新关联、随后再次发生相同目标拓扑事故时会生成一次新提醒，普通任务字段编辑不会冒充关系新版本。
+- `backend/src/services/notificationEvents.ts` — 新增不经过可配置角色/参与人规则扩大发送范围的 `CLEANING_ORDER_TOPOLOGY_REVIEW_REQUIRED` 持久通知类型；收件人只使用同步事务内解析出的排班管理权限账号，提醒正文不包含订单改后的房源或日期。
+- `backend/scripts/tests/test_cleaning_sync_v2.ts` — 覆盖订单入住/退房两种移动方向、房源 code / UUID 混存的语义同房不解绑/不清人员排期/不重复提醒与真实改房解绑、全局稳定 canonical 锁序、同订单两侧一起移动后仍有效的关系继续保留、非拓扑更新保留关系、源任务/人员/证据保留、新位置候选不得自动重连、提交后 worker 重放幂等、单侧锁定、双侧锁定、终态侧、自动密码链对锁定目标零写入，以及按实际排班管理权限选择检查提醒收件人；精确覆盖“解绑→人工重新关联同一 pair→再次移动到相同目标→再次解绑”的第二事故提醒，以及两次事故各自 direct/backfill 重试不重复。另覆盖普通及停止自动同步的活动订单任务取消、显式关系解除、退出活动投影、独立手工对侧保留和完成历史不改写。内存分支已执行，真实 PostgreSQL 分支待隔离数据库。
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — 覆盖自定义 `cleaning.schedule.manage` 仅获得 cleaning all-view、普通 cleaning 权限不扩大、既有管理角色范围不退化及 route 源码分域。
+- `frontend/src/app/cleaning/page.tsx` — 反向 0/1/多候选、稳定 request ID、已有两卡补关联和保存前关系校验；存量同日存在多条可靠退房/入住时分别选择准确 source 后提交，候选读取失败则不提供关联；同日新增关联与现有任务编辑隔离。顶层新增和已有卡“新增另一侧”遇 replay conflict/inactive 时都冻结表单、禁止再次保存、刷新当天权威列表并提示关闭核对，不生成新 request ID。
+- `frontend/src/lib/cleaningDailyMerge.ts` — 反向候选 DTO、scope 竞态保护、选择与失败关闭状态。
+- `frontend/src/lib/cleaningDailyMerge.test.ts` — 覆盖反向候选白名单、0/1/多候选、scope 切换与错误恢复。
+- `frontend/src/lib/cleaningTurnoverEditPlan.ts` — 跨日、未保存现有任务字段与新增侧变化的写入前规划。
+- `frontend/src/lib/cleaningTurnoverEditPlan.test.ts` — 覆盖跨日、未保存修改、签名与新增侧隔离。
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — 覆盖反向/成对/存量关联、取消重建、歧义、actor/payload 重放、取消后重放、并发、创建模式冲突和三候选假幂等。
+- `backend/scripts/tests/test_mzapp_form_photo_read.ts` — 覆盖显式手工周转媒体授权与独立关系隔离。
+- `backend/scripts/tests/test_mzapp_form_photo_routes.ts` — 覆盖显式手工 pair 的参与侧读取、错误 source、改派撤权和取消拒绝。
+- `docs/feature-regression-registry.md` — 登记当前有效不变量和测试映射。
+- `docs/change-release-ledger.md` — 登记本候选范围、验证、paired Mobile 依赖与待决订单同步规则。
+
+### Business / Security Boundaries
+
+- 关系继续存储在 check-in source 的 `linked_checkout_task_id`；不自动回填历史空关系，不凭同房同日猜测，不删除源任务、媒体、事件或执行证据。
+- 同日可靠周转必须 `inspect_and_hang`；`password_only` 不静默转换，`self_complete`、人员、状态和已有可靠关系不被覆盖。人工接口单边改房源/日期 fail-closed；经用户确认，仍可自动同步的活动订单任务确实改房/改日、原 link 因而失效时原子解除该准确旧关系，但不得删除配对任务、覆盖其人员/媒体/历史或自动猜测新关系。锁定/终态任务保持原 `skipped_locked` 与原位置，不强制移动；若其关系因另一侧移动而失效，只解除准确旧 link，并持久提醒拥有排班管理权限的人员检查。
+- 订单取消/删除与改房/改日使用不同生命周期规则：取消后所有尚活动的订单入住/退房必须软取消并从日历/活动报告排除，`auto_sync_enabled=false` 不能保留待执行项；显式关系准确解除，独立手工对侧不连带取消。已完成/终态记录继续作为审计历史保留，绝不物理删除或重写完成事实。
+- 多候选必须用户显式选择或独立；取消/失效 checkout 允许安全重建。存量关联只有已持久化准确 link 才返回幂等成功，不能以两行局部 canonical 判断掩盖第三候选。
+- 新版 Web/Mobile 使用稳定 request ID；同 actor/同完整 payload 才可重放，另一 actor、变化 payload、取消/失效任务均 409。旧客户端无反向字段仍独立创建；旧客户端无 request ID 的未知响应重试仍没有端到端去重保证。
+- 角色权限复用既有人工创建/安排权限，不新增权限码；候选 DTO、回执与响应不含客资、密码、媒体 URL 或原始敏感 payload。
+
+### Validation
+
+- `env -u DATABASE_URL -u TEST_DATABASE_URL npm run test:cleaning-inspection-merge --prefix backend` — PASS；本机 loopback Express + 内存 store，未连接数据库。
+- `npm exec --prefix backend -- ts-node --transpile-only backend/scripts/tests/test_mzapp_form_photo_read.ts` — PASS。
+- `env -u DATABASE_URL -u TEST_DATABASE_URL npm run test:mzapp-form-photo-routes --prefix backend` — PASS；本机测试路由/拒写夹具。
+- `env -u DATABASE_URL -u TEST_DATABASE_URL npm run build --prefix backend` — PASS。
+- `env -u DATABASE_URL -u TEST_DATABASE_URL npm run test:cleaning-sync-v2 --prefix backend` — PASS；新增订单改房/改日解除关系回归运行于内存 store，未连接数据库。
+- `npm exec --prefix frontend -- vitest run --cache=false src/lib/cleaningTurnoverEditPlan.test.ts src/lib/cleaningDailyMerge.test.ts` — PASS（2 files / 17 tests）。
+- `npm run test --prefix frontend` — PASS（58 files / 321 tests；97.29% statements）。`npm run lint --prefix frontend` — PASS（0 errors；仓库既有 warnings）。`npm run build --prefix frontend` — PASS（96 routes）。
+- Root `CI=true npm run check:fast` — PARTIAL：治理审计、后端编译及其前置回归均通过；组合测试随后因隔离 Root clone 不含内嵌 `mz-cleaning-app-frontend` 目录而 ENOENT 停止。将最新 Dev Mobile 候选临时只读映射到该路径后，`test:phase5-release-contract` 单独 PASS；后续 Web 全量测试和 Mobile 门分别按本记录与 paired Mobile 记录通过，临时映射已移除且不在补丁中。最终四项审查修正后的精确门禁结果以本记录冻结前的追加复核为准。
+- Paired Mobile `CI=true npm run check:ci` — PASS（85 suites / 838 tests）；详见 `mobile/CRL-20261104-006`。最终独立只读复审确认源码候选 0 P0/P1/P2/P3；Mobile 同来源重开候选竞态已由 request sequence + source/side/property/date 全快照校验收口，Root 相同目标拓扑的再次事故则由精确 link event 关系代际区分；对应定向回归和最终全量门均通过。生产发布门仍由下述真实 PostgreSQL 与设备验证阻断。
+- Existing local Google Chrome + Playwright CLI with loopback Next and synthetic route stubs — PASS：多候选准确选择、专用 pair POST、首次响应丢失后同 request ID、载荷变化 409 冻结/刷新、权威刷新后单卡合并均已验证。该证据只覆盖真实浏览器 UI + stub，不等同于真实 Express/PostgreSQL 端到端。
+- Not run: isolated real PostgreSQL migration/transaction/two-connection code↔UUID lock race, deadlock and rollback；通知/审计/事件失败的真实事务回滚；browser through real Express/PostgreSQL；iOS/Android simulator or physical device；weak-network device test；production API/data verification。本机未发现 `postgres`/`pg_ctl`/`initdb`/`psql`、Docker/Podman、Postgres.app/Homebrew PostgreSQL，且 `MZ091_TEST_DATABASE_URL`、`MZ093_TEST_DATABASE_URL`、`TEST_DATABASE_URL`、`R5_2A_TEST_DATABASE_URL` 均未设置；仓库现有 env 指向生产，按本任务限制未读取凭据、未连接、未写入。最小解阻条件是用户另行提供明确隔离、可销毁、非生产的 PostgreSQL 连接（推荐 loopback 随机非 5432 端口及专用 `mz065_test_*` 数据库）并授权在该库建表/执行候选 migration/双连接写测试，或授权安装本地 PostgreSQL/Docker 后建立同等临时实例。
+
+### Git / Release Boundary
+
+- Root branch/base: `codex/mz065-bidirectional-turnover-link` at `main@2c9322827d79f3053768901496f527ad32552f7a`; candidate `/Users/zhishi/Documents/Codex/2026-11-04/task-3/candidate`.
+- Paired Mobile: `mobile/CRL-20261104-006`, branch `codex/mz065-bidirectional-turnover-link-mobile-dev`, base `Dev@2f30696ee160f17c2774e5be0039bf79ed74d0d2`；旧 `main@59e8059` 草稿只作备份，不是交付候选。
+- No staging, commit, push, PR, merge, migration execution, deploy, EAS build, OTA, production repair or production write occurred. Prepared migration must deploy before request-ID clients, but production migration/deploy requires separate approval.
+- FO1602 生产任务仅作诊断证据；本候选未修改或重连 `ea8994ae-31af-477f-a12a-81c9585d5e14` / `befab4d3-e82b-43da-9a62-9d160b81e140`。
+
+### Remaining Risks / Decisions
+
+- **Order-sync rules resolved:** mutable active order tasks follow the authoritative order and atomically detach only an invalid exact old relationship. Locked/terminal tasks remain unchanged and return `skipped_locked`; an accurate old pair may remain linked, but a relation made invalid by the mutable side moving is detached. Managers holding `cleaning.schedule.manage` receive a persistent review notification without the new topology. Real PostgreSQL must still prove two-connection lock ordering, rollback, audit/event/notification atomicity and worker retry behavior before release.
+- **Cancellation rule resolved:** 订单取消/删除时，活动订单入住/退房（含停止自动同步）软取消并退出活动投影，准确关系解除；独立手工对侧与终态历史保留。该规则不改变改房/改日场景对锁定任务的保留语义。
+- Run actor/payload receipt, concurrent create/link, deadlock and rollback scenarios against a dedicated ephemeral PostgreSQL only; the migration is prepared but not applied anywhere.
+- Browser and native acceptance must cover top-level checkout, existing check-in “新增退房”, two independent cards “关联同日周转”, response-loss retry, 409 refresh and refresh-to-one-card.
+- Release, migration, and any FO1602 historical data repair require separate explicit approval.
+
 ## CRL-20261104-001 — MZ-103 维修照片报告私有媒体兼容修复
 
 - **Repository:** `root`

@@ -4021,7 +4021,8 @@ router.get(
       const mediaReferences = Array.from(new Set([key, sourceUrl].map((value) => String(value || '').trim()).filter(Boolean)))
       const mediaRows = isCleaningMediaKey(key)
         ? await pgPool.query(
-          `SELECT ctm.type,
+          `SELECT ctm.id::text AS media_id,
+                  ctm.type,
                   ctm.url,
                   ctm.task_id::text AS source_task_id,
                   ctm.uploader_id::text AS uploader_id,

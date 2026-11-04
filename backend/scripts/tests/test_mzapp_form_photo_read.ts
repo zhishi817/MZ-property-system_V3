@@ -70,9 +70,55 @@ async function main() {
     },
   ]), true)
   assert.equal(canonicalFormPhotoTurnover([
+    {
+      ...rows[0],
+      id: 'manual-checkout-task',
+      task_type: 'checkout_clean',
+      order_id: null,
+      order_checkin: null,
+      order_checkout: null,
+      linked_checkout_task_id: null,
+    },
+    {
+      ...rows[0],
+      id: 'manual-checkin-task',
+      task_type: 'checkin_clean',
+      order_id: null,
+      order_checkin: null,
+      order_checkout: null,
+      linked_checkout_task_id: 'manual-checkout-task',
+    },
+  ]), true, 'an exact persisted manual link authorizes the paired media projection')
+  assert.equal(canonicalFormPhotoTurnover([
+    {
+      ...rows[0],
+      id: 'independent-manual-checkout',
+      task_type: 'checkout_clean',
+      order_id: null,
+      order_checkin: null,
+      order_checkout: null,
+      linked_checkout_task_id: null,
+    },
+    {
+      ...rows[0],
+      id: 'independent-manual-checkin',
+      task_type: 'checkin_clean',
+      order_id: null,
+      order_checkin: null,
+      order_checkout: null,
+      linked_checkout_task_id: null,
+    },
+  ]), false, 'same room and date without an exact relation cannot broaden media access')
+  assert.equal(canonicalFormPhotoTurnover([
     rows[0],
     { ...rows[0], id: 'same-room-unrelated-task', order_id: 'unrelated-order' },
   ]), false)
+
+  const mzappSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/mzapp.ts'), 'utf8')
+  const selectStart = mzappSource.indexOf('function formPhotoTaskSelectSql()')
+  const selectEnd = mzappSource.indexOf('\n}\n', selectStart)
+  const formPhotoSelectSource = mzappSource.slice(selectStart, selectEnd)
+  assert.match(formPhotoSelectSource, /t\.linked_checkout_task_id::text AS linked_checkout_task_id/, 'form-photo authorization must load the persisted explicit relation')
   assert.equal(canonicalFormPhotoTurnover([
     {
       ...rows[0],
@@ -212,7 +258,7 @@ async function main() {
   assert.doesNotMatch(source, /if \(merged\) \{[\s\S]{0,800}property_code[\s\S]{0,800}task_date/, 'form-photo reads must not relate media by property and date')
 
   const mediaProxySource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning_app.ts'), 'utf8')
-  assert.match(mediaProxySource, /const relatedSourceIds = Array\.from\(new Set[\s\S]*?\.slice\(0, 2\)\)\)/, 'media proxy must cap exact related source ids at the canonical pair')
+  assert.match(mediaProxySource, /const requestedRelatedSourceIds = Array\.from\(new Set[\s\S]*?const relatedSourceIds = requestedRelatedSourceIds\.slice\(0, 2\)/, 'media proxy must cap exact related source ids at the canonical pair')
   assert.match(mediaProxySource, /hasScopedMediaContext\s*\?\s*await canViewMzappScopedRecordedCleaningMedia[\s\S]*?:\s*await canViewMzappRecordedCleaningMedia/, 'scoped media requests must use the role-aware byte authorization path instead of broad participant authorization')
   assert.match(source, /media_source_ids:[\s\S]*?readOnlyMediaSourceIds/, 'work records must expose the exact canonical media source ids')
   assert.match(source, /feedback_source_id: feedbackSourceId/, 'work records must bind feedback access to one exact source task id')

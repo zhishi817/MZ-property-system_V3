@@ -4,6 +4,7 @@ import { createHash } from 'crypto'
 import { v4 as uuid } from 'uuid'
 import { defaultInspectionModeForTaskType } from '../lib/cleaningInspection'
 import { buildCleaningTaskVisibilityHints, buildMz031CleaningArrangementRevision, emitWorkTaskEvent } from './workTaskEvents'
+import { emitNotificationEvent, ensureNotificationStorage } from './notificationEvents'
 import { emitDeferredInspectionCheckinConflictAlerts, reconcileDeferredInspectionCheckinReplacement } from './deferredInspectionCheckinConflict'
 import { redactPasswordAuditValues } from '../lib/passwordAudit'
 import { assertPasswordAuthoritySchemaReady } from '../lib/passwordAuthoritySchema'
@@ -18,7 +19,8 @@ export type CleaningSyncAction =
   | 'skipped_protected'
   | 'failed'
 
-type CleaningSyncLogAction = CleaningSyncAction | 'scope_normalized'
+type CleaningSyncLogAction = CleaningSyncAction | 'scope_normalized' | 'relationship_detached'
+
 
 export type CleaningSyncScope = 'full' | 'checkin_only'
 
@@ -54,6 +56,14 @@ const PASSWORD_TERMINAL_STATUSES = new Set([
   'cancelled',
   'canceled',
 ])
+
+type CleaningTopologyReviewEpisode = {
+  topologyKey: string
+  episodeId: string
+  relationshipVersion: string | null
+}
+
+const memoryCleaningTopologyReviewEpisodes = new Map<string, CleaningTopologyReviewEpisode>()
 
 const NON_SUPERSEDABLE_MANUAL_STATUSES = new Set([
   'in_progress',
@@ -128,6 +138,41 @@ async function emitGuestReadyCheckinAuthorityEvent(params: {
     // These projections are current-role-specific. The event is only an
     // invalidation signal; every recipient must refetch its own projection.
     patch: {},
+    causedByUserId: null,
+    visibilityHints: buildCleaningTaskVisibilityHints(task),
+  }, params.client)
+}
+
+async function emitCleaningTaskRemovalEvent(params: {
+  before: any
+  after: any
+  reason: string
+  client?: any
+}) {
+  const task = params.after || params.before
+  const taskId = String(task?.id || '').trim()
+  if (!taskId) return
+  const changedFields = ['status', 'execution_state']
+  if (cleaningTaskKind(task) === CHECKIN_TASK_TYPE) {
+    changedFields.push(
+      'order_id_checkin',
+      'guest_ready_notification',
+      'guest_ready_outside_key',
+      'available_actions',
+    )
+  }
+  await emitWorkTaskEvent({
+    taskId: `cleaning_task:${taskId}`,
+    sourceType: 'cleaning_tasks',
+    sourceRefIds: [taskId],
+    eventType: 'TASK_REMOVED',
+    changeScope: 'membership',
+    changedFields,
+    patch: {
+      status: String(params.after?.status || 'cancelled'),
+      execution_state: String(params.after?.execution_state || CANCELLED_EXECUTION_STATE),
+    },
+    payload: { reason: params.reason, lifecycle_state: 'cancelled' },
     causedByUserId: null,
     visibilityHints: buildCleaningTaskVisibilityHints(task),
   }, params.client)
@@ -242,14 +287,78 @@ export async function bootstrapCleaningSyncSchemaV2(): Promise<void> {
   await ensureCleaningSchemaV2()
 }
 
+async function canonicalCleaningPropertyIdentityMap(client: any, propertyIds: any[]): Promise<Map<string, string>> {
+  const rawKeys = Array.from(new Set((propertyIds || []).map((value) => String(value || '').trim()).filter(Boolean)))
+  const identities = new Map<string, string>()
+  if (!rawKeys.length) return identities
+  if (hasPg && client) {
+    const normalized = await client.query(
+      `SELECT raw.property_id AS raw_property_id,
+              COALESCE(p_id.id::text, p_code.id::text, raw.property_id) AS canonical_property_id
+         FROM unnest($1::text[]) AS raw(property_id)
+         LEFT JOIN properties p_id ON p_id.id::text = raw.property_id
+         LEFT JOIN properties p_code ON upper(p_code.code) = upper(raw.property_id)`,
+      [rawKeys],
+    )
+    for (const row of normalized?.rows || []) {
+      const raw = String(row?.raw_property_id || '').trim()
+      const canonical = String(row?.canonical_property_id || raw).trim()
+      if (raw) identities.set(raw, canonical || raw)
+    }
+  } else {
+    const properties = Array.isArray((db as any).properties) ? (db as any).properties : []
+    for (const raw of rawKeys) {
+      const lower = raw.toLowerCase()
+      const property = properties.find((candidate: any) => (
+        String(candidate?.id || '').trim().toLowerCase() === lower
+        || String(candidate?.code || '').trim().toLowerCase() === lower
+      ))
+      identities.set(raw, String(property?.id || raw).trim() || raw)
+    }
+  }
+  for (const raw of rawKeys) if (!identities.has(raw)) identities.set(raw, raw)
+  return identities
+}
+
+function canonicalCleaningPropertyIdentity(identities: Map<string, string>, value: any): string | null {
+  const raw = String(value || '').trim()
+  return raw ? (identities.get(raw) || raw) : null
+}
+
+export async function normalizeCleaningTurnoverTargetKeys(
+  client: any,
+  targets: Array<{ propertyId: any; taskDate: any }>,
+): Promise<string[]> {
+  const normalizedTargets = (targets || [])
+    .map((target) => ({
+      propertyId: String(target?.propertyId || '').trim(),
+      taskDate: dayOnly(target?.taskDate),
+    }))
+    .filter((target): target is { propertyId: string; taskDate: string } => !!target.propertyId && !!target.taskDate)
+  const identities = await canonicalCleaningPropertyIdentityMap(client, normalizedTargets.map((target) => target.propertyId))
+  return Array.from(new Set(normalizedTargets.map((target) => (
+    `${canonicalCleaningPropertyIdentity(identities, target.propertyId) || target.propertyId}\u0000${target.taskDate}`
+  )))).sort()
+}
+
+export async function lockCleaningTurnoverKeys(
+  client: any,
+  targets: Array<{ propertyId: any; taskDate: any }>,
+): Promise<Set<string>> {
+  if (!client) return new Set()
+  const canonicalKeys = await normalizeCleaningTurnoverTargetKeys(client, targets)
+  for (const key of canonicalKeys) {
+    const [propertyKey, dateKey] = key.split('\u0000')
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+      [`cleaning-turnover:${propertyKey}`, dateKey],
+    )
+  }
+  return new Set(canonicalKeys)
+}
+
 export async function lockCleaningTurnoverKey(client: any, propertyId: any, taskDate: any): Promise<void> {
-  const propertyKey = String(propertyId || '').trim()
-  const dateKey = dayOnly(taskDate)
-  if (!client || !propertyKey || !dateKey) return
-  await client.query(
-    'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
-    [`cleaning-turnover:${propertyKey}`, dateKey],
-  )
+  await lockCleaningTurnoverKeys(client, [{ propertyId, taskDate }])
 }
 
 export async function lockCleaningPasswordChainKey(client: any, propertyId: any): Promise<void> {
@@ -306,7 +415,7 @@ export async function logCleaningSync(params: {
   meta?: any
   client?: any
 }) {
-  if (!hasPg || !pgPool) return
+  if (!hasPg || !pgPool) return true
   await ensureCleaningSchemaV2()
   const exec = params.client || pgPool
   const safeBefore = redactPasswordAuditValues(params.before).value
@@ -314,10 +423,11 @@ export async function logCleaningSync(params: {
   const safeMeta = redactPasswordAuditValues(params.meta).value
   const jobId = params.jobId ? String(params.jobId) : null
   if (jobId) {
-    await exec.query(
+    const inserted = await exec.query(
       `INSERT INTO cleaning_sync_logs(id, job_id, order_id, task_id, action, before, after, meta)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (job_id, action, task_id) WHERE job_id IS NOT NULL DO NOTHING`,
+       ON CONFLICT (job_id, action, task_id) WHERE job_id IS NOT NULL DO NOTHING
+       RETURNING id`,
       [
         uuid(),
         jobId,
@@ -329,7 +439,7 @@ export async function logCleaningSync(params: {
         params.meta != null ? safeMeta : null,
       ]
     )
-    return
+    return Number(inserted?.rowCount || 0) > 0
   }
   await exec.query(
     'INSERT INTO cleaning_sync_logs(id, order_id, task_id, action, before, after, meta) VALUES($1,$2,$3,$4,$5,$6,$7)',
@@ -343,6 +453,7 @@ export async function logCleaningSync(params: {
       params.meta != null ? safeMeta : null,
     ]
   )
+  return true
 }
 
 async function loadOrder(orderId: string, client?: any, opts?: { forShare?: boolean }): Promise<any | null> {
@@ -431,6 +542,231 @@ async function lockOrderPasswordChainTopology(client: any, orderId: string, next
     error.status = 409
     throw error
   }
+}
+
+type CleaningTurnoverTopologyRow = {
+  id: string
+  property_id?: any
+  task_date?: any
+  date?: any
+  task_type?: any
+  type?: any
+  linked_checkout_task_id?: any
+  order_id?: any
+  status?: any
+  execution_state?: any
+}
+
+async function loadOrderExplicitTurnoverTopology(orderId: string, client?: any, opts?: { forUpdate?: boolean }): Promise<CleaningTurnoverTopologyRow[]> {
+  if (hasPg && (client || pgPool)) {
+    const exec = client || pgPool!
+    const result = await exec.query(
+      `WITH order_tasks AS (
+         SELECT t.*
+           FROM cleaning_tasks t
+          WHERE t.order_id::text = $1::text
+            AND lower(COALESCE(t.task_type, t.type, '')) IN ($2, $3)
+       ), connected_ids AS (
+         SELECT id::text AS id FROM order_tasks
+         UNION
+         SELECT linked_checkout_task_id::text AS id
+           FROM order_tasks
+          WHERE lower(COALESCE(task_type, type, '')) = $3
+            AND linked_checkout_task_id IS NOT NULL
+         UNION
+         SELECT checkin.id::text AS id
+           FROM cleaning_tasks checkin
+           JOIN order_tasks checkout
+             ON checkin.linked_checkout_task_id::text = checkout.id::text
+          WHERE lower(COALESCE(checkout.task_type, checkout.type, '')) = $2
+            AND lower(COALESCE(checkin.task_type, checkin.type, '')) = $3
+       )
+       SELECT t.*,
+              t.id::text AS id,
+              t.property_id::text AS property_id,
+              t.task_date,
+              t.date,
+              t.task_type,
+              t.type,
+              t.linked_checkout_task_id,
+              t.order_id::text AS order_id,
+              t.status,
+              t.execution_state
+         FROM cleaning_tasks t
+         JOIN connected_ids connected ON connected.id = t.id::text
+        ORDER BY t.id
+        ${opts?.forUpdate ? 'FOR UPDATE OF t' : ''}`,
+      [String(orderId), CHECKOUT_TASK_TYPE, CHECKIN_TASK_TYPE],
+    )
+    return result?.rows || []
+  }
+
+  const tasks = db.cleaningTasks as any[]
+  const orderTasks = tasks.filter((task: any) => (
+    String(task?.order_id || '') === String(orderId)
+    && [CHECKOUT_TASK_TYPE, CHECKIN_TASK_TYPE].includes(cleaningTaskKind(task))
+  ))
+  const connectedIds = new Set(orderTasks.map((task: any) => String(task?.id || '')).filter(Boolean))
+  for (const task of orderTasks) {
+    if (cleaningTaskKind(task) === CHECKIN_TASK_TYPE) {
+      const checkoutTaskId = String(task?.linked_checkout_task_id || '').trim()
+      if (checkoutTaskId) connectedIds.add(checkoutTaskId)
+    }
+    if (cleaningTaskKind(task) === CHECKOUT_TASK_TYPE) {
+      for (const checkin of tasks) {
+        if (cleaningTaskKind(checkin) === CHECKIN_TASK_TYPE
+          && String(checkin?.linked_checkout_task_id || '').trim() === String(task?.id || '').trim()) {
+          connectedIds.add(String(checkin?.id || '').trim())
+        }
+      }
+    }
+  }
+  return tasks
+    .filter((task: any) => connectedIds.has(String(task?.id || '').trim()))
+    .sort((a: any, b: any) => String(a?.id || '').localeCompare(String(b?.id || '')))
+}
+
+async function lockOrderTurnoverTopology(params: {
+  client?: any
+  orderId: string
+  nextPropertyId?: string | null
+  nextTaskDates?: Array<string | null | undefined>
+}): Promise<void> {
+  const { client, orderId, nextPropertyId, nextTaskDates = [] } = params
+  if (!client) return
+  const observed = await loadOrderExplicitTurnoverTopology(orderId, client)
+  const lockTargets = observed.map((row: any) => ({
+    propertyId: row?.property_id,
+    taskDate: row?.task_date ?? row?.date,
+  }))
+  const propertyId = String(nextPropertyId || '').trim()
+  for (const taskDate0 of nextTaskDates) {
+    const taskDate = dayOnly(taskDate0)
+    if (propertyId && taskDate) lockTargets.push({ propertyId, taskDate })
+  }
+  const lockKeys = await lockCleaningTurnoverKeys(client, lockTargets)
+  const verified = await loadOrderExplicitTurnoverTopology(orderId, client)
+  const verifiedKeys = await normalizeCleaningTurnoverTargetKeys(client, verified.map((row: any) => ({
+    propertyId: row?.property_id,
+    taskDate: row?.task_date ?? row?.date,
+  })))
+  if (verifiedKeys.some((key) => !lockKeys.has(key))) {
+    const error: any = new Error('turnover_link_topology_changed_retry')
+    error.status = 409
+    throw error
+  }
+}
+
+async function cancelOrderCleaningTasks(params: {
+  jobId?: string | null
+  orderId: string
+  reason: 'source_order_deleted' | 'source_order_missing' | 'source_order_inactive'
+  client?: any
+}): Promise<{ action: 'cancelled' | 'no_change'; terminalHistoryPreserved: boolean }> {
+  const rows = await loadOrderExplicitTurnoverTopology(params.orderId, params.client, { forUpdate: true })
+  const byId = new Map(rows.map((row: any) => [String(row?.id || ''), row]))
+  const orderRows = rows.filter((row: any) => (
+    String(row?.order_id || '') === params.orderId
+    && [CHECKOUT_TASK_TYPE, CHECKIN_TASK_TYPE].includes(cleaningTaskKind(row))
+  ))
+  const cancelledCheckoutIds = new Set(orderRows
+    .filter((row: any) => cleaningTaskKind(row) === CHECKOUT_TASK_TYPE)
+    .map((row: any) => String(row?.id || '').trim())
+    .filter(Boolean))
+
+  for (const checkinBefore0 of rows.filter((row: any) => cleaningTaskKind(row) === CHECKIN_TASK_TYPE)) {
+    const checkinId = String(checkinBefore0?.id || '').trim()
+    const checkoutId = String(checkinBefore0?.linked_checkout_task_id || '').trim()
+    if (!checkinId || !checkoutId) continue
+    const relationshipBelongsToCancelledOrder = String(checkinBefore0?.order_id || '') === params.orderId
+      || cancelledCheckoutIds.has(checkoutId)
+    if (!relationshipBelongsToCancelledOrder || !isPasswordAuthorityTaskMutable(checkinBefore0)) continue
+    const checkoutTask = byId.get(checkoutId) || null
+    const checkinAfter = await updateTaskById(checkinId, { linked_checkout_task_id: null }, params.client)
+    if (!checkinAfter) throw new Error('turnover_link_cancel_detach_failed')
+    byId.set(checkinId, checkinAfter)
+    await logCleaningSync({
+      jobId: params.jobId,
+      orderId: params.orderId,
+      taskId: checkinId,
+      action: 'relationship_detached',
+      before: checkinBefore0,
+      after: checkinAfter,
+      meta: {
+        reason: 'explicit_turnover_link_detached_after_order_cancellation',
+        cancelled_order_id: params.orderId,
+        checkout_task_id: checkoutId,
+        auto_relinked: false,
+      },
+      client: params.client,
+    })
+    const checkinVisibility = buildCleaningTaskVisibilityHints(checkinAfter || checkinBefore0)
+    const checkoutVisibility = buildCleaningTaskVisibilityHints(checkoutTask)
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${checkinId}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds: Array.from(new Set([checkinId, checkoutId].filter(Boolean))),
+      eventType: 'TASK_UPDATED',
+      changeScope: 'list',
+      changedFields: ['linked_checkout_task_id'],
+      patch: { linked_checkout_task_id: null },
+      payload: {
+        reason: 'explicit_turnover_link_detached_after_order_cancellation',
+        cancelled_order_id: params.orderId,
+        auto_relinked: false,
+      },
+      causedByUserId: null,
+      visibilityHints: {
+        user_ids: Array.from(new Set([
+          ...(checkinVisibility.user_ids || []),
+          ...(checkoutVisibility.user_ids || []),
+        ])),
+        role_names: Array.from(new Set([
+          ...(checkinVisibility.role_names || []),
+          ...(checkoutVisibility.role_names || []),
+        ])),
+      },
+    }, params.client)
+  }
+
+  let cancelled = 0
+  let terminalHistoryPreserved = false
+  for (const taskBefore0 of orderRows) {
+    const taskId = String(taskBefore0?.id || '').trim()
+    if (!taskId) continue
+    const taskBefore = byId.get(taskId) || taskBefore0
+    if (!isPasswordAuthorityTaskMutable(taskBefore)) {
+      terminalHistoryPreserved = true
+      await logCleaningSync({
+        jobId: params.jobId,
+        orderId: params.orderId,
+        taskId,
+        action: 'skipped_locked',
+        before: taskBefore,
+        after: taskBefore,
+        meta: { reason: 'terminal_order_cancellation_history_preserved', source_reason: params.reason },
+        client: params.client,
+      })
+      continue
+    }
+    const after = await updateTaskById(taskId, {
+      status: 'cancelled',
+      execution_state: CANCELLED_EXECUTION_STATE,
+    }, params.client)
+    await logCleaningSync({
+      jobId: params.jobId,
+      orderId: params.orderId,
+      taskId,
+      action: 'cancelled',
+      before: taskBefore,
+      after,
+      meta: { reason: params.reason, auto_sync_was_enabled: taskBefore.auto_sync_enabled !== false },
+      client: params.client,
+    })
+    await emitCleaningTaskRemovalEvent({ before: taskBefore, after, reason: params.reason, client: params.client })
+    cancelled += 1
+  }
+  return { action: cancelled ? 'cancelled' : 'no_change', terminalHistoryPreserved }
 }
 
 async function insertTask(row: any, client?: any, opts?: { preserveExisting?: boolean }): Promise<any | null> {
@@ -567,6 +903,7 @@ export async function normalizeSameDayTurnoverInspectionScope(params: {
       const kinds = new Set(sameDayRows.map((row: any) => cleaningTaskKind(row)))
       if (!kinds.has(CHECKOUT_TASK_TYPE) || !kinds.has(CHECKIN_TASK_TYPE)) continue
       for (const before of sameDayRows) {
+        if (before.auto_sync_enabled === false || !isPasswordAuthorityTaskMutable(before)) continue
         if (String(before.inspection_scope || '').trim().toLowerCase() === 'inspect_and_hang') continue
         const after = await updateTaskById(String(before.id), { inspection_scope: 'inspect_and_hang' }, exec)
         await logCleaningSync({
@@ -609,6 +946,7 @@ export async function normalizeSameDayTurnoverInspectionScope(params: {
     const kinds = new Set(sameDayRows.map((row: any) => cleaningTaskKind(row)))
     if (!kinds.has(CHECKOUT_TASK_TYPE) || !kinds.has(CHECKIN_TASK_TYPE)) continue
     for (const task of sameDayRows) {
+      if (task.auto_sync_enabled === false || !isPasswordAuthorityTaskMutable(task)) continue
       if (String(task.inspection_scope || '').trim().toLowerCase() === 'inspect_and_hang') continue
       task.inspection_scope = 'inspect_and_hang'
       updated += 1
@@ -834,6 +1172,10 @@ export function isPasswordAuthorityTaskMutable(task: any): boolean {
   return !!task
     && normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
     && !PASSWORD_TERMINAL_STATUSES.has(String(task?.status || '').trim().toLowerCase())
+}
+
+function isAutomaticCleaningTaskContentMutable(task: any): boolean {
+  return isPasswordAuthorityTaskMutable(task) && task?.auto_sync_enabled !== false
 }
 
 export function assertPasswordAuthorityTaskMutable(task: any): void {
@@ -1587,6 +1929,15 @@ export async function syncCheckoutOldCodeFromCheckinNewCode(params: {
     }
   }
   if (!checkoutTask) return { action: 'no_change', reason: 'target_missing_or_terminal' }
+  if (!isAutomaticCleaningTaskContentMutable(checkoutTask)) {
+    return {
+      action: 'skipped_locked',
+      targetTaskId: String(checkoutTask.id || ''),
+      sourceTaskId: String(checkinTask?.id || '') || null,
+      sourceOrderId: String(checkinTask?.order_id || '') || null,
+      reason: checkoutTask.auto_sync_enabled === false ? 'auto_sync_disabled' : 'target_terminal',
+    }
+  }
   if (!checkinTask) {
     if (isManuallyConfirmedPassword(checkoutTask, 'old_code')) {
       return { action: 'skipped_locked', targetTaskId: String(checkoutTask.id || ''), reason: 'manual_confirmation_preserved' }
@@ -1778,6 +2129,13 @@ export async function syncCheckinOldCodeFromPreviousStay(params: {
   for (const propertyId of lockedPropertyIds) await lockCleaningPasswordChainKey(client, propertyId)
   checkinTask = await loadTaskByOrder(orderId, CHECKIN_TASK_TYPE, client, { forUpdate: !!client, passwordMutable: true })
   if (!checkinTask) return { action: 'no_change', reason: 'target_missing' }
+  if (!isAutomaticCleaningTaskContentMutable(checkinTask)) {
+    return {
+      action: 'skipped_locked',
+      targetTaskId: String(checkinTask.id || ''),
+      reason: checkinTask.auto_sync_enabled === false ? 'auto_sync_disabled' : 'target_terminal',
+    }
+  }
   targetOrder = await loadOrder(orderId, client)
   if (client) {
     const verifiedPropertyIds = await normalizeCleaningPasswordChainKeys(client, [checkinTask.property_id, targetOrder?.property_id])
@@ -1884,6 +2242,7 @@ async function invalidateStalePasswordDependents(params: {
          AND lower(COALESCE(task_type, type, '')) = '${CHECKIN_TASK_TYPE}'
          AND COALESCE(order_id::text, '') <> $1::text
          AND ${activeCleaningTaskWhereSql('')}
+         AND COALESCE(auto_sync_enabled, true) <> false
          AND lower(COALESCE(status, '')) NOT IN (${Array.from(PASSWORD_TERMINAL_STATUSES).map((status) => `'${status}'`).join(',')})
        ORDER BY id
        FOR UPDATE`,
@@ -1896,6 +2255,7 @@ async function invalidateStalePasswordDependents(params: {
       && cleaningTaskKind(task) === CHECKIN_TASK_TYPE
       && String(task.order_id || '') !== sourceOrderId
       && normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
+      && task.auto_sync_enabled !== false
       && !PASSWORD_TERMINAL_STATUSES.has(String(task.status || '').trim().toLowerCase())
     ))
   }
@@ -1904,6 +2264,7 @@ async function invalidateStalePasswordDependents(params: {
   for (const before of linked) {
     const taskId = String(before?.id || '').trim()
     if (!taskId || taskId === String(params.keepTargetTaskId || '')) continue
+    if (!isAutomaticCleaningTaskContentMutable(before)) continue
     if (isManuallyConfirmedPassword(before, 'old_code')) continue
     const after = await updateTaskById(taskId, {
       old_code: null,
@@ -1959,6 +2320,7 @@ export async function invalidatePasswordDependentsForSourceTask(params: {
        WHERE old_code_source_task_id::text = $1::text
          AND id::text <> $1::text
          AND ${activeCleaningTaskWhereSql('')}
+         AND COALESCE(auto_sync_enabled, true) <> false
          AND lower(COALESCE(status, '')) NOT IN (${Array.from(PASSWORD_TERMINAL_STATUSES).map((status) => `'${status}'`).join(',')})
        ORDER BY id
        FOR UPDATE`,
@@ -1970,6 +2332,7 @@ export async function invalidatePasswordDependentsForSourceTask(params: {
       String(task.old_code_source_task_id || '') === sourceTaskId
       && String(task.id || '') !== sourceTaskId
       && normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
+      && task.auto_sync_enabled !== false
       && !PASSWORD_TERMINAL_STATUSES.has(String(task.status || '').trim().toLowerCase())
     ))
   }
@@ -1977,7 +2340,7 @@ export async function invalidatePasswordDependentsForSourceTask(params: {
   const invalidated: string[] = []
   for (const before of linked) {
     const taskId = String(before?.id || '').trim()
-    if (!taskId || isManuallyConfirmedPassword(before, 'old_code')) continue
+    if (!taskId || !isAutomaticCleaningTaskContentMutable(before) || isManuallyConfirmedPassword(before, 'old_code')) continue
     const after = await updateTaskById(taskId, {
       old_code: null,
       old_code_authority_status: 'needs_review',
@@ -2091,6 +2454,480 @@ export async function reconcilePasswordAuthorityAfterTaskTopologyChange(params: 
   }
 }
 
+function activeTurnoverRelationshipTask(task: any): boolean {
+  return normalizeExecutionState(task) === ACTIVE_EXECUTION_STATE
+    && !isCancelledCleaningTaskStatus(task?.status)
+}
+
+function turnoverPairRemainsValid(params: {
+  movedTask: any
+  pairedTask: any
+  nextPropertyId: string | null
+  nextTaskDate: string | null
+  pairedNextPropertyId: string | null
+  pairedNextTaskDate: string | null
+}): boolean {
+  const { movedTask, pairedTask, nextPropertyId, nextTaskDate, pairedNextPropertyId, pairedNextTaskDate } = params
+  return !!nextPropertyId
+    && !!nextTaskDate
+    && pairedNextPropertyId === nextPropertyId
+    && pairedNextTaskDate === nextTaskDate
+    && activeTurnoverRelationshipTask(movedTask)
+    && activeTurnoverRelationshipTask(pairedTask)
+}
+
+async function loadExplicitTurnoverCounterpartsForUpdate(task: any, client?: any): Promise<any[]> {
+  const taskId = String(task?.id || '').trim()
+  if (!taskId) return []
+  const taskType = cleaningTaskKind(task)
+  if (hasPg && (client || pgPool)) {
+    const exec = client || pgPool!
+    if (taskType === CHECKIN_TASK_TYPE) {
+      const checkoutTaskId = String(task?.linked_checkout_task_id || '').trim()
+      if (!checkoutTaskId) return []
+      const result = await exec.query(
+        `SELECT *
+           FROM cleaning_tasks counterpart
+          WHERE counterpart.id::text = $1::text
+            AND lower(COALESCE(counterpart.task_type, counterpart.type, '')) = $2
+          ORDER BY counterpart.id
+          FOR UPDATE`,
+        [checkoutTaskId, CHECKOUT_TASK_TYPE],
+      )
+      return result?.rows || []
+    }
+    if (taskType === CHECKOUT_TASK_TYPE) {
+      const result = await exec.query(
+        `SELECT *
+           FROM cleaning_tasks counterpart
+          WHERE counterpart.linked_checkout_task_id::text = $1::text
+            AND lower(COALESCE(counterpart.task_type, counterpart.type, '')) = $2
+          ORDER BY counterpart.id
+          FOR UPDATE`,
+        [taskId, CHECKIN_TASK_TYPE],
+      )
+      return result?.rows || []
+    }
+    return []
+  }
+
+  const tasks = db.cleaningTasks as any[]
+  if (taskType === CHECKIN_TASK_TYPE) {
+    const checkoutTaskId = String(task?.linked_checkout_task_id || '').trim()
+    if (!checkoutTaskId) return []
+    return tasks.filter((counterpart: any) => (
+      String(counterpart?.id || '').trim() === checkoutTaskId
+      && cleaningTaskKind(counterpart) === CHECKOUT_TASK_TYPE
+    ))
+  }
+  if (taskType === CHECKOUT_TASK_TYPE) {
+    return tasks.filter((counterpart: any) => (
+      cleaningTaskKind(counterpart) === CHECKIN_TASK_TYPE
+      && String(counterpart?.linked_checkout_task_id || '').trim() === taskId
+    )).sort((a: any, b: any) => String(a?.id || '').localeCompare(String(b?.id || '')))
+  }
+  return []
+}
+
+export function cleaningTurnoverRelationshipVersion(checkinTask: any, checkoutTask: any): string | null {
+  const checkinId = String(checkinTask?.id || '').trim()
+  const checkoutId = String(checkoutTask?.id || '').trim()
+  const linkedCheckoutId = String(checkinTask?.linked_checkout_task_id || '').trim()
+  if (!checkinId || !checkoutId || linkedCheckoutId !== checkoutId) return null
+  const relationshipUpdatedAt = String(checkinTask?.updated_at || checkinTask?.created_at || '').trim()
+  if (!relationshipUpdatedAt) return null
+  return sha256([checkinId, checkoutId, relationshipUpdatedAt].join('|')).slice(0, 24)
+}
+
+async function cleaningTurnoverRelationshipVersionForPair(checkinTask: any, checkoutTask: any, client?: any): Promise<string | null> {
+  const checkinId = String(checkinTask?.id || '').trim()
+  const checkoutId = String(checkoutTask?.id || '').trim()
+  if (!checkinId || !checkoutId || String(checkinTask?.linked_checkout_task_id || '').trim() !== checkoutId) return null
+  if (hasPg && (client || pgPool)) {
+    try {
+      const exec = client || pgPool!
+      const result = await exec.query(
+        `SELECT event_id::text AS event_id
+           FROM work_task_events
+          WHERE task_id=$1
+            AND source_type='cleaning_tasks'
+            AND 'linked_checkout_task_id'=ANY(COALESCE(changed_fields, ARRAY[]::text[]))
+            AND COALESCE(payload->'patch'->>'linked_checkout_task_id', '')=$2
+          ORDER BY sequence_no DESC
+          LIMIT 1`,
+        [`cleaning_task:${checkinId}`, checkoutId],
+      )
+      const eventId = String(result?.rows?.[0]?.event_id || '').trim()
+      if (eventId) return sha256([checkinId, checkoutId, `event:${eventId}`].join('|')).slice(0, 24)
+    } catch {
+      // Historical installations may not yet have the realtime event table.
+      // The task timestamp remains a conservative compatibility fallback.
+    }
+  }
+  return cleaningTurnoverRelationshipVersion(checkinTask, checkoutTask)
+}
+
+async function currentCleaningTurnoverRelationshipVersion(task: any, client?: any): Promise<string | null> {
+  const taskType = cleaningTaskKind(task)
+  if (![CHECKOUT_TASK_TYPE, CHECKIN_TASK_TYPE].includes(taskType)) return null
+  const counterparts = await loadExplicitTurnoverCounterpartsForUpdate(task, client)
+  const versions = (await Promise.all(counterparts.map((counterpart: any) => (
+    taskType === CHECKIN_TASK_TYPE
+      ? cleaningTurnoverRelationshipVersionForPair(task, counterpart, client)
+      : cleaningTurnoverRelationshipVersionForPair(counterpart, task, client)
+  )))).filter((value): value is string => !!value).sort()
+  return versions[0] || null
+}
+
+async function detachInvalidExplicitTurnoverRelationships(params: {
+  jobId?: string | null
+  orderId: string
+  movedTask: any
+  nextPropertyId: string | null
+  nextTaskDate: string | null
+  movedTaskWillFollowOrder?: boolean
+  plannedOrderTaskDates?: Partial<Record<string, string | null>>
+  client?: any
+}): Promise<number> {
+  const { jobId, orderId, movedTask, nextPropertyId, nextTaskDate, movedTaskWillFollowOrder = true, plannedOrderTaskDates = {}, client } = params
+  const movedTaskId = String(movedTask?.id || '').trim()
+  const movedTaskType = cleaningTaskKind(movedTask)
+  if (!movedTaskId || ![CHECKOUT_TASK_TYPE, CHECKIN_TASK_TYPE].includes(movedTaskType)) return 0
+  const movedIdentityMap = await canonicalCleaningPropertyIdentityMap(client, [movedTask?.property_id, nextPropertyId])
+  const currentMovedPropertyId = canonicalCleaningPropertyIdentity(movedIdentityMap, movedTask?.property_id)
+  const canonicalNextPropertyId = canonicalCleaningPropertyIdentity(movedIdentityMap, nextPropertyId)
+  const propertyChanged = currentMovedPropertyId !== canonicalNextPropertyId
+  const dateChanged = dayOnly(movedTask?.task_date ?? movedTask?.date) !== dayOnly(nextTaskDate)
+  if (!propertyChanged && !dateChanged) return 0
+
+  const counterparts = await loadExplicitTurnoverCounterpartsForUpdate(movedTask, client)
+  const propertyIdentityMap = await canonicalCleaningPropertyIdentityMap(client, [
+    movedTask?.property_id,
+    nextPropertyId,
+    ...counterparts.map((counterpart: any) => counterpart?.property_id),
+  ])
+  const movedEffectivePropertyId = movedTaskWillFollowOrder
+    ? canonicalCleaningPropertyIdentity(propertyIdentityMap, nextPropertyId)
+    : canonicalCleaningPropertyIdentity(propertyIdentityMap, movedTask?.property_id)
+  const movedEffectiveTaskDate = movedTaskWillFollowOrder
+    ? dayOnly(nextTaskDate)
+    : dayOnly(movedTask?.task_date ?? movedTask?.date)
+  const managerUserIds = await listCleaningScheduleManagerUserIds(client)
+  let detached = 0
+  for (const counterpart of counterparts) {
+    const counterpartType = cleaningTaskKind(counterpart)
+    const counterpartHasPlannedDate = Object.prototype.hasOwnProperty.call(plannedOrderTaskDates, counterpartType)
+    const counterpartWillFollowThisOrder = String(counterpart?.order_id || '').trim() === orderId
+      && counterpart.auto_sync_enabled !== false
+      && isPasswordAuthorityTaskMutable(counterpart)
+      && counterpartHasPlannedDate
+    const pairedNextPropertyId = counterpartWillFollowThisOrder
+      ? canonicalCleaningPropertyIdentity(propertyIdentityMap, nextPropertyId)
+      : canonicalCleaningPropertyIdentity(propertyIdentityMap, counterpart?.property_id)
+    const pairedNextTaskDate = counterpartWillFollowThisOrder
+      ? dayOnly(plannedOrderTaskDates[counterpartType])
+      : dayOnly(counterpart?.task_date ?? counterpart?.date)
+    if (turnoverPairRemainsValid({
+      movedTask,
+      pairedTask: counterpart,
+      nextPropertyId: movedEffectivePropertyId,
+      nextTaskDate: movedEffectiveTaskDate,
+      pairedNextPropertyId,
+      pairedNextTaskDate,
+    })) continue
+    const checkinBefore = movedTaskType === CHECKIN_TASK_TYPE ? movedTask : counterpart
+    const checkoutTask = movedTaskType === CHECKOUT_TASK_TYPE ? movedTask : counterpart
+    if (String(checkinBefore?.linked_checkout_task_id || '').trim() !== String(checkoutTask?.id || '').trim()) continue
+    const counterpartLocked = counterpart?.auto_sync_enabled === false || !isPasswordAuthorityTaskMutable(counterpart)
+    const reviewReason = counterpart?.auto_sync_enabled === false ? 'auto_sync_disabled' : 'task_terminal'
+    const relationshipVersion = await cleaningTurnoverRelationshipVersionForPair(checkinBefore, checkoutTask, client)
+    const reviewEpisode = counterpartLocked
+      ? await resolveCleaningTopologyReviewEpisode({
+          taskId: String(counterpart?.id || ''),
+          canonicalPropertyId: canonicalNextPropertyId,
+          taskDate: nextTaskDate,
+          reason: reviewReason,
+          changeId: jobId,
+          relationshipVersion,
+          client,
+        })
+      : null
+    const checkinAfter = await updateTaskById(String(checkinBefore.id), { linked_checkout_task_id: null }, client)
+    if (!checkinAfter) throw new Error('turnover_link_detach_failed')
+    const sourceRefIds = Array.from(new Set([String(checkinBefore.id), String(checkoutTask.id)].filter(Boolean)))
+    const reason = 'explicit_turnover_link_detached_after_order_topology_change'
+    const auditCreated = await logCleaningSync({
+      jobId,
+      orderId,
+      taskId: String(checkinBefore.id),
+      action: 'relationship_detached',
+      before: checkinBefore,
+      after: checkinAfter,
+      meta: {
+        reason,
+        moved_task_id: movedTaskId,
+        moved_task_type: movedTaskType,
+        paired_task_id: String(counterpart?.id || ''),
+        next_property_id: nextPropertyId,
+        next_task_date: nextTaskDate,
+        auto_relinked: false,
+        review_task_id: reviewEpisode ? String(counterpart?.id || '') : null,
+        review_topology_key: reviewEpisode?.topologyKey || null,
+        review_episode_id: reviewEpisode?.episodeId || null,
+        review_relationship_version: reviewEpisode?.relationshipVersion || null,
+      },
+      client,
+    })
+    const checkinVisibility = buildCleaningTaskVisibilityHints(checkinAfter || checkinBefore)
+    const checkoutVisibility = buildCleaningTaskVisibilityHints(checkoutTask)
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${String(checkinBefore.id)}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds,
+      eventType: 'TASK_UPDATED',
+      changeScope: 'list',
+      changedFields: ['linked_checkout_task_id'],
+      patch: { linked_checkout_task_id: null },
+      payload: {
+        reason,
+        moved_task_id: movedTaskId,
+        paired_task_id: String(counterpart?.id || ''),
+        auto_relinked: false,
+        management_review_required: true,
+      },
+      causedByUserId: null,
+      visibilityHints: {
+        user_ids: Array.from(new Set([
+          ...(checkinVisibility.user_ids || []),
+          ...(checkoutVisibility.user_ids || []),
+          ...managerUserIds,
+        ])),
+        role_names: Array.from(new Set([
+          ...(checkinVisibility.role_names || []),
+          ...(checkoutVisibility.role_names || []),
+        ])),
+      },
+    }, client)
+    if (counterpartLocked && reviewEpisode) {
+      await emitLockedTaskTopologyReviewSignal({
+        jobId,
+        task: counterpart,
+        reason: reviewReason,
+        relationshipDetached: true,
+        reviewEpisodeId: reviewEpisode.episodeId,
+        auditCreated,
+        client,
+      })
+    }
+    detached += 1
+  }
+  return detached
+}
+
+async function cleaningTaskOrderTopologyChanged(task: any, nextPropertyId: string | null, nextTaskDate: string | null, client?: any): Promise<boolean> {
+  const identities = await canonicalCleaningPropertyIdentityMap(client, [task?.property_id, nextPropertyId])
+  return canonicalCleaningPropertyIdentity(identities, task?.property_id) !== canonicalCleaningPropertyIdentity(identities, nextPropertyId)
+    || dayOnly(task?.task_date ?? task?.date) !== dayOnly(nextTaskDate)
+}
+
+export async function resolveCleaningTopologyReviewEpisode(params: {
+  taskId: string
+  canonicalPropertyId?: string | null
+  taskDate?: string | null
+  reason: 'auto_sync_disabled' | 'task_terminal'
+  changeId?: string | null
+  relationshipVersion?: string | null
+  client?: any
+}): Promise<CleaningTopologyReviewEpisode> {
+  const taskId = String(params.taskId || '').trim()
+  const relationshipVersion = String(params.relationshipVersion || '').trim() || null
+  const topologyKey = sha256([
+    String(params.canonicalPropertyId || ''),
+    dayOnly(params.taskDate) || '',
+    params.reason,
+  ].join('|')).slice(0, 24)
+  let previous: CleaningTopologyReviewEpisode | null = null
+  if (hasPg && params.client && taskId) {
+    const result = await params.client.query(
+      `SELECT meta->>'review_topology_key' AS review_topology_key,
+              meta->>'review_episode_id' AS review_episode_id,
+              meta->>'review_relationship_version' AS review_relationship_version
+         FROM cleaning_sync_logs
+        WHERE meta->>'review_task_id' = $1
+          AND COALESCE(meta->>'review_topology_key', '') <> ''
+          AND COALESCE(meta->>'review_episode_id', '') <> ''
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [taskId],
+    )
+    const row = result?.rows?.[0] || null
+    if (row) previous = {
+      topologyKey: String(row.review_topology_key || ''),
+      episodeId: String(row.review_episode_id || ''),
+      relationshipVersion: String(row.review_relationship_version || '').trim() || null,
+    }
+  } else if (taskId) {
+    previous = memoryCleaningTopologyReviewEpisodes.get(taskId) || null
+  }
+  if (
+    previous?.topologyKey === topologyKey
+    && previous.episodeId
+    && (!relationshipVersion || previous.relationshipVersion === relationshipVersion)
+  ) return previous
+  const episodeId = sha256([
+    taskId,
+    topologyKey,
+    relationshipVersion || String(params.changeId || uuid()),
+  ].join('|')).slice(0, 24)
+  const episode = { topologyKey, episodeId, relationshipVersion }
+  if (!hasPg && taskId) memoryCleaningTopologyReviewEpisodes.set(taskId, episode)
+  return episode
+}
+
+export function resolveCleaningScheduleManagerUserIds(params: {
+  permissionRoleIds: string[]
+  roles: Array<{ id?: any; name?: any }>
+  users: Array<{ id?: any; role?: any }>
+  userRoles: Array<{ user_id?: any; role_name?: any }>
+}): string[] {
+  const roleNameByReference = new Map<string, string>()
+  for (const role of params.roles || []) {
+    const id = String(role?.id || '').trim().toLowerCase()
+    const name = String(role?.name || '').trim().toLowerCase()
+    if (!name) continue
+    if (id) roleNameByReference.set(id, name)
+    roleNameByReference.set(name, name)
+    roleNameByReference.set(`role.${name}`, name)
+  }
+  const permittedRoleNames = new Set<string>(['admin'])
+  for (const roleId0 of params.permissionRoleIds || []) {
+    const roleId = String(roleId0 || '').trim().toLowerCase()
+    if (!roleId) continue
+    permittedRoleNames.add(roleNameByReference.get(roleId) || roleId.replace(/^role\./, ''))
+  }
+  const userRoleNames = new Map<string, Set<string>>()
+  const addUserRole = (userId0: any, roleName0: any) => {
+    const userId = String(userId0 || '').trim()
+    const roleName = String(roleName0 || '').trim().toLowerCase()
+    if (!userId || !roleName) return
+    const roleNames = userRoleNames.get(userId) || new Set<string>()
+    roleNames.add(roleName)
+    userRoleNames.set(userId, roleNames)
+  }
+  for (const user of params.users || []) addUserRole(user?.id, user?.role)
+  for (const userRole of params.userRoles || []) addUserRole(userRole?.user_id, userRole?.role_name)
+  return Array.from(userRoleNames.entries())
+    .filter(([, roleNames]) => Array.from(roleNames).some((roleName) => permittedRoleNames.has(roleName)))
+    .map(([userId]) => userId)
+    .sort()
+}
+
+async function listCleaningScheduleManagerUserIds(client?: any): Promise<string[]> {
+  if (!hasPg || !client) return []
+  const permissionRoles = await client.query(
+    `SELECT role_id::text AS role_id
+       FROM role_permissions
+      WHERE permission_code = 'cleaning.schedule.manage'`,
+  )
+  const roles = await client.query('SELECT id::text AS id, name::text AS name FROM roles')
+  const users = await client.query('SELECT id::text AS id, role::text AS role FROM users')
+  const userRoles = await client.query('SELECT user_id::text AS user_id, role_name::text AS role_name FROM user_roles')
+  return resolveCleaningScheduleManagerUserIds({
+    permissionRoleIds: (permissionRoles?.rows || []).map((row: any) => String(row?.role_id || '')),
+    roles: roles?.rows || [],
+    users: users?.rows || [],
+    userRoles: userRoles?.rows || [],
+  })
+}
+
+async function emitLockedTaskTopologyReviewSignal(params: {
+  jobId?: string | null
+  task: any
+  reason: 'auto_sync_disabled' | 'task_terminal'
+  relationshipDetached: boolean
+  reviewEpisodeId: string
+  auditCreated: boolean
+  client?: any
+}) {
+  if (!params.auditCreated) return
+  const taskId = String(params.task?.id || '').trim()
+  if (!taskId) return
+  const taskDate = dayOnly(params.task?.task_date ?? params.task?.date)
+  const managerUserIds = await listCleaningScheduleManagerUserIds(params.client)
+  const eventId = `cleaning_order_topology_review_${String(params.reviewEpisodeId || 'direct')}_${taskId}`
+  let notificationRecipientUserIds = managerUserIds
+  let reviewEventAlreadyPersisted = false
+  if (managerUserIds.length && hasPg && params.client) {
+    await ensureNotificationStorage()
+    const existing = await params.client.query(
+      `SELECT user_id::text AS user_id
+         FROM user_notifications
+        WHERE event_id = $1`,
+      [eventId],
+    )
+    const existingRecipientIds = new Set((existing?.rows || []).map((row: any) => String(row?.user_id || '').trim()).filter(Boolean))
+    reviewEventAlreadyPersisted = existingRecipientIds.size > 0
+    notificationRecipientUserIds = managerUserIds.filter((userId) => !existingRecipientIds.has(userId))
+    if (reviewEventAlreadyPersisted && !notificationRecipientUserIds.length) return
+  }
+  if (!reviewEventAlreadyPersisted) {
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${taskId}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds: [taskId],
+      eventType: 'TASK_UPDATED',
+      changeScope: 'list',
+      changedFields: ['order_topology_review_required'],
+      patch: {},
+      payload: {
+        kind: 'cleaning_order_topology_review_required',
+        reason: params.reason,
+        relationship_detached: params.relationshipDetached,
+        management_review_required: true,
+        task_id: taskId,
+        task_date: taskDate,
+      },
+      causedByUserId: null,
+      // Do not expose the order's new property/date to former participants.
+      // Management can inspect the order through its existing permission scope.
+      visibilityHints: {
+        user_ids: managerUserIds,
+        role_names: [],
+      },
+    }, params.client)
+  }
+  if (notificationRecipientUserIds.length) {
+    const notificationResult = await emitNotificationEvent(
+      {
+        type: 'CLEANING_ORDER_TOPOLOGY_REVIEW_REQUIRED',
+        entity: 'cleaning_task',
+        entityId: taskId,
+        eventId,
+        changes: ['order_topology_review_required'],
+        title: '清洁任务需人工检查',
+        body: '订单房源或日期已变化；锁定任务未自动移动，请由排班管理人员检查。',
+        data: {
+          action: 'open_task',
+          kind: 'cleaning_order_topology_review_required',
+          task_id: taskId,
+          // This is the locked task's own already-authorized business date,
+          // not the order's changed-to topology.  It lets an authorized
+          // manager open an out-of-range task without leaking the new room or
+          // date to former participants.
+          task_date: taskDate,
+          relationship_detached: params.relationshipDetached,
+          reason: params.reason,
+        },
+        priority: 'high',
+        excludeActor: false,
+        recipientUserIds: notificationRecipientUserIds,
+      },
+      { operationId: eventId, pgClient: params.client },
+    )
+    if (!notificationResult?.ok) throw new Error('cleaning_order_topology_review_notification_failed')
+  }
+}
+
 async function syncOneTask(params: {
   jobId?: string | null
   orderId: string
@@ -2105,8 +2942,9 @@ async function syncOneTask(params: {
   protectExisting?: boolean
   createOnly?: boolean
   conflictRetry?: boolean
+  plannedOrderTaskDates?: Partial<Record<string, string | null>>
 }) {
-  const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId, derivedCode, keysRequired, protectExisting = false, createOnly = false, conflictRetry = true } = params
+  const { jobId, orderId, deleted, client, taskType, date, statusLower, propertyId, derivedCode, keysRequired, protectExisting = false, createOnly = false, conflictRetry = true, plannedOrderTaskDates = {} } = params
   if (!deleted && date && propertyId) await lockCleaningTurnoverKey(client, propertyId, date)
   // The sync decision and its write must observe one serialized task row.
   // Otherwise a concurrent manual arrangement can commit after this read and
@@ -2114,16 +2952,136 @@ async function syncOneTask(params: {
   const beforeTask = await loadTaskByOrder(orderId, taskType, client, { forUpdate: true })
 
   if (beforeTask && !createOnly && !isPasswordAuthorityTaskMutable(beforeTask)) {
-    await logCleaningSync({
+    const topologyChanged = !deleted
+      && !!date
+      && !!propertyId
+      && await cleaningTaskOrderTopologyChanged(beforeTask, propertyId, date, client)
+    const relationshipVersion = topologyChanged
+      ? await currentCleaningTurnoverRelationshipVersion(beforeTask, client)
+      : null
+    const detached = topologyChanged
+      ? await detachInvalidExplicitTurnoverRelationships({
+          jobId,
+          orderId,
+          movedTask: beforeTask,
+          nextPropertyId: propertyId,
+          nextTaskDate: date,
+          movedTaskWillFollowOrder: false,
+          plannedOrderTaskDates,
+          client,
+        })
+      : 0
+    const targetIdentityMap = topologyChanged ? await canonicalCleaningPropertyIdentityMap(client, [propertyId]) : new Map<string, string>()
+    const canonicalTargetPropertyId = canonicalCleaningPropertyIdentity(targetIdentityMap, propertyId)
+    const reviewEpisode = topologyChanged
+      ? await resolveCleaningTopologyReviewEpisode({
+          taskId: String(beforeTask.id || ''),
+          canonicalPropertyId: canonicalTargetPropertyId,
+          taskDate: date,
+          reason: 'task_terminal',
+          changeId: jobId,
+          relationshipVersion,
+          client,
+        })
+      : null
+    const auditCreated = await logCleaningSync({
       jobId,
       orderId,
       taskId: beforeTask.id,
       action: 'skipped_locked',
       before: beforeTask,
       after: beforeTask,
-      meta: { taskType, reason: 'password_authority_task_terminal' },
+      meta: {
+        taskType,
+        reason: 'password_authority_task_terminal',
+        topology_changed: topologyChanged,
+        relationship_detached: detached > 0,
+        management_review_required: topologyChanged,
+        review_task_id: reviewEpisode ? String(beforeTask.id || '') : null,
+        review_topology_key: reviewEpisode?.topologyKey || null,
+        review_episode_id: reviewEpisode?.episodeId || null,
+        review_relationship_version: reviewEpisode?.relationshipVersion || null,
+      },
       client,
     })
+    if (topologyChanged && reviewEpisode) {
+      await emitLockedTaskTopologyReviewSignal({
+        jobId,
+        task: beforeTask,
+        reason: 'task_terminal',
+        relationshipDetached: detached > 0,
+        reviewEpisodeId: reviewEpisode.episodeId,
+        auditCreated,
+        client,
+      })
+    }
+    return { action: 'skipped_locked' as const }
+  }
+
+  if (beforeTask && !createOnly && beforeTask.auto_sync_enabled === false && !deleted && !!date) {
+    const topologyChanged = !deleted
+      && !!date
+      && !!propertyId
+      && await cleaningTaskOrderTopologyChanged(beforeTask, propertyId, date, client)
+    const relationshipVersion = topologyChanged
+      ? await currentCleaningTurnoverRelationshipVersion(beforeTask, client)
+      : null
+    const detached = topologyChanged
+      ? await detachInvalidExplicitTurnoverRelationships({
+          jobId,
+          orderId,
+          movedTask: beforeTask,
+          nextPropertyId: propertyId,
+          nextTaskDate: date,
+          movedTaskWillFollowOrder: false,
+          plannedOrderTaskDates,
+          client,
+        })
+      : 0
+    const targetIdentityMap = topologyChanged ? await canonicalCleaningPropertyIdentityMap(client, [propertyId]) : new Map<string, string>()
+    const canonicalTargetPropertyId = canonicalCleaningPropertyIdentity(targetIdentityMap, propertyId)
+    const reviewEpisode = topologyChanged
+      ? await resolveCleaningTopologyReviewEpisode({
+          taskId: String(beforeTask.id || ''),
+          canonicalPropertyId: canonicalTargetPropertyId,
+          taskDate: date,
+          reason: 'auto_sync_disabled',
+          changeId: jobId,
+          relationshipVersion,
+          client,
+        })
+      : null
+    const auditCreated = await logCleaningSync({
+      jobId,
+      orderId,
+      taskId: beforeTask.id,
+      action: 'skipped_locked',
+      before: beforeTask,
+      after: beforeTask,
+      meta: {
+        taskType,
+        reason: 'auto_sync_disabled',
+        topology_changed: topologyChanged,
+        relationship_detached: detached > 0,
+        management_review_required: topologyChanged,
+        review_task_id: reviewEpisode ? String(beforeTask.id || '') : null,
+        review_topology_key: reviewEpisode?.topologyKey || null,
+        review_episode_id: reviewEpisode?.episodeId || null,
+        review_relationship_version: reviewEpisode?.relationshipVersion || null,
+      },
+      client,
+    })
+    if (topologyChanged && reviewEpisode) {
+      await emitLockedTaskTopologyReviewSignal({
+        jobId,
+        task: beforeTask,
+        reason: 'auto_sync_disabled',
+        relationshipDetached: detached > 0,
+        reviewEpisodeId: reviewEpisode.episodeId,
+        auditCreated,
+        client,
+      })
+    }
     return { action: 'skipped_locked' as const }
   }
 
@@ -2131,7 +3089,7 @@ async function syncOneTask(params: {
     if (beforeTask) {
       const after = await updateTaskById(String(beforeTask.id), { status: 'cancelled', execution_state: CANCELLED_EXECUTION_STATE }, client)
       await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'cancelled', before: beforeTask, after, meta: { deleted, date, taskType }, client })
-      await emitGuestReadyCheckinAuthorityEvent({ before: beforeTask, after, eventType: 'TASK_REMOVED', client })
+      await emitCleaningTaskRemovalEvent({ before: beforeTask, after, reason: deleted ? 'source_order_deleted' : 'source_task_date_removed', client })
       return { action: 'cancelled' as const }
     }
     await logCleaningSync({ jobId, orderId, taskId: null, action: 'no_change', before: null, after: null, meta: { deleted, date, taskType }, client })
@@ -2208,12 +3166,12 @@ async function syncOneTask(params: {
     return { action: 'skipped_protected' as const }
   }
 
-  if (beforeTask.auto_sync_enabled === false) {
-    await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'skipped_locked', before: beforeTask, after: beforeTask, meta: { fingerprint, taskType }, client })
-    return { action: 'skipped_locked' as const }
-  }
-
   const prevFp = String(beforeTask.sync_fingerprint || '')
+  const propertyIdentityMap = await canonicalCleaningPropertyIdentityMap(client, [beforeTask.property_id, propertyId])
+  const propChanged = canonicalCleaningPropertyIdentity(propertyIdentityMap, beforeTask.property_id)
+    !== canonicalCleaningPropertyIdentity(propertyIdentityMap, propertyId)
+  const propertyRepresentationChanged = String(beforeTask.property_id || '') !== String(propertyId || '')
+  const dateChanged = dayOnly(beforeTask.task_date ?? beforeTask.date) !== dayOnly(date)
   const managedPasswordField = taskType === CHECKOUT_TASK_TYPE ? 'old_code' : 'new_code'
   const expectedPasswordStatus = derivedCode ? 'auto_derived' : 'needs_review'
   const currentManagedPassword = String(beforeTask?.[managedPasswordField] ?? '').trim()
@@ -2227,12 +3185,22 @@ async function syncOneTask(params: {
       currentManagedPassword !== String(derivedCode || '')
       || passwordAuthorityStatus(beforeTask, managedPasswordField) !== expectedPasswordStatus
     )
-  if (prevFp && prevFp === fingerprint && !passwordAuthorityNeedsRefresh) {
+  if (prevFp && prevFp === fingerprint && !passwordAuthorityNeedsRefresh && !propertyRepresentationChanged && !dateChanged) {
     await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'no_change', before: beforeTask, after: beforeTask, meta: { fingerprint, taskType }, client })
     return { action: 'no_change' as const }
   }
 
-  const propChanged = String(beforeTask.property_id || '') !== String(propertyId || '')
+  if (propChanged || dateChanged) {
+    await detachInvalidExplicitTurnoverRelationships({
+      jobId,
+      orderId,
+      movedTask: beforeTask,
+      nextPropertyId: propertyId,
+      nextTaskDate: date,
+      plannedOrderTaskDates,
+      client,
+    })
+  }
   const patch: any = {
     property_id: propertyId,
     task_type: taskType,
@@ -2271,7 +3239,7 @@ async function syncOneTask(params: {
     patch.scheduled_at = null
   }
   const after = await updateTaskById(String(beforeTask.id), patch, client)
-  await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'updated', before: beforeTask, after, meta: { fingerprint, propChanged, taskType }, client })
+  await logCleaningSync({ jobId, orderId, taskId: beforeTask.id, action: 'updated', before: beforeTask, after, meta: { fingerprint, propChanged, propertyRepresentationChanged, dateChanged, taskType }, client })
   await emitGuestReadyCheckinAuthorityEvent({ before: beforeTask, after, eventType: 'TASK_UPDATED', client })
   const arrangementRevision = buildMz031CleaningArrangementRevision(beforeTask, after)
   if (arrangementRevision) {
@@ -2391,21 +3359,25 @@ export async function syncOrderToCleaningTasks(
     }
     if (deleted) {
       await lockOrderPasswordChainTopology(client, id)
-      const r1 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
-      const r2 = await syncOneTask({ jobId, orderId: id, deleted: true, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'deleted', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
+      await lockOrderTurnoverTopology({ client, orderId: id })
+      const cancellation = await cancelOrderCleaningTasks({ jobId, orderId: id, reason: 'source_order_deleted', client })
       await invalidateStalePasswordDependents({ sourceOrderId: id, reason: 'source_order_deleted', client, audit: { client: 'sync_worker', actorRole: 'system' } })
-      await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
-      return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
+      if (!cancellation.terminalHistoryPreserved) {
+        await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
+      }
+      return { action: cancellation.action }
     }
 
     const order = await loadOrder(id, client, { forShare: !!client })
     if (!order) {
       await lockOrderPasswordChainTopology(client, id)
-      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
-      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower: 'missing', propertyId: null, derivedCode: null, keysRequired: keysRequiredFallback })
+      await lockOrderTurnoverTopology({ client, orderId: id })
+      const cancellation = await cancelOrderCleaningTasks({ jobId, orderId: id, reason: 'source_order_missing', client })
       await invalidateStalePasswordDependents({ sourceOrderId: id, reason: 'source_order_missing', client, audit: { client: 'sync_worker', actorRole: 'system' } })
-      await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
-      return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
+      if (!cancellation.terminalHistoryPreserved) {
+        await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
+      }
+      return { action: cancellation.action }
     }
 
     const keysRequired0 = order?.keys_required == null ? 1 : Number(order.keys_required)
@@ -2424,36 +3396,59 @@ export async function syncOrderToCleaningTasks(
     await lockOrderPasswordChainTopology(client, id, propertyId)
 
     if (!valid) {
-      const r1 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null, keysRequired })
-      const r2 = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: null, statusLower, propertyId, derivedCode: null, keysRequired })
+      await lockOrderTurnoverTopology({
+        client,
+        orderId: id,
+        nextPropertyId: propertyId,
+        nextTaskDates: [checkinDay, checkoutDay],
+      })
+      const cancellation = await cancelOrderCleaningTasks({ jobId, orderId: id, reason: 'source_order_inactive', client })
       await invalidateStalePasswordDependents({ sourceOrderId: id, reason: 'source_order_inactive', client, audit: { client: 'sync_worker', actorRole: 'system' } })
-      await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
-      return { action: (r1.action === 'cancelled' || r2.action === 'cancelled') ? 'cancelled' : 'no_change' as const }
+      if (!cancellation.terminalHistoryPreserved) {
+        await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
+      }
+      return { action: cancellation.action }
     }
 
-    // Order writes acquire these same advisory keys in ascending date order
-    // via the MZ-065 database trigger. Acquire the complete boundary set
-    // before any task row lock so order edits/imports and sync cannot deadlock
-    // by taking check-in/checkout keys in opposite orders.
-    const turnoverBoundaryDates = Array.from(new Set([checkinDay, checkoutDay].filter((value): value is string => !!value))).sort()
-    for (const boundaryDate of turnoverBoundaryDates) {
-      await lockCleaningTurnoverKey(client, propertyId, boundaryDate)
-    }
+    // Order writes acquire old/new boundary advisory keys before committing.
+    // The worker additionally locks the complete currently connected explicit
+    // turnover topology before any task row. This serializes manual links with
+    // an order move and makes detach + task movement one atomic transaction.
+    await lockOrderTurnoverTopology({
+      client,
+      orderId: id,
+      nextPropertyId: propertyId,
+      nextTaskDates: [checkinDay, checkoutDay],
+    })
 
-    const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId, derivedCode, keysRequired })
-    const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId, derivedCode, keysRequired })
-    const supersededCheckout = await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkoutDay, taskType: CHECKOUT_TASK_TYPE, client })
-    const supersededCheckin = await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkinDay, taskType: CHECKIN_TASK_TYPE, client })
+    const plannedOrderTaskDates = {
+      [CHECKOUT_TASK_TYPE]: checkoutDay,
+      [CHECKIN_TASK_TYPE]: checkinDay,
+    }
+    const rCheckout = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKOUT_TASK_TYPE, date: checkoutDay, statusLower, propertyId, derivedCode, keysRequired, plannedOrderTaskDates })
+    const rCheckin = await syncOneTask({ jobId, orderId: id, deleted: false, client, taskType: CHECKIN_TASK_TYPE, date: checkinDay, statusLower, propertyId, derivedCode, keysRequired, plannedOrderTaskDates })
+    const supersededCheckout = rCheckout.action === 'skipped_locked'
+      ? 0
+      : await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkoutDay, taskType: CHECKOUT_TASK_TYPE, client })
+    const supersededCheckin = rCheckin.action === 'skipped_locked'
+      ? 0
+      : await supersedeTemporaryManualTasksForOrder({ jobId, orderId: id, propertyId, taskDate: checkinDay, taskType: CHECKIN_TASK_TYPE, client })
     const normalizedTurnoverScopes = await normalizeSameDayTurnoverInspectionScope({ propertyId, taskDates: [checkoutDay, checkinDay], jobId, client })
-    const rCheckoutPassword = await syncCheckoutOldCodeFromCheckinNewCode({ jobId, orderId: id, client })
-    const rCheckinPassword = await syncCheckinOldCodeFromPreviousStay({ jobId, orderId: id, client })
+    const rCheckoutPassword = rCheckout.action === 'skipped_locked'
+      ? { action: 'skipped_locked' as const, reason: 'task_auto_sync_locked' }
+      : await syncCheckoutOldCodeFromCheckinNewCode({ jobId, orderId: id, client })
+    const rCheckinPassword = rCheckin.action === 'skipped_locked'
+      ? { action: 'skipped_locked' as const, reason: 'task_auto_sync_locked' }
+      : await syncCheckinOldCodeFromPreviousStay({ jobId, orderId: id, client })
     const rNextCheckinPassword = await syncNextCheckinOldCodeFromSourceOrder({
       sourceOrderId: id,
       client,
       audit: { client: 'sync_worker', actorRole: 'system' },
     })
     const actions = [rCheckout.action, rCheckin.action, rCheckoutPassword.action, rCheckinPassword.action, rNextCheckinPassword.action, ...(normalizedTurnoverScopes > 0 ? ['updated'] : [])]
-    await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
+    if (rCheckout.action !== 'skipped_locked' && rCheckin.action !== 'skipped_locked') {
+      await reconcileDeferredInspectionCheckinReplacement({ checkinOrderId: id, pgClient: client })
+    }
     if (actions.includes('created') || actions.includes('updated')) {
       await emitDeferredInspectionCheckinConflictAlerts({ checkinOrderId: id, pgClient: client })
     }

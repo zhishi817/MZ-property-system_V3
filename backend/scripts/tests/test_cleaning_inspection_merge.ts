@@ -399,16 +399,52 @@ function testManualCheckinLinkMigrationIsGuardedAndTransactional() {
   assert.match(migration, /VALUES \('20261021_mz065_manual_checkin_turnover_link'\)/)
   assert.match(migration, /COMMIT;\s*$/)
 
+  const receiptMigration = fs.readFileSync(
+    path.resolve(__dirname, '../migrations/20261104_mz065_manual_create_receipts.sql'),
+    'utf8',
+  )
+  assert.match(receiptMigration, /^BEGIN;/)
+  assert.match(receiptMigration, /schema_migrations_missing/)
+  assert.match(receiptMigration, /cleaning_tasks_missing/)
+  assert.match(receiptMigration, /CREATE TABLE IF NOT EXISTS manual_cleaning_task_create_receipts/)
+  assert.match(receiptMigration, /PRIMARY KEY \(actor_user_id, request_id\)/)
+  assert.match(receiptMigration, /request_hash text NOT NULL/)
+  assert.match(receiptMigration, /properties_missing/)
+  assert.match(receiptMigration, /CREATE OR REPLACE FUNCTION mz065_lock_order_turnover_boundaries\(\)/)
+  assert.match(receiptMigration, /COALESCE\(p_id\.id::text, p_code\.id::text, NEW\.property_id::text\)/)
+  assert.match(receiptMigration, /BEFORE INSERT ON orders/)
+  assert.doesNotMatch(receiptMigration, /request_payload|old_code|new_code|password/)
+  assert.match(receiptMigration, /VALUES \('20261104_mz065_manual_create_receipts'\)/)
+  assert.match(receiptMigration, /COMMIT;\s*$/)
+
   const dbAdapterSource = fs.readFileSync(path.resolve(__dirname, '../../src/dbAdapter.ts'), 'utf8')
   assert.match(dbAdapterSource, /const ORDER_TURNOVER_IDENTITY_FIELDS = new Set\(\['property_id', 'checkin', 'checkout', 'status'\]\)/)
   assert.match(dbAdapterSource, /if \(updatesOrderTurnoverIdentity && !client\) \{[\s\S]*?pgRunInTransaction/)
-  assert.match(dbAdapterSource, /lockOrderTurnoverIdentityWrite[\s\S]*?order-turnover-identity[\s\S]*?cleaning-turnover:/)
+  assert.match(dbAdapterSource, /canonicalOrderTurnoverPropertyKeys[\s\S]*?COALESCE\(p_id\.id::text, p_code\.id::text, raw\.property_id\)/)
+  assert.match(dbAdapterSource, /lockOrderTurnoverIdentityWrite[\s\S]*?order-turnover-identity[\s\S]*?canonicalOrderTurnoverPropertyKeys[\s\S]*?cleaning-turnover:/)
 
   const syncSource = fs.readFileSync(path.resolve(__dirname, '../../src/services/cleaningSync.ts'), 'utf8')
+  const cleaningModuleSource = fs.readFileSync(path.resolve(__dirname, '../../src/modules/cleaning.ts'), 'utf8')
   assert.match(syncSource, /lockCleaningOrderIdentityKey\(client, id\)[\s\S]*?const order = await loadOrder\(id, client, \{ forShare: !!client \}\)/)
-  const boundaryLockBlock = syncSource.indexOf('const turnoverBoundaryDates = Array.from(new Set(')
+  assert.match(syncSource, /async function lockOrderTurnoverTopology[\s\S]*?loadOrderExplicitTurnoverTopology[\s\S]*?lockCleaningTurnoverKeys\(client, lockTargets\)[\s\S]*?const verified = await loadOrderExplicitTurnoverTopology[\s\S]*?normalizeCleaningTurnoverTargetKeys/, 'order sync must canonicalize the complete topology and take one globally sorted lock set before revalidation')
+  assert.match(cleaningModuleSource, /async function lockCleaningTurnoverTopologyTargets[\s\S]*?return lockCleaningTurnoverKeys\(client, targets\)/, 'PATCH verification must retain the exact canonical property-NUL-date keys returned by the lock helper')
+  const boundaryLockBlock = syncSource.indexOf('await lockOrderTurnoverTopology({')
   const firstTaskSync = syncSource.indexOf('const rCheckout = await syncOneTask', boundaryLockBlock)
-  assert.ok(boundaryLockBlock >= 0 && firstTaskSync > boundaryLockBlock, 'sync must acquire every sorted order boundary advisory lock before task rows')
+  assert.ok(boundaryLockBlock >= 0 && firstTaskSync > boundaryLockBlock, 'sync must acquire every sorted old-link/new-order boundary advisory lock before task rows')
+  assert.match(syncSource, /const reason = 'explicit_turnover_link_detached_after_order_topology_change'/)
+  assert.match(syncSource, /action: 'relationship_detached'/)
+  assert.match(syncSource, /patch: \{ linked_checkout_task_id: null \}[\s\S]*?auto_relinked: false/)
+  const detachWrite = syncSource.indexOf('const checkinAfter = await updateTaskById')
+  const detachAudit = syncSource.indexOf("action: 'relationship_detached'", detachWrite)
+  const detachEvent = syncSource.indexOf('await emitWorkTaskEvent({', detachAudit)
+  assert.ok(detachWrite >= 0 && detachAudit > detachWrite && detachEvent > detachAudit, 'relationship mutation must await audit and realtime event writes before the worker transaction can commit')
+  const detachEventPayloadStart = syncSource.indexOf('payload: {', detachEvent)
+  const detachEventPayloadEnd = syncSource.indexOf('causedByUserId:', detachEventPayloadStart)
+  const detachParticipantPayload = syncSource.slice(detachEventPayloadStart, detachEventPayloadEnd)
+  assert.doesNotMatch(detachParticipantPayload, /next_property_id|next_task_date/, 'old-pair participants may receive the detach event but must not learn the moved task new topology')
+
+  const workerSource = fs.readFileSync(path.resolve(__dirname, '../../src/services/cleaningSyncJobsWorker.ts'), 'utf8')
+  assert.match(workerSource, /await client\.query\('BEGIN'\)[\s\S]*?await __test_dispatchCleaningSyncJob\(job, client, syncOrderToCleaningTasks\)[\s\S]*?await client\.query\('COMMIT'\)[\s\S]*?await client\.query\('ROLLBACK'\)/)
 }
 
 function testKeyHandoverSurvivesOrdinaryWorkflowChanges() {
@@ -443,6 +479,72 @@ function testKeyHandoverSurvivesOrdinaryWorkflowChanges() {
     lockboxVideoUrl: 'recorded',
     latestUploadAudit,
   }), null)
+}
+
+function testFormalInspectionSubmissionClearsOnlyTheResolvedVideoRequirement() {
+  const latestUploadAudit = {
+    performed_as_action: 'upload_access_video',
+    performed_at: '2026-10-31T03:38:53.015Z',
+    status_before: 'cleaned',
+    status_after: 'cleaned',
+    metadata: {
+      finalization_pending: true,
+      missing_requirements: ['cleaning_consumables', 'inspection_photos'],
+    },
+  }
+  assert.deepEqual(projectCleaningKeyHandover({
+    taskId: 'oa2804-checkout',
+    status: 'keys_hung',
+    executionState: 'active',
+    lockboxVideoUrl: 'recorded',
+    latestUploadAudit,
+    formalInspectionSubmittedAt: '2026-10-31T03:40:24.000Z',
+  }), {
+    state: 'completed',
+    source_task_id: 'oa2804-checkout',
+    completed_at: '2026-10-31T03:38:53.015Z',
+    confirmation_source: 'video',
+    media_evidence_present: true,
+    workflow_finalization_pending: true,
+    missing_requirements: ['cleaning_consumables'],
+  }, 'a later exact-source formal inspection submission clears only inspection_photos')
+
+  assert.deepEqual(projectCleaningKeyHandover({
+    taskId: 'ut2602-checkout',
+    status: 'keys_hung',
+    executionState: 'active',
+    lockboxVideoUrl: 'recorded',
+    latestUploadAudit: {
+      ...latestUploadAudit,
+      metadata: { finalization_pending: true, missing_requirements: ['inspection_photos'] },
+    },
+    formalInspectionSubmittedAt: '2026-10-31T03:40:24.000Z',
+  }), {
+    state: 'completed',
+    source_task_id: 'ut2602-checkout',
+    completed_at: '2026-10-31T03:38:53.015Z',
+    confirmation_source: 'video',
+    media_evidence_present: true,
+    workflow_finalization_pending: false,
+    missing_requirements: [],
+  }, 'a later exact-source formal inspection submission removes the stale card warning')
+
+  assert.deepEqual(projectCleaningKeyHandover({
+    taskId: 'old-formal-submit-before-current-video',
+    status: 'in_progress',
+    executionState: 'active',
+    lockboxVideoUrl: 'recorded',
+    latestUploadAudit,
+    formalInspectionSubmittedAt: '2026-10-31T03:30:00.000Z',
+  })?.missing_requirements, ['cleaning_consumables', 'inspection_photos'], 'a formal submission predating the current video cannot clear its newer snapshot')
+
+  assert.deepEqual(projectCleaningKeyHandover({
+    taskId: 'media-without-formal-submit',
+    status: 'in_progress',
+    executionState: 'active',
+    lockboxVideoUrl: 'recorded',
+    latestUploadAudit,
+  })?.missing_requirements, ['cleaning_consumables', 'inspection_photos'], 'media presence alone cannot clear a formal-submission requirement')
 }
 
 function testManualKeysHungIsVisibleWithoutPretendingVideoEvidenceExists() {
@@ -914,6 +1016,10 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   const cleaningPageSource = fs.readFileSync(path.resolve(__dirname, '../../../frontend/src/app/cleaning/page.tsx'), 'utf8')
   const cleaningDailyMergeSource = fs.readFileSync(path.resolve(__dirname, '../../../frontend/src/lib/cleaningDailyMerge.ts'), 'utf8')
   assert.match(source, /latest_lockbox_audit AS \([\s\S]*?audit\.source_id::text AS task_id[\s\S]*?performed_as_action = 'upload_access_video'/)
+  assert.match(source, /latest_formal_inspection_submission AS \([\s\S]*?inspectionSubmissionAuditWhereSql\('audit'\)[\s\S]*?inspection_submission_complete[\s\S]*?scope_type = 'cleaning_task_inspection_photos'[\s\S]*?step_key = 'save_inspection_photos'/)
+  assert.match(source, /formal_inspection\.submitted_at AS formal_inspection_submitted_at[\s\S]*?formalInspectionSubmittedAt: row\.formal_inspection_submitted_at/)
+  assert.match(source, /const candidateSql = \(includeInspectionReceipts: boolean\)[\s\S]*?includeInspectionReceipts \? `UNION ALL[\s\S]*?FROM app_submit_receipts receipt/)
+  assert.match(source, /pgPool\.query\(candidateSql\(true\)[\s\S]*?error\?\.code[\s\S]*?'42P01'[\s\S]*?pgPool\.query\(candidateSql\(false\)/, 'receipt-table compatibility must retry the same read without the optional receipt branch')
   assert.match(source, /current_media\.task_id::text = t\.id::text[\s\S]*?current_media\.type = 'lockbox_video'/)
   assert.match(source, /lockboxVideoUrl: row\.has_current_lockbox_video === true \? 'recorded' : ''/)
   assert.doesNotMatch(source, /invalidatedAfterUpload|invalidated_after_upload|lockbox_audit_invalidated/)
@@ -953,23 +1059,38 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   assert.match(cleaningSource, /pgRunInTransaction\(async \(client\)[\s\S]*?lifecycle_state: 'deleted'[\s\S]*?\}, client\)/)
   const candidateReadRoute = cleaningSource.slice(
     cleaningSource.indexOf("router.get('/tasks/checkin-link-candidates'"),
-    cleaningSource.indexOf("router.get('/tasks',"),
+    cleaningSource.indexOf("router.get('/tasks/checkout-link-candidates'"),
   )
   assert.ok(candidateReadRoute.length > 0, 'check-in link candidate API must exist')
   assert.match(candidateReadRoute, /requireCleaningManualCreateAccess, requireR5TaskRuntimeSchema/)
   assert.match(candidateReadRoute, /SELECT id::text AS id, code FROM properties/)
+  assert.match(candidateReadRoute, /id::text=\$1 OR upper\(code\)=upper\(\$1\)/, 'candidate input may use the property UUID or its historical code')
   assert.match(candidateReadRoute, /FROM cleaning_tasks t[\s\S]*?LEFT JOIN orders o/)
+  assert.match(candidateReadRoute, /COALESCE\(task_property_id\.id::text, task_property_code\.id::text, t\.property_id::text\)=\$1/, 'candidate SQL must compare the canonical property identity')
   assert.match(candidateReadRoute, /res\.status\(503\)\.json\(\{ code: CHECKIN_LINK_CANDIDATES_UNAVAILABLE \}\)/)
   assert.doesNotMatch(candidateReadRoute, /ensureCleaningSchemaV2|ensureColumn|backfill|syncOrder|emitNotification|emitWorkTaskEvent|addAudit/)
   assert.doesNotMatch(candidateReadRoute, /\b(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b/i, 'candidate GET must remain SELECT-only')
   assert.doesNotMatch(candidateReadRoute, /t\.lifecycle_state/, 'candidate SQL cannot select a lifecycle field that is not present in cleaning_tasks')
+  const reverseCandidateReadRoute = cleaningSource.slice(
+    cleaningSource.indexOf("router.get('/tasks/checkout-link-candidates'"),
+    cleaningSource.indexOf('const turnoverLinkSchema'),
+  )
+  assert.ok(reverseCandidateReadRoute.length > 0, 'checkout-to-checkin candidate API must exist')
+  assert.match(reverseCandidateReadRoute, /reliableManualCheckoutCheckinCandidates/)
+  assert.match(reverseCandidateReadRoute, /COALESCE\(task_property_id\.id::text, task_property_code\.id::text, t\.property_id::text\)=\$1/)
+  assert.match(reverseCandidateReadRoute, /res\.status\(503\)\.json\(\{ code: CHECKOUT_LINK_CANDIDATES_UNAVAILABLE \}\)/)
+  assert.doesNotMatch(reverseCandidateReadRoute, /ensureCleaningSchemaV2|ensureColumn|backfill|syncOrder|emitNotification|emitWorkTaskEvent|addAudit/)
+  assert.doesNotMatch(reverseCandidateReadRoute, /\b(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b/i, 'reverse candidate GET must remain SELECT-only')
+  assert.doesNotMatch(reverseCandidateReadRoute, /t\.lifecycle_state/, 'reverse candidate SQL cannot select a lifecycle field that is not present in cleaning_tasks')
   const deployedCleaningSchema = [
     fs.readFileSync(path.resolve(__dirname, '../../scripts/schema.sql'), 'utf8'),
     fs.readFileSync(path.resolve(__dirname, '../migrations/20260629_cleaning_task_execution_state.sql'), 'utf8'),
+    fs.readFileSync(path.resolve(__dirname, '../migrations/20260902_r5_2a_core_task_schema.sql'), 'utf8'),
     fs.readFileSync(path.resolve(__dirname, '../migrations/20261021_mz065_manual_checkin_turnover_link.sql'), 'utf8'),
   ].join('\n')
   const candidateTaskColumns = Array.from(candidateReadRoute.matchAll(/\bt\.([a-z_][a-z0-9_]*)/g), (match) => match[1])
-  for (const column of new Set(candidateTaskColumns)) {
+  const reverseCandidateTaskColumns = Array.from(reverseCandidateReadRoute.matchAll(/\bt\.([a-z_][a-z0-9_]*)/g), (match) => match[1])
+  for (const column of new Set([...candidateTaskColumns, ...reverseCandidateTaskColumns])) {
     assert.match(deployedCleaningSchema, new RegExp(`\\b${column}\\b`), `candidate SQL column ${column} must exist in the deployed cleaning schema`)
   }
   const manualCreateRoute = cleaningSource.slice(
@@ -981,6 +1102,18 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   const sameDayRowLock = manualCreateRoute.indexOf('FOR UPDATE OF t', transactionStart)
   assert.ok(transactionStart >= 0 && advisoryLock > transactionStart && sameDayRowLock > advisoryLock, 'manual check-in linking must acquire the turnover advisory lock before any task row lock')
   assert.doesNotMatch(manualCreateRoute, /t\.lifecycle_state/, 'POST revalidation SQL cannot select a nonexistent lifecycle field')
+  assert.match(manualCreateRoute, /COALESCE\(task_property_id\.id::text, task_property_code\.id::text, t\.property_id::text\)=\$1/, 'create-time relationship revalidation must canonicalize property code/UUID aliases')
+  assert.match(manualCreateRoute, /createRequestId[\s\S]*?uuidv5\([\s\S]*?FOR UPDATE[\s\S]*?idempotent: true/, 'manual create retry must reuse deterministic task ids under the turnover lock')
+  assert.match(manualCreateRoute, /pairedCheckoutId[\s\S]*?linked_checkout_task_id: pairedCheckoutId \?\? base\.linked_checkout_task_id/, 'explicit turnover creation must persist its own checkout id on the check-in row')
+  assert.match(manualCreateRoute, /const linkedCheckoutId = tt === 'checkin_clean'[\s\S]*?sourceRefIds: linkedCheckoutId \? \[linkedCheckoutId, String\(created\.id\)\][\s\S]*?buildCleaningPairVisibilityHints\(created, linkedCheckoutRow\)/, 'new check-in to existing checkout and paired turnover creation must publish one exact two-source event to both task participant sets')
+  assert.match(manualCreateRoute, /sourceRefIds: \[checkoutId, selectedExistingCheckinId\][\s\S]*?buildCleaningPairVisibilityHints\(updatedCheckin, createdCheckout\)/, 'new checkout to existing check-in must publish the relationship update to both exact source participant sets')
+  const turnoverLinkRoute = cleaningSource.slice(
+    cleaningSource.indexOf("router.post('/tasks/turnover-links'"),
+    cleaningSource.indexOf("router.get('/tasks',"),
+  )
+  assert.match(turnoverLinkRoute, /lockCleaningPasswordChainKey[\s\S]*?lockCleaningTurnoverKey[\s\S]*?FOR UPDATE OF t[\s\S]*?linked_checkout_task_id=\$1/, 'existing task linking must lock and revalidate before the atomic relation write')
+  assert.match(turnoverLinkRoute, /COALESCE\(property_id_row\.id::text, property_code_row\.id::text, task\.property_id::text\) AS property_id[\s\S]*?COALESCE\(task_property_id\.id::text, task_property_code\.id::text, t\.property_id::text\)=\$1/, 'existing link validation must canonicalize both initially selected rows and the locked same-day set')
+  assert.match(turnoverLinkRoute, /sourceRefIds: \[checkoutTaskId, checkinTaskId\][\s\S]*?buildCleaningPairVisibilityHints\(updated, validation\.checkout\)/, 'existing task linking must refresh both exact task participants without widening role access')
   assert.match(cleaningAppSource, /changedFields: \['status', 'lockbox_video_uploaded_at', 'lockbox_video_url', 'key_handover'\]/)
   assert.match(cleaningAppSource, /lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null/)
   assert.doesNotMatch(source, /lockboxVideoConfirmsCurrentTaskState\([\s\S]{0,240}\) \|\| !!keyHandover/)
@@ -1000,7 +1133,7 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   assert.match(cleaningPageSource, /checkin_link_decision: manualCreateForm\.create_mode === 'checkin' \? manualCreateForm\.checkin_link_decision : null/, 'top-level create must send the explicit link decision')
   assert.match(cleaningPageSource, /linked_checkout_task_id: String\(editForm\.checkout_ids\[0\]\),[\s\S]*?checkin_link_decision: 'link'/, 'checkout-detail add-checkin must declare the exact linked decision')
   assert.match(cleaningPageSource, /inspection_scope: manualCreateForm\.create_mode === 'checkin'[\s\S]*?manualCreateForm\.linked_checkout_task_id \? 'inspect_and_hang' : manualCreateForm\.checkin_inspection_scope/, 'top-level linked check-in must submit the only valid same-day scope')
-  assert.match(cleaningPageSource, /value=\{manualCreateForm\.linked_checkout_task_id \? 'inspect_and_hang' : manualCreateForm\.checkin_inspection_scope\}[\s\S]*?disabled=\{manualCreateSaving \|\| !!manualCreateForm\.linked_checkout_task_id\}/, 'top-level linked check-in must not offer the rejected password-only choice and must stay locked during submission')
+  assert.match(cleaningPageSource, /value=\{manualCreateForm\.linked_checkout_task_id \? 'inspect_and_hang' : manualCreateForm\.checkin_inspection_scope\}[\s\S]*?disabled=\{manualCreateInteractionLocked \|\| !!manualCreateForm\.linked_checkout_task_id\}/, 'top-level linked check-in must not offer the rejected password-only choice and must stay locked during submission or replay review')
   assert.match(cleaningPageSource, /linked_checkout_task_id: v === '__independent__' \? null : String\(v \|\| ''\),[\s\S]*?checkin_link_decision: v === '__independent__' \? 'independent' : 'link',[\s\S]*?v !== '__independent__' \? \{ checkin_inspection_scope: 'inspect_and_hang' as const \} : \{\}/, 'choosing a checkout must immediately normalize the visible execution mode')
   assert.match(cleaningPageSource, /pending_add_checkin[\s\S]*?inspection_scope: editForm\.checkout_ids\.length > 0[\s\S]*?\? 'inspect_and_hang'[\s\S]*?: editForm\.checkin_inspection_scope/, 'checkout-side add-checkin entry must persist the supported mode')
   assert.match(cleaningPageSource, /value=\{editForm\.checkout_ids\.length > 0 \? 'inspect_and_hang' : editForm\.checkin_inspection_scope\}/, 'turnover editing must not offer a mode that the backend rejects')
@@ -1415,6 +1548,18 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   const explicitlyOccupiedCheckinId = 'test-manual-link-candidate-explicit-checkin'
   const validOrderedCandidateId = 'test-manual-link-candidate-valid-order'
   const concurrencyCandidateId = 'test-manual-link-candidate-concurrency'
+  const reverseCheckinId = 'test-reverse-link-checkin'
+  const reversePasswordOnlyCheckinId = 'test-reverse-link-password-only-checkin'
+  const existingLinkCheckoutId = 'test-existing-link-checkout'
+  const existingLinkCheckinId = 'test-existing-link-checkin'
+  const cancelledPriorCheckoutId = 'test-cancelled-prior-checkout'
+  const rebuildCheckinId = 'test-rebuild-link-checkin'
+  const ambiguousReverseCheckinAId = 'test-reverse-ambiguous-checkin-a'
+  const ambiguousReverseCheckinBId = 'test-reverse-ambiguous-checkin-b'
+  const orderedReverseCheckinId = 'test-reverse-ordered-checkin'
+  const aliasCheckoutId = 'test-alias-code-checkout'
+  const aliasCheckinId = 'test-alias-uuid-checkin'
+  const aliasCreateCheckinId = 'test-alias-code-create-checkin'
   const deferredMergeCheckoutId = 'test-deferred-merge-checkout'
   const deferredMergeCheckinId = 'test-deferred-merge-checkin'
   const deferredMergeAssigneeId = 'test-deferred-merge-assignee'
@@ -1461,6 +1606,18 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     { id: 'test-manual-link-candidate-superseded', property_id: testPropertyId, task_date: '2026-09-30', date: '2026-09-30', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'superseded' },
     { id: 'test-manual-link-candidate-lifecycle-deleted', property_id: testPropertyId, task_date: '2026-09-30', date: '2026-09-30', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active', lifecycle_state: 'deleted' },
     { id: concurrencyCandidateId, property_id: testPropertyId, task_date: '2026-10-01', date: '2026-10-01', task_type: 'checkout_clean', type: 'checkout_clean', status: 'completed', execution_state: 'active' },
+    { id: reverseCheckinId, property_id: testPropertyId, task_date: '2026-10-02', date: '2026-10-02', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang', checkin_time: '3pm' },
+    { id: reversePasswordOnlyCheckinId, property_id: testPropertyId, task_date: '2026-10-03', date: '2026-10-03', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'password_only', checkin_time: '3pm' },
+    { id: existingLinkCheckoutId, property_id: testPropertyId, task_date: '2026-10-04', date: '2026-10-04', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active' },
+    { id: existingLinkCheckinId, property_id: testPropertyId, task_date: '2026-10-04', date: '2026-10-04', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang', assignee_id: 'preserve-existing-assignee', photo_urls: ['memory://preserve-existing-evidence'] },
+    { id: cancelledPriorCheckoutId, property_id: testPropertyId, task_date: '2026-10-05', date: '2026-10-05', task_type: 'checkout_clean', type: 'checkout_clean', status: 'cancelled', execution_state: 'active' },
+    { id: rebuildCheckinId, property_id: testPropertyId, task_date: '2026-10-05', date: '2026-10-05', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang', linked_checkout_task_id: cancelledPriorCheckoutId },
+    { id: ambiguousReverseCheckinAId, property_id: testPropertyId, task_date: '2026-10-06', date: '2026-10-06', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang' },
+    { id: ambiguousReverseCheckinBId, property_id: testPropertyId, task_date: '2026-10-06', date: '2026-10-06', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang' },
+    { id: orderedReverseCheckinId, property_id: testPropertyId, task_date: '2026-10-09', date: '2026-10-09', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang', order_id: 'test-reverse-order-in' },
+    { id: aliasCheckoutId, property_id: 'TEST-TURNOVER', task_date: '2026-10-15', date: '2026-10-15', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang' },
+    { id: aliasCheckinId, property_id: testPropertyId, task_date: '2026-10-15', date: '2026-10-15', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang' },
+    { id: aliasCreateCheckinId, property_id: 'TEST-TURNOVER', task_date: '2026-10-16', date: '2026-10-16', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang' },
     { id: deferredMergeCheckoutId, property_id: deferredMergePropertyId, task_date: '2026-09-18', date: '2026-09-18', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', cleaner_id: 'test-original-cleaner', inspector_id: 'test-deferred-plan-inspector', inspection_mode: 'deferred', inspection_due_date: '2026-09-19', inspection_scope: 'inspect_and_hang', guest_special_request: '延期任务旧要求' },
     { id: deferredMergeCheckinId, property_id: deferredMergePropertyId, task_date: '2026-09-19', date: '2026-09-19', task_type: 'checkin_clean', type: 'checkin_clean', status: 'pending', execution_state: 'active', assignee_id: null, inspector_id: null, linked_checkout_task_id: deferredMergeCheckoutId, inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang', guest_special_request: '入住任务优先要求', checkin_time: '3pm' },
   )
@@ -1477,6 +1634,7 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     { id: 'test-order-canonical-incoming', property_id: testPropertyId, status: 'confirmed', checkin: '2026-09-27', checkout: '2026-09-30' },
     { id: 'test-order-canonical-incoming-2', property_id: testPropertyId, status: 'confirmed', checkin: '2026-09-27', checkout: '2026-10-02' },
     { id: 'test-order-valid', property_id: testPropertyId, status: 'confirmed', checkin: '2026-09-20', checkout: '2026-09-29' },
+    { id: 'test-reverse-order-in', property_id: testPropertyId, status: 'confirmed', checkin: '2026-10-09', checkout: '2026-10-12' },
   )
   ;((db as any).users ||= []).push({
     id: deferredMergeAssigneeId,
@@ -1487,7 +1645,7 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   const app = express()
   app.use(express.json())
   app.use((req: any, _res, next) => {
-    req.user = { sub: 'local-test', role: 'admin', roles: ['admin'] }
+    req.user = { sub: String(req.headers['x-test-actor'] || 'local-test'), role: 'admin', roles: ['admin'] }
     next()
   })
   app.use('/task-center', router)
@@ -1529,10 +1687,10 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     })
     return { status: response.status, body: await response.json() as any }
   }
-  const postJson = async (path: string, body: any, method = 'POST') => {
+  const postJson = async (path: string, body: any, method = 'POST', actor = 'local-test') => {
     const response = await fetch(`${base}${path}`, {
       method,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-test-actor': actor },
       body: JSON.stringify(body),
     })
     return { status: response.status, body: await response.json() as any }
@@ -1670,6 +1828,252 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     assert.deepEqual(inactiveCandidates.body.items, [], 'cancelled, superseded and lifecycle-deleted tasks are not candidates')
     assert.equal((await getJson(`/cleaning/tasks/checkin-link-candidates?property_id=${testPropertyId}&task_date=not-a-date`)).status, 400)
     assert.equal((await getJson('/cleaning/tasks/checkin-link-candidates?property_id=missing-property&task_date=2026-09-25')).status, 400)
+
+    const reverseCandidates = await getJson(`/cleaning/tasks/checkout-link-candidates?property_id=${testPropertyId}&task_date=2026-10-02`)
+    assert.equal(reverseCandidates.status, 200)
+    assert.deepEqual(reverseCandidates.body.items.map((item: any) => item.id), [reverseCheckinId])
+    assert.deepEqual(
+      Object.keys(reverseCandidates.body.items[0]).sort(),
+      ['checkin_time', 'id', 'inspection_scope', 'property_code', 'property_id', 'status', 'task_date'],
+      'reverse candidate DTO exposes only the minimum relationship fields',
+    )
+    const passwordOnlyReverseCandidates = await getJson(`/cleaning/tasks/checkout-link-candidates?property_id=${testPropertyId}&task_date=2026-10-03`)
+    assert.deepEqual(passwordOnlyReverseCandidates.body.items, [], 'password-only check-ins must not be silently converted into turnover inspection')
+    const ambiguousReverseCandidates = await getJson(`/cleaning/tasks/checkout-link-candidates?property_id=${testPropertyId}&task_date=2026-10-06`)
+    assert.deepEqual(
+      ambiguousReverseCandidates.body.items.map((item: any) => item.id).sort(),
+      [ambiguousReverseCheckinAId, ambiguousReverseCheckinBId].sort(),
+      'multiple valid check-ins remain explicit choices',
+    )
+    const orderedReverseCandidates = await getJson(`/cleaning/tasks/checkout-link-candidates?property_id=${testPropertyId}&task_date=2026-10-09`)
+    assert.deepEqual(orderedReverseCandidates.body.items.map((item: any) => item.id), [orderedReverseCheckinId], 'a valid order-linked check-in remains available to an explicit manual checkout')
+
+    const aliasCheckoutCandidates = await getJson('/cleaning/tasks/checkin-link-candidates?property_id=TEST-TURNOVER&task_date=2026-10-15')
+    assert.deepEqual(aliasCheckoutCandidates.body.items.map((item: any) => item.id), [aliasCheckoutId], 'candidate discovery must treat historical property code and current UUID as one property')
+    const aliasCheckinCandidates = await getJson(`/cleaning/tasks/checkout-link-candidates?property_id=${testPropertyId}&task_date=2026-10-15`)
+    assert.deepEqual(aliasCheckinCandidates.body.items.map((item: any) => item.id), [aliasCheckinId])
+    const aliasExistingLink = await postJson('/cleaning/tasks/turnover-links', {
+      checkout_task_id: aliasCheckoutId,
+      checkin_task_id: aliasCheckinId,
+    })
+    assert.equal(aliasExistingLink.status, 200, JSON.stringify(aliasExistingLink.body))
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === aliasCheckinId)?.linked_checkout_task_id, aliasCheckoutId)
+    const aliasInspectionConflict = await postJson(`/cleaning/tasks/${aliasCheckinId}`, { inspection_scope: 'password_only' }, 'PATCH')
+    assert.equal(aliasInspectionConflict.status, 400, 'code/UUID aliases must not bypass same-day turnover inspection scope')
+    assert.equal(aliasInspectionConflict.body.code, 'turnover_requires_inspect_and_hang')
+    const aliasRepresentationPatch = await postJson(`/cleaning/tasks/${aliasCheckinId}`, { property_id: 'TEST-TURNOVER' }, 'PATCH')
+    assert.equal(aliasRepresentationPatch.status, 200, JSON.stringify(aliasRepresentationPatch.body))
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === aliasCheckinId)?.linked_checkout_task_id, aliasCheckoutId, 'a representation-only patch must preserve the explicit relationship')
+    const aliasRealMove = await postJson(`/cleaning/tasks/${aliasCheckinId}`, { property_id: 'different-property' }, 'PATCH')
+    assert.equal(aliasRealMove.status, 409)
+    assert.equal(aliasRealMove.body.code, 'turnover_link_topology_conflict')
+
+    const aliasReverseCreate = await postJson('/cleaning/tasks', {
+      request_id: 'test-alias-reverse-create',
+      create_mode: 'checkout',
+      task_date: '2026-10-16',
+      property_id: testPropertyId,
+      linked_checkin_task_id: aliasCreateCheckinId,
+      checkout_link_decision: 'link',
+    })
+    assert.equal(aliasReverseCreate.status, 200, JSON.stringify(aliasReverseCreate.body))
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === aliasCreateCheckinId)?.linked_checkout_task_id, aliasReverseCreate.body.id, 'create-time revalidation must accept a code/UUID representation mix')
+
+    const orderedReverseCreated = await postJson('/cleaning/tasks', {
+      request_id: 'test-reverse-ordered-create-request',
+      create_mode: 'checkout',
+      task_date: '2026-10-09',
+      property_id: testPropertyId,
+      linked_checkin_task_id: orderedReverseCheckinId,
+      checkout_link_decision: 'link',
+    })
+    assert.equal(orderedReverseCreated.status, 200, JSON.stringify(orderedReverseCreated.body))
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === orderedReverseCheckinId)?.linked_checkout_task_id, orderedReverseCreated.body.id)
+
+    const reverseCreated = await postJson('/cleaning/tasks', {
+      request_id: 'test-reverse-create-request',
+      create_mode: 'checkout',
+      task_date: '2026-10-02',
+      property_id: testPropertyId,
+      linked_checkin_task_id: reverseCheckinId,
+      checkout_link_decision: 'link',
+    })
+    assert.equal(reverseCreated.status, 200, JSON.stringify(reverseCreated.body))
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === reverseCheckinId)?.linked_checkout_task_id, reverseCreated.body.id)
+    const reverseReplay = await postJson('/cleaning/tasks', {
+      request_id: 'test-reverse-create-request',
+      create_mode: 'checkout',
+      task_date: '2026-10-02',
+      property_id: testPropertyId,
+      linked_checkin_task_id: reverseCheckinId,
+      checkout_link_decision: 'link',
+    })
+    assert.equal(reverseReplay.status, 200)
+    assert.equal(reverseReplay.body.id, reverseCreated.body.id, 'same request id must replay the original task instead of creating a duplicate')
+    assert.equal((db.cleaningTasks as any[]).filter((item) => item.id === reverseCreated.body.id).length, 1)
+    const replayPayloadConflict = await postJson('/cleaning/tasks', {
+      request_id: 'test-reverse-create-request',
+      create_mode: 'checkout',
+      task_date: '2026-10-02',
+      property_id: testPropertyId,
+      linked_checkin_task_id: reverseCheckinId,
+      checkout_link_decision: 'link',
+      guest_special_request: 'different payload must conflict',
+    })
+    assert.equal(replayPayloadConflict.status, 409)
+    assert.equal(replayPayloadConflict.body.code, 'manual_cleaning_create_replay_conflict')
+
+    const actorBoundFirst = await postJson('/cleaning/tasks', {
+      request_id: 'same-client-request-different-actors',
+      create_mode: 'checkout',
+      task_date: '2026-10-10',
+      property_id: testPropertyId,
+      checkout_link_decision: 'independent',
+    }, 'POST', 'actor-one')
+    const actorBoundSecond = await postJson('/cleaning/tasks', {
+      request_id: 'same-client-request-different-actors',
+      create_mode: 'checkout',
+      task_date: '2026-10-10',
+      property_id: testPropertyId,
+      checkout_link_decision: 'independent',
+    }, 'POST', 'actor-two')
+    assert.equal(actorBoundFirst.status, 200)
+    assert.equal(actorBoundSecond.status, 200)
+    assert.notEqual(actorBoundFirst.body.id, actorBoundSecond.body.id, 'request IDs are actor-scoped')
+
+    const cancelledReplayFirst = await postJson('/cleaning/tasks', {
+      request_id: 'cancelled-create-replay',
+      create_mode: 'checkout',
+      task_date: '2026-10-11',
+      property_id: testPropertyId,
+      checkout_link_decision: 'independent',
+    })
+    assert.equal(cancelledReplayFirst.status, 200)
+    ;(db.cleaningTasks as any[]).find((item) => item.id === cancelledReplayFirst.body.id).status = 'cancelled'
+    const cancelledReplay = await postJson('/cleaning/tasks', {
+      request_id: 'cancelled-create-replay',
+      create_mode: 'checkout',
+      task_date: '2026-10-11',
+      property_id: testPropertyId,
+      checkout_link_decision: 'independent',
+    })
+    assert.equal(cancelledReplay.status, 409)
+    assert.equal(cancelledReplay.body.code, 'manual_cleaning_create_replay_inactive')
+
+    const concurrentBodies = await Promise.all([1, 2].map(() => postJson('/cleaning/tasks', {
+      request_id: 'concurrent-create-replay',
+      create_mode: 'checkout',
+      task_date: '2026-10-12',
+      property_id: testPropertyId,
+      checkout_link_decision: 'independent',
+    })))
+    assert.deepEqual(concurrentBodies.map((item) => item.status), [200, 200])
+    assert.equal(concurrentBodies[0].body.id, concurrentBodies[1].body.id)
+    assert.equal((db.cleaningTasks as any[]).filter((item) => item.id === concurrentBodies[0].body.id).length, 1)
+
+    const ambiguousCreateMode = await postJson('/cleaning/tasks', {
+      create_mode: 'checkout',
+      task_type: 'checkin_clean',
+      task_date: '2026-10-13',
+      property_id: testPropertyId,
+    })
+    assert.equal(ambiguousCreateMode.status, 400)
+    assert.equal(ambiguousCreateMode.body.code, 'ambiguous_manual_create_mode')
+
+    const compatibleLegacyCreateMode = await postJson('/cleaning/tasks', {
+      request_id: 'compatible-legacy-create-mode',
+      create_mode: 'checkout',
+      task_type: 'checkout_clean',
+      task_date: '2026-10-14',
+      property_id: testPropertyId,
+      checkout_link_decision: 'independent',
+    })
+    assert.equal(compatibleLegacyCreateMode.status, 200, JSON.stringify(compatibleLegacyCreateMode.body))
+    assert.equal(compatibleLegacyCreateMode.body.task_type, 'checkout_clean')
+
+    const passwordOnlyReverse = await postJson('/cleaning/tasks', {
+      request_id: 'test-reverse-password-only-request',
+      create_mode: 'checkout',
+      task_date: '2026-10-03',
+      property_id: testPropertyId,
+      linked_checkin_task_id: reversePasswordOnlyCheckinId,
+      checkout_link_decision: 'link',
+    })
+    assert.equal(passwordOnlyReverse.status, 409)
+    assert.equal(passwordOnlyReverse.body.code, 'manual_checkout_checkin_link_conflict')
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === reversePasswordOnlyCheckinId)?.linked_checkout_task_id, undefined)
+
+    const existingLink = await postJson('/cleaning/tasks/turnover-links', {
+      checkout_task_id: existingLinkCheckoutId,
+      checkin_task_id: existingLinkCheckinId,
+    })
+    assert.equal(existingLink.status, 200, JSON.stringify(existingLink.body))
+    assert.equal(existingLink.body.idempotent, false)
+    const linkedExistingCheckin = (db.cleaningTasks as any[]).find((item) => item.id === existingLinkCheckinId)
+    assert.equal(linkedExistingCheckin?.linked_checkout_task_id, existingLinkCheckoutId)
+    assert.equal(linkedExistingCheckin?.assignee_id, 'preserve-existing-assignee', 'linking must not rewrite the existing assignee')
+    assert.deepEqual(linkedExistingCheckin?.photo_urls, ['memory://preserve-existing-evidence'], 'linking must preserve source evidence and media')
+    const existingLinkReplay = await postJson('/cleaning/tasks/turnover-links', {
+      checkout_task_id: existingLinkCheckoutId,
+      checkin_task_id: existingLinkCheckinId,
+    })
+    assert.equal(existingLinkReplay.status, 200)
+    assert.equal(existingLinkReplay.body.idempotent, true)
+    const ambiguousCanonicalLink = await postJson('/cleaning/tasks/turnover-links', {
+      checkout_task_id: canonicalOccupiedCheckoutId,
+      checkin_task_id: canonicalOccupiedCheckinId,
+    })
+    assert.equal(ambiguousCanonicalLink.status, 409, 'pairwise booking identity must not be treated as persisted idempotency when a third candidate exists')
+    assert.equal(ambiguousCanonicalLink.body.code, 'manual_checkout_checkin_link_conflict')
+    const linkedDateMove = await postJson(`/cleaning/tasks/${existingLinkCheckinId}`, { task_date: '2026-10-07' }, 'PATCH')
+    assert.equal(linkedDateMove.status, 409)
+    assert.equal(linkedDateMove.body.code, 'turnover_link_topology_conflict')
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === existingLinkCheckinId)?.task_date, '2026-10-04')
+
+    const rebuildCandidates = await getJson(`/cleaning/tasks/checkout-link-candidates?property_id=${testPropertyId}&task_date=2026-10-05`)
+    assert.deepEqual(rebuildCandidates.body.items.map((item: any) => item.id), [rebuildCheckinId], 'a cancelled prior checkout does not occupy the active check-in')
+    const rebuiltCheckout = await postJson('/cleaning/tasks', {
+      request_id: 'test-rebuild-checkout-request',
+      create_mode: 'checkout',
+      task_date: '2026-10-05',
+      property_id: testPropertyId,
+      linked_checkin_task_id: rebuildCheckinId,
+      checkout_link_decision: 'link',
+    })
+    assert.equal(rebuiltCheckout.status, 200, JSON.stringify(rebuiltCheckout.body))
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === rebuildCheckinId)?.linked_checkout_task_id, rebuiltCheckout.body.id, 'replacement checkout may replace only a stale inactive link')
+
+    const pairedCreate = await postJson('/cleaning/tasks', {
+      request_id: 'test-explicit-turnover-pair-request',
+      create_mode: 'turnover',
+      task_date: '2026-10-08',
+      property_id: testPropertyId,
+    })
+    assert.equal(pairedCreate.status, 200)
+    assert.equal(pairedCreate.body.created, 2)
+    const pairedRows = (db.cleaningTasks as any[]).filter((item) => item.property_id === testPropertyId && item.task_date === '2026-10-08')
+    const pairedCheckout = pairedRows.find((item) => item.task_type === 'checkout_clean')
+    const pairedCheckin = pairedRows.find((item) => item.task_type === 'checkin_clean')
+    assert.ok(pairedCheckout?.id && pairedCheckin?.id)
+    assert.equal(pairedCheckin.linked_checkout_task_id, pairedCheckout.id, 'create_mode=turnover must persist its own reliable pair')
+    const pairedReplay = await postJson('/cleaning/tasks', {
+      request_id: 'test-explicit-turnover-pair-request',
+      create_mode: 'turnover',
+      task_date: '2026-10-08',
+      property_id: testPropertyId,
+    })
+    assert.equal(pairedReplay.status, 200)
+    assert.equal(pairedReplay.body.idempotent, true)
+    assert.equal((db.cleaningTasks as any[]).filter((item) => item.property_id === testPropertyId && item.task_date === '2026-10-08').length, 2)
+
+    const oldCheckoutClient = await postJson('/cleaning/tasks', {
+      create_mode: 'checkout',
+      task_date: '2026-10-06',
+      property_id: testPropertyId,
+    })
+    assert.equal(oldCheckoutClient.status, 200, 'an old checkout client remains compatible and creates an explicit-field-free independent task')
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === ambiguousReverseCheckinAId)?.linked_checkout_task_id, undefined)
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === ambiguousReverseCheckinBId)?.linked_checkout_task_id, undefined)
 
     const completedLinked = await postJson('/cleaning/tasks', {
       create_mode: 'checkin',
@@ -1884,9 +2288,12 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     const index = db.cleaningTasks.findIndex((item) => item.id === taskId)
     if (index >= 0) db.cleaningTasks.splice(index, 1)
-    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId, decisionCheckoutUniqueId, decisionCheckoutIndependentId, decisionCheckoutAmbiguousAId, decisionCheckoutAmbiguousBId, completedCandidateId, keysHungCandidateId, inspectedCandidateId, cleanedCandidateId, invalidOrderCandidateId, cancelledOrderCandidateId, wrongPropertyOrderCandidateId, wrongBoundaryOrderCandidateId, missingOrderCandidateId, canonicalOccupiedCheckoutId, canonicalOccupiedCheckinId, canonicalAmbiguousCheckinId, explicitlyOccupiedCheckoutId, explicitlyOccupiedCheckinId, validOrderedCandidateId, concurrencyCandidateId, 'test-manual-link-candidate-cancelled', 'test-manual-link-candidate-superseded', 'test-manual-link-candidate-lifecycle-deleted', deferredMergeCheckoutId, deferredMergeCheckinId]) {
+    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId, decisionCheckoutUniqueId, decisionCheckoutIndependentId, decisionCheckoutAmbiguousAId, decisionCheckoutAmbiguousBId, completedCandidateId, keysHungCandidateId, inspectedCandidateId, cleanedCandidateId, invalidOrderCandidateId, cancelledOrderCandidateId, wrongPropertyOrderCandidateId, wrongBoundaryOrderCandidateId, missingOrderCandidateId, canonicalOccupiedCheckoutId, canonicalOccupiedCheckinId, canonicalAmbiguousCheckinId, explicitlyOccupiedCheckoutId, explicitlyOccupiedCheckinId, validOrderedCandidateId, concurrencyCandidateId, aliasCheckoutId, aliasCheckinId, aliasCreateCheckinId, 'test-manual-link-candidate-cancelled', 'test-manual-link-candidate-superseded', 'test-manual-link-candidate-lifecycle-deleted', deferredMergeCheckoutId, deferredMergeCheckinId]) {
       const fixtureIndex = db.cleaningTasks.findIndex((item) => item.id === id)
       if (fixtureIndex >= 0) db.cleaningTasks.splice(fixtureIndex, 1)
+    }
+    for (let index = db.cleaningTasks.length - 1; index >= 0; index -= 1) {
+      if (String((db.cleaningTasks[index] as any)?.property_id || '') === testPropertyId) db.cleaningTasks.splice(index, 1)
     }
     for (const propertyId of [testPropertyId, deferredMergePropertyId]) {
       const propertyIndex = ((db as any).properties || []).findIndex((item: any) => item.id === propertyId)
@@ -1894,7 +2301,7 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     }
     const userIndex = ((db as any).users || []).findIndex((item: any) => item.id === deferredMergeAssigneeId)
     if (userIndex >= 0) (db as any).users.splice(userIndex, 1)
-    const testOrderIds = new Set(['test-order-invalid', 'test-order-cancelled', 'test-order-wrong-property', 'test-order-wrong-boundary', 'test-order-canonical-outgoing', 'test-order-canonical-incoming', 'test-order-canonical-incoming-2', 'test-order-valid'])
+    const testOrderIds = new Set(['test-order-invalid', 'test-order-cancelled', 'test-order-wrong-property', 'test-order-wrong-boundary', 'test-order-canonical-outgoing', 'test-order-canonical-incoming', 'test-order-canonical-incoming-2', 'test-order-valid', 'test-reverse-order-in'])
     ;(db as any).orders = ((db as any).orders || []).filter((item: any) => !testOrderIds.has(String(item?.id || '')))
   }
 }
@@ -1921,6 +2328,7 @@ testPasswordOnlyCannotUseSelfCompleteOrCheckedDone()
 testKeyHandoverFactStaysSeparateFromWorkflowFinalization()
 testManualCheckinLinkMigrationIsGuardedAndTransactional()
 testKeyHandoverSurvivesOrdinaryWorkflowChanges()
+testFormalInspectionSubmissionClearsOnlyTheResolvedVideoRequirement()
 testManualKeysHungIsVisibleWithoutPretendingVideoEvidenceExists()
 testKeyHandoverFactRequiresExactCurrentTaskMediaOrManualConfirmation()
 testQueuedInspectionUsesCapturedBusinessDateOnlyWithExactEvidence()

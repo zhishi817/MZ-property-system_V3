@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { clearManualCheckinLinkSelection, clearManualCheckinLinkSelectionForScopeChange, manualCheckinCheckoutCandidates, manualCheckinLinkErrorNeedsCandidateRefresh, normalizeManualCheckinCheckoutCandidates, reconcileManualCheckinLinkSelection, sameManualCheckinCandidateScope, splitTurnoverMerge, type CleaningTurnoverMergeItem, type ManualCheckinLinkSelection } from './cleaningDailyMerge'
+import { clearManualCheckinLinkSelection, clearManualCheckinLinkSelectionForScopeChange, clearManualCheckoutLinkSelection, manualCheckinCheckoutCandidates, manualCheckinLinkErrorNeedsCandidateRefresh, manualCleaningCreateReplayNeedsReview, normalizeManualCheckinCheckoutCandidates, normalizeManualCheckoutCheckinCandidates, reconcileManualCheckinLinkSelection, reconcileManualCheckoutLinkSelection, sameManualCheckinCandidateScope, splitTurnoverMerge, type CleaningTurnoverMergeItem, type ManualCheckinLinkSelection, type ManualCheckoutLinkSelection } from './cleaningDailyMerge'
 
 type Item = CleaningTurnoverMergeItem & {
   id: string
@@ -106,6 +106,33 @@ describe('cleaningDailyMerge', () => {
     }, 'p1', '2026-11-03')).toThrow('invalid_checkin_link_candidate')
   })
 
+  test('normalizes reverse check-in candidates and keeps relationship decisions explicit', () => {
+    expect(normalizeManualCheckoutCheckinCandidates({
+      items: [{ id: 'checkin-1', property_id: 'p1', property_code: 'P1', task_date: '2026-11-04', checkin_time: '3pm', status: 'assigned', inspection_scope: 'inspect_and_hang', guest_name: 'strip-me' }],
+    }, 'p1', '2026-11-04')).toEqual([
+      { id: 'checkin-1', property_id: 'p1', property_code: 'P1', task_date: '2026-11-04', checkin_time: '3pm', status: 'assigned', inspection_scope: 'inspect_and_hang' },
+    ])
+    expect(() => normalizeManualCheckoutCheckinCandidates({
+      items: [{ id: 'password-only', property_id: 'p1', task_date: '2026-11-04', inspection_scope: 'password_only' }],
+    }, 'p1', '2026-11-04')).toThrow('invalid_checkout_link_candidate')
+
+    const empty: ManualCheckoutLinkSelection = {
+      linked_checkin_task_id: null,
+      checkout_link_decision: null,
+      checkout_link_decision_user_selected: false,
+    }
+    expect(reconcileManualCheckoutLinkSelection(empty, [], 'loading')).toEqual(empty)
+    expect(reconcileManualCheckoutLinkSelection(empty, ['checkin-1'], 'ready')).toEqual({
+      ...empty,
+      linked_checkin_task_id: 'checkin-1',
+      checkout_link_decision: 'link',
+    })
+    expect(reconcileManualCheckoutLinkSelection(empty, ['checkin-1', 'checkin-2'], 'ready')).toEqual(empty)
+    const independent = { ...empty, checkout_link_decision: 'independent' as const, checkout_link_decision_user_selected: true }
+    expect(reconcileManualCheckoutLinkSelection(independent, ['checkin-1'], 'ready')).toEqual(independent)
+    expect(clearManualCheckoutLinkSelection({ ...independent, linked_checkin_task_id: 'stale' })).toEqual(empty)
+  })
+
   test('preserves a deliberate independent choice after a successful candidate refresh', () => {
     const explicitIndependent: ManualCheckinLinkSelection = {
       linked_checkout_task_id: null,
@@ -148,6 +175,10 @@ describe('cleaningDailyMerge', () => {
     expect(manualCheckinLinkErrorNeedsCandidateRefresh({ code: 'manual_checkin_checkout_link_conflict' })).toBe(true)
     expect(manualCheckinLinkErrorNeedsCandidateRefresh({ code: 'manual_checkin_checkout_link_decision_required' })).toBe(true)
     expect(manualCheckinLinkErrorNeedsCandidateRefresh(new Error('network failed'))).toBe(false)
+    expect(manualCleaningCreateReplayNeedsReview({ code: 'manual_cleaning_create_replay_conflict' })).toBe(true)
+    expect(manualCleaningCreateReplayNeedsReview({ code: 'manual_cleaning_create_replay_inactive' })).toBe(true)
+    expect(manualCleaningCreateReplayNeedsReview({ code: 'manual_checkin_checkout_link_conflict' })).toBe(false)
+    expect(manualCleaningCreateReplayNeedsReview(new Error('network failed'))).toBe(false)
     expect(sameManualCheckinCandidateScope(
       { property_id: 'p1', task_date: '2026-11-03' },
       { property_id: 'p1', task_date: '2026-11-03' },
@@ -170,11 +201,24 @@ describe('cleaningDailyMerge', () => {
     expect(pageSource).toMatch(/const requestId = \+\+manualCandidateRequestRef\.current[\s\S]*?requestId !== manualCandidateRequestRef\.current/)
     expect(pageSource).toMatch(/setManualCandidateLoadState\('loading'\)[\s\S]*?setManualCandidateLoadState\('ready'\)[\s\S]*?setManualCandidateLoadState\('error'\)/)
     expect(pageSource).toMatch(/manualCreateForm\.create_mode === 'checkin' && manualCandidateLoadState !== 'ready'/)
-    expect(pageSource).toMatch(/okButtonProps=\{\{ disabled: manualCreateSaving \|\| \(manualCreateForm\?\.create_mode === 'checkin' && manualCandidateLoadState !== 'ready'\) \}\}/)
+    expect(pageSource).toMatch(/okButtonProps=\{\{ disabled: manualCreateSaving[\s\S]*?manualCreateForm\?\.create_mode === 'checkin' && manualCandidateLoadState !== 'ready'[\s\S]*?manualCreateForm\?\.create_mode === 'checkout' && manualCheckoutCandidateLoadState !== 'ready'/)
     expect(pageSource).toMatch(/任务关系加载失败，不能把未知候选当作独立任务。[\s\S]*?loadManualCheckoutCandidates\(/)
     expect(pageSource).toMatch(/catch \(error: any\)[\s\S]*?manualCheckinLinkErrorNeedsCandidateRefresh\(error\)[\s\S]*?sameManualCheckinCandidateScope\(manualCandidateScopeRef\.current, submittedCandidateScope\)[\s\S]*?setManualCandidateLoadState\('loading'\)[\s\S]*?clearManualCheckinLinkSelection\(current\)[\s\S]*?await loadManualCheckoutCandidates\(/)
-    expect(pageSource).toMatch(/区域（area）[\s\S]*?<Select[\s\S]*?allowClear[\s\S]*?showSearch[\s\S]*?disabled=\{manualCreateSaving\}[\s\S]*?value=\{manualCreateForm\.area/)
-    expect(pageSource).toMatch(/disabled=\{manualCreateSaving\}[\s\S]*?disabled=\{manualCreateSaving \|\| manualCandidateLoadState !== 'ready'\}/)
+    expect(pageSource).toMatch(/区域（area）[\s\S]*?<Select[\s\S]*?allowClear[\s\S]*?showSearch[\s\S]*?disabled=\{manualCreateInteractionLocked\}[\s\S]*?value=\{manualCreateForm\.area/)
+    expect(pageSource).toMatch(/disabled=\{manualCreateInteractionLocked\}[\s\S]*?disabled=\{manualCreateInteractionLocked \|\| manualCandidateLoadState !== 'ready'\}/)
     expect(pageSource).not.toMatch(/manualCheckinCheckoutCandidates\(items,/)
+    expect(pageSource).toMatch(/\/cleaning\/tasks\/checkout-link-candidates\?property_id=/)
+    expect(pageSource).toMatch(/linked_checkin_task_id: manualCreateForm\.create_mode === 'checkout'/)
+    expect(pageSource).toMatch(/checkout_link_decision: manualCreateForm\.create_mode === 'checkout'/)
+    expect(pageSource).toMatch(/request_id: manualCreateForm\.request_id/)
+    expect(pageSource).toMatch(/manualCleaningCreateReplayNeedsReview\(error\)[\s\S]*?setManualCreateReplayConflict\(true\)[\s\S]*?await loadRangeItems\(\)/)
+    expect(pageSource).toMatch(/manualCleaningCreateReplayNeedsReview\(error\)[\s\S]*?setEditCreateReplayConflict\(true\)[\s\S]*?await loadRangeItems\(\)/)
+    expect(pageSource).toMatch(/manualCreateReplayConflict[\s\S]*?创建结果需要核对/)
+    expect(pageSource).toMatch(/editCreateReplayConflict[\s\S]*?新增结果需要核对/)
+    expect(pageSource).toMatch(/\/cleaning\/tasks\/turnover-links/)
+    expect(pageSource).toMatch(/turnover_checkout_candidates[\s\S]*?turnover_link_checkout_id[\s\S]*?选择退房任务/)
+    expect(pageSource).toMatch(/turnover_checkin_candidates[\s\S]*?turnover_link_checkin_id[\s\S]*?选择入住任务/)
+    expect(pageSource).toMatch(/checkout_task_id: checkoutTaskId[\s\S]*?checkin_task_id: checkinTaskId/)
+    expect(pageSource).toMatch(/linked_checkin_task_id: String\(editForm\.checkin_ids\[0\]\)[\s\S]*?checkout_link_decision: 'link'/)
   })
 })

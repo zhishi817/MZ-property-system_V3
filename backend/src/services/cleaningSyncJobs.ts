@@ -109,15 +109,10 @@ export async function enqueueCleaningSyncJobTx(
             [orderId]
           )
         } catch {}
-        try {
-          await client.query(
-            `UPDATE cleaning_tasks
-             SET status='cancelled', updated_at=now()
-             WHERE (order_id::text) = $1 AND status <> 'cancelled'`,
-            [orderId]
-          )
-        } catch {}
-        return { id: '', merged: false }
+        // Continue and enqueue one full worker transaction. Cancellation must
+        // detach stale explicit turnover relationships, append audit/events,
+        // and preserve terminal history; a raw status-only fast write cannot
+        // provide those guarantees.
       }
     } catch {}
   }
