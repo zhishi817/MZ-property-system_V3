@@ -277,15 +277,15 @@
 - Branch: `codex/mz102-owner-statement-cancel-exclusion-post-mz103`
 - Base: `origin/Dev@7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168`; fetched/reverified at `2026-11-04T05:31:29Z`
 - Candidate patch SHA-256: `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`
-- Commit SHA: `not committed`
+- Commit SHA: `caf3e1396b2276ba1f6ce0c45fd40e7bc94f9fd4`; content tree `28000023e5eb35694493635cd6a9e01eedcc431e`
 - Dependencies: `root/CRL-20261104-001` already merged in base；none additional
 - Required validation: `PASS`; combined backend aggregate, owner/photo/company tests, Web 320 tests/lint/build, paired Mobile typecheck and governance tests passed；repo-wide Web no-emit has only two unchanged baseline errors。
 - Shared-hunk review: `PASS`; five former shared paths preserve MZ-103 behavior/tests and FR-044；MZ-102 uses FR-045 and only owner-statement hunks。
 - Generated-file review: `PASS`; generated dist/build output, dependencies, caches, env files, secrets and production payloads excluded。
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user instructed “我把103 合并到了Dev，你重新推送102吧”. Policy permits rebuilt-scope local commit；exact-SHA push authorization remains separate。
 - Independent review: `GO for local commit`; evidence: independent read-only review matched base, branch, CRL, 12 staged paths, 42 non-ledger hunks and candidate SHA-256 `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`; it verified cancellation boundaries, A$100/A$100 normal proration, company isolation and MZ-103 preservation with P0/P1/P2 = 0。
-- Action conclusion: `GO`; blockers: none for this local commit。Push remains a separate exact-SHA review and authorization gate。
+- Action conclusion: `GO`; blockers: none。The reviewed local content commit completed as `caf3e1396b2276ba1f6ce0c45fd40e7bc94f9fd4` with parent `7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168` and preserved candidate SHA-256 `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`。Push remains a separate exact-SHA review and authorization gate。
 
 ### Risks / Release Notes
 
