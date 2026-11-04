@@ -72,6 +72,25 @@
 - Independent review: `GO for commit`; evidence: first pass found no technical P0/P1/P2 but blocked premature push wording; commit-only correction was independently re-reviewed with P0/P1/P2 = 0/0/0 and matching fingerprint
 - Action conclusion: `GO`; blockers: none for exact commit `9d704c7618657e999694c8e4466323707e29e9e1`; CI necessarily follows a later, separately audited push attempt
 
+#### RA-20261104-009
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261104-008`
+- Selected CRL identities: `root/CRL-20261104-008`
+- Intended action: `push` the exact isolated test branch to trigger CI; no PR, merge, deployment or migration
+- Branch: `codex/mz065-ephemeral-pg-ci`
+- Base: `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`; fetched at `2026-11-04T14:12:00Z`
+- Candidate patch SHA-256: `75b18095a2bb87a9120df257705667ebff85dcecf1c2f47996fe043da43513d0`
+- Commit SHA: `9d704c7618657e999694c8e4466323707e29e9e1`; pre-push audit head before this receipt: `d40873661178b5e098e045a002d1b143592d5b34`
+- Dependencies: none
+- Required validation: `PASS`; evidence: exact committed-range audit at `d40873661178b5e098e045a002d1b143592d5b34` concluded GO with no gaps; candidate fingerprint, base freshness, hunk scope, registry, secret scan and clean state passed
+- Shared-hunk review: `PASS`; evidence: exact 7-hunk scope fingerprinted and independently reviewed; shared workflow/package/ledger hunks are exclusive to this selected CRL
+- Generated-file review: `PASS`; no generated artifacts or dependency trees included
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: user explicitly instructed autonomous continuation and said routine release actions need not wait for another confirmation, while retaining the isolated-test-first safety gate and prohibiting silent risk expansion
+- Independent review: `GO for ledger receipt commit`; evidence: independent review confirmed this staged 19-line RA-009 receipt accurately records the pending push state, with no P0/P1/P2 or production/secret risk; final SHA push review remains pending
+- Action conclusion: `NOT VERIFIED`; blockers: exact push-range independent review and final range audit pending
+
 ### Risks / Release Notes
 
 - CI adds about two deliberate 1.2-second lock-timeout probes; job timeout remains 10 minutes.
