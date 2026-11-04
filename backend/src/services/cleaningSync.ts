@@ -152,14 +152,14 @@ async function emitCleaningTaskRemovalEvent(params: {
   const task = params.after || params.before
   const taskId = String(task?.id || '').trim()
   if (!taskId) return
-  const changedFields = ['status', 'execution_state']
   if (cleaningTaskKind(task) === CHECKIN_TASK_TYPE) {
-    changedFields.push(
-      'order_id_checkin',
-      'guest_ready_notification',
-      'guest_ready_outside_key',
-      'available_actions',
-    )
+    await emitGuestReadyCheckinAuthorityEvent({
+      before: params.before,
+      after: params.after,
+      eventType: 'TASK_REMOVED',
+      client: params.client,
+    })
+    return
   }
   await emitWorkTaskEvent({
     taskId: `cleaning_task:${taskId}`,
@@ -167,7 +167,7 @@ async function emitCleaningTaskRemovalEvent(params: {
     sourceRefIds: [taskId],
     eventType: 'TASK_REMOVED',
     changeScope: 'membership',
-    changedFields,
+    changedFields: ['status', 'execution_state'],
     patch: {
       status: String(params.after?.status || 'cancelled'),
       execution_state: String(params.after?.execution_state || CANCELLED_EXECUTION_STATE),
