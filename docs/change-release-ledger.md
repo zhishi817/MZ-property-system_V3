@@ -1,5 +1,78 @@
 # Change Release Ledger
 
+## CRL-20261104-001 — MZ-103 维修照片报告私有媒体兼容修复
+
+- **Repository:** `root`
+- **Status:** verified isolated candidate locally committed once under user authorization; backend aggregate, Web full regression, explicit PDF validation and independent review passed; not pushed, merged, deployed or production-verified
+- **Board item:** `MZ-103`
+- **Updated:** 2026-11-04 01:29 UTC
+- **Request:** 修复房源营收下载维修照片报告时，已关联的无扩展名私有媒体键被前置过滤并导致空报告失败的问题；同时兼容完成照片字段、旧照片来源和既有部分/全部缺图规则，保持生产零写入和公开媒体权限边界。
+- **Outcome:** 本地候选允许已选房源记录中的安全私有媒体键由后端直接读取并嵌入 PDF，合并去重完成/历史维修后照片；失败诊断区分存储、缺图、超时、格式和关联拒绝且只记录引用指纹。公开代理 allowlist、数据库、生产媒体和 job 均不变。
+
+### Implementation
+
+- Previous behavior: `isLikelyImageUrl` 只认可 HTTP(S)、代理路径或常见图片扩展名；无扩展名 `cleaning/media/...` 键在读取前被过滤，导致存在原始引用但 `totalPlanned=0`。导出只读取 `photo_urls` 与 `repair_photo_urls`，并把 R2 不可用和对象不存在统称为 `r2_not_found`，失败样本还可能包含原始 URL。
+- New behavior: 计划阶段保留非视频照片引用；安全的 `cleaning/`、`mzapp/`、`maintenance/`、`deep-cleaning/` 与 `deep-cleaning-upload/` 键只在当前已匹配记录的引用集合内经校验后走服务端 R2 detailed read。`completion_photo_urls` 与 `repair_photo_urls` 合并去重，统计/计划/渲染共享该规则。
+- Failure behavior: 部分失败继续输出可用照片；全部失败仍抛 `PHOTO_PACK_RENDER_EMPTY`，message 只含原因计数，失败样本仅含 SHA-256 短指纹。Web 分别提示 API base、存储不可用、对象不存在、图片损坏和无效/未关联引用。
+- Security decision: 未修改 `r2ImageProxyPolicy` 或任何公开/认证媒体路由；不新增跨房源查询，不从浏览器抓私有对象，不输出私有键、URL、凭证或真实照片 fixture。
+
+### Files / Areas
+
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — modified: 安全私有键解析、record association、R2 detailed read、图片处理/脱敏诊断与可注入离线测试入口。
+- `backend/src/lib/monthlyStatementPhotoRecords.ts` — modified: 统一 Before 与 completion/repair After 合并去重。
+- `backend/src/modules/finance.ts` — modified: 照片统计复用同一引用分组。
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — modified: 脱敏 2 条/4 图、兼容/拒绝/失败矩阵；默认 CI 路径无浏览器，显式命令执行真实 PDF 渲染。
+- `frontend/src/lib/statementPhotoPackJobs.ts` — modified: 精确错误提示。
+- `frontend/src/lib/statementPhotoPackJobs.test.ts` — added: Web 错误分类回归。
+- `backend/package.json`, `package.json` — modified: 接线专项测试至 backend/full 与 fast 质量门。
+- `docs/feature-regression-registry.md`, `docs/execution-records.md`, `docs/change-release-ledger.md` — modified: FR-044、MZ-103 执行与发布单元记录。
+
+### Impact / Dependencies
+
+- API: 路径与 job payload/结果结构不变；失败 message 更准确且脱敏，Web 文案更具体。
+- Database / migration: none；未运行 migration、导出 API、worker 或数据库写入测试。
+- Config / environment: none；私有键读取复用现有后端 R2 配置，不要求扩大公开代理。
+- Dependencies: none；只使用已有 `sharp`、Playwright、crypto 与 R2 adapter。
+- Related units: board `MZ-103`, FR-044；FR-010 媒体授权不变量保持不变。
+
+### Validation
+
+- `DATABASE_URL='' R2_ENDPOINT='' R2_ACCESS_KEY_ID='' R2_SECRET_ACCESS_KEY='' R2_BUCKET='' PDF_JOBS_MODE=disabled npm run test:monthly-statement-photo-pack --prefix backend` — PASS，无浏览器：2 records / 4 images；旧键/外链、completion-only、去重、缺图/损坏/不可用/超时、非法与未关联覆盖。
+- 同环境 `MZ103_PDF_OUTPUT=/tmp/mz103-photo-pack-test.pdf npm run test:monthly-statement-photo-pack:pdf --prefix backend` — PASS（显式本地 Chromium）：2 records / 4 images / 2 pages。
+- Generated PDF page review — PASS：两页分别包含 `TEST-812-A/B`，Before/After 四色图、标题/日期/区域无重叠、截断或破图；仅合成脱敏数据。
+- `./node_modules/.bin/tsc -p . --noEmit --incremental false`（backend）— PASS。
+- `npm run build -- --outDir /tmp/mz103-backend-dist --incremental false`（backend）— PASS；隔离输出未修改 tracked `backend/dist`。
+- `npm run test -- --run src/lib/statementPhotoPackJobs.test.ts --coverage.enabled=false --cache=false`（frontend）— PASS，1 file / 3 tests，含混合失败原因汇总。
+- `CI=true npm run test -- --cache=false`（frontend）— PASS，58 files / 317 tests，coverage 97.29% statements / 93.61% branches。
+- `npm run lint -- --no-cache`（frontend）— PASS with existing unrelated warnings；0 errors。
+- `npm run build`（frontend）— PASS with existing Browserslist/lint/chart SSR warnings。
+- `CI=true ... npm run check:backend`（隔离 `/tmp` worktree，DB/R2/job disabled）— PASS，含 build、专项测试及全部既有 backend contracts；为既有 `phase5-release-contract` 提供只读 Mobile source link，未修改 Mobile。
+- `test:pdf-jobs-runtime`, `test:r2-media-governance`, `test:cleaning-media-image`, `test:maintenance-workflow-actions`（backend，DB/R2/job disabled）— PASS。
+- `npm run check:feature-registry` 与 ledger audit（候选 worktree）— PASS。
+- Root `check:fast` — 环境布局阻断，未宣称 PASS：干净 Root checkout 不含独立 `mz-cleaning-app-frontend`，直接运行在 `phase5-release-contract` ENOENT；临时只读链接到本机另一 Mobile checkout 后，Registry 又因该 checkout 与 Root Dev 基线不配对而缺少 8 个登记测试文件。候选的 exact backend gate 与 Web full suite 已分别通过；未为绕过基线不匹配修改产品源码。
+- Independent review — final `GO` for the uncommitted local candidate，P0/P1/P2/P3 = 0/0/0/0。初审发现的 CI Chromium P1 与混合错误文案 P2 均已修正；复审以无浏览器路径、Web 错误分类、diff、CRL 与 Registry audit 独立确认闭环。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** committed as one exact MZ-103 unit on branch `codex/mz103-photo-pack-private-media`, based on current `origin/Dev@0ce0ca254dd2d11c693c7b5d71961b58d4e6fdbd`.
+- **Untracked review:** PASS；the only untracked path is the current-task Web regression `frontend/src/lib/statementPhotoPackJobs.test.ts`，which is included in this unit. No dependency tree, generated output, environment file or unrelated task path is selected.
+
+### Release Attempts
+
+- The user selected MZ-103 for local commit together with separately handled MZ-102. One local MZ-103 commit was created；push, PR, merge, deployment, production export/replay and production data writes remain unauthorized.
+- MZ-102 remains isolated in `root/CRL-20261104-002`。Five known shared paths (`backend/package.json`, `backend/src/modules/finance.ts`, root `package.json`, this ledger and the Feature Registry) are task-local hunks in separate worktrees and are not combined in this commit.
+
+### Risks / Release Notes
+
+- Production continues to run the old version until a separately authorized release. No real LA812 export or `pdf_jobs` replay was performed, so production end-to-end acceptance remains unverified.
+- Existing monthly photo row loading still follows its pre-existing data query path; this unit changes only photo reference selection/read/render diagnostics and does not modify schema or production records.
+- Default CI regression deliberately does not launch Chromium；真实 PDF 由显式 `:pdf` 命令覆盖，避免 GitHub runner 未安装浏览器时产生伪失败。
+- Sensitive-information review: PASS for current diff; fixtures are synthetic/redacted and failure output contains only reason codes plus 12-character hashes.
+- Git state: local branch `codex/mz103-photo-pack-private-media` contains one MZ-103 commit over `origin/Dev@0ce0ca254dd2d11c693c7b5d71961b58d4e6fdbd`；the final local commit SHA is reported in the handoff. No push is part of this unit.
+- Canonical commit patch SHA-256: `c511675ec0f9f1ef8420997a424019f63320274970ad01fef6419af709e00ddf`（final commit diff excluding this ledger file；the independent reviewer inspected the same product code at pre-disposition fingerprint `cc6fd72b7e0436354ea304d0fcb1e71011c0b622e6a70320c9ee90f03e1c8870`, after which only review/commit lifecycle status text in non-ledger governance records changed）。Production main observed by the read-only investigation: `2c9322827d79f3053768901496f527ad32552f7a`。
+- Independent review boundary: `GO` is technical approval for this local candidate；the later user instruction separately authorizes the local commit only. It does not authorize push, PR, merge, deployment, production export/replay or data writes。
+
 ## CRL-20261102-001 — MZ-091 同订单入住新密码唯一来源纠正
 
 - **Repository:** `root`

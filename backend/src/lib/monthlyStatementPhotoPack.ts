@@ -1,13 +1,14 @@
 import { db } from '../store'
 import { hasPg, pgPool } from '../dbAdapter'
+import { createHash } from 'crypto'
 import sharp from 'sharp'
 import archiver from 'archiver'
 import { PassThrough } from 'stream'
 import { getChromiumBrowser, resetChromiumBrowser } from './playwright'
-import { isAllowedR2ImageKey } from './r2ImageProxyPolicy'
+import { isCleaningMediaKey } from './cleaningMediaReference'
 import { estimatePhotoPackRecordPageCount, renderMonthlyStatementPhotoPackHtml, type PhotoPackEmbeddedImage, type PhotoPackTemplateRecord } from './monthlyStatementPhotoPackTemplate'
-import { listPhotoUrls, loadMonthlyStatementPhotoRows, recordCompletedDateRaw } from './monthlyStatementPhotoRecords'
-import { hasR2, r2GetObjectByKey, r2KeyFromUrl } from '../r2'
+import { loadMonthlyStatementPhotoRows, recordCompletedDateRaw, statementPhotoReferenceGroups } from './monthlyStatementPhotoRecords'
+import { r2GetObjectByKeyDetailed, r2KeyFromUrl, type R2ObjectReadResult } from '../r2'
 
 export type StatementPhotoPackSection = 'all' | 'maintenance' | 'deep_cleaning'
 export type StatementPhotoPackPhotosMode = 'full' | 'compressed' | 'thumbnail' | 'off'
@@ -72,8 +73,26 @@ export type GenerateStatementPhotoPackBundleResult = {
 type LoadedAsset = {
   ok: boolean
   image?: PhotoPackEmbeddedImage
-  sourceUrl: string
+  referenceId: string
   reason?: string
+}
+
+export type StatementPhotoPackSourceRow = {
+  kind: 'maintenance' | 'deep_cleaning'
+  row: any
+}
+
+export type StatementPhotoPackAssetDependencies = {
+  keyFromR2Url: (value: string) => string | null
+  readR2Object: (key: string) => Promise<R2ObjectReadResult>
+  fetchExternal: (url: string, timeoutMs: number) => Promise<{ body: Buffer; contentType: string }>
+}
+
+export type PreparedStatementPhotoPackRecords = {
+  records: PhotoPackTemplateRecord[]
+  successImages: number
+  failedDetails: Array<{ referenceId: string; reason: string }>
+  skippedRecords: number
 }
 
 type PreparedStatementPhotoPackData = {
@@ -120,8 +139,9 @@ function isPlaywrightClosedError(e: any) {
 function countRawUrls(rows: any[]) {
   let n = 0
   for (const r of rows || []) {
-    n += listPhotoUrls(r?.photo_urls).length
-    n += listPhotoUrls(r?.repair_photo_urls).length
+    const groups = statementPhotoReferenceGroups(r)
+    n += groups.before.length
+    n += groups.after.length
   }
   return n
 }
@@ -162,13 +182,43 @@ function nowMs() {
   return Date.now()
 }
 
-function isLikelyImageUrl(u: string): boolean {
-  const s = String(u || '').trim().toLowerCase()
+const STATEMENT_PRIVATE_MEDIA_PREFIXES = [
+  'mzapp/',
+  'maintenance/',
+  'deep-cleaning/',
+  'deep-cleaning-upload/',
+]
+
+export function isSafeStatementPhotoObjectKey(value: unknown): boolean {
+  const key = String(value || '').trim()
+  if (!key || key.length > 1200 || key.startsWith('/') || key.includes('..') || key.includes('\\') || /[?#\u0000-\u001f]/.test(key)) return false
+  if (key.startsWith('cleaning/')) return isCleaningMediaKey(key)
+  return STATEMENT_PRIVATE_MEDIA_PREFIXES.some((prefix) => key.startsWith(prefix))
+}
+
+function privateStatementPhotoKey(value: string, keyFromR2Url: (value: string) => string | null): string | null {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  if (!/^https?:\/\//i.test(raw) && !raw.startsWith('//')) {
+    const direct = raw.replace(/^\/+/, '')
+    return isSafeStatementPhotoObjectKey(direct) ? direct : null
+  }
+  const key = String(keyFromR2Url(raw) || '').trim()
+  return isSafeStatementPhotoObjectKey(key) ? key : null
+}
+
+export function isSupportedStatementPhotoReference(value: unknown): boolean {
+  const s = String(value || '').trim()
   if (!s) return false
-  if (/\/public\/r2-image\b|\/r2-image\b/.test(s)) return true
-  if (/\.(jpg|jpeg|png|webp|gif|bmp|svg|heic|heif)(\?|$)/i.test(s)) return true
-  if (/\.(mp4|mov|avi|m4v|webm)(\?|$)/i.test(s)) return false
+  if (/\.(mp4|mov|avi|m4v|webm)(\?|#|$)/i.test(s)) return false
+  if (privateStatementPhotoKey(s, r2KeyFromUrl)) return true
+  if (/\/public\/r2-image\b|\/r2-image\b/i.test(s)) return true
+  if (/\.(jpg|jpeg|png|webp|gif|bmp|svg|heic|heif)(\?|#|$)/i.test(s)) return true
   return /^https?:\/\//i.test(s)
+}
+
+function photoReferenceId(value: string): string {
+  return createHash('sha256').update(String(value || '').trim()).digest('hex').slice(0, 12)
 }
 
 async function runLimited<T>(items: T[], limit: number, worker: (item: T, index: number) => Promise<void>) {
@@ -204,9 +254,15 @@ function dataUrl(mimeType: string, body: Buffer) {
   return `data:${mimeType};base64,${body.toString('base64')}`
 }
 
-function normalizeFetchUrl(raw: string, apiBase: string): { sourceUrl: string; kind: 'r2' | 'url'; value: string } | null {
+export function normalizeStatementPhotoFetchTarget(
+  raw: string,
+  apiBase: string,
+  keyFromR2Url: (value: string) => string | null = r2KeyFromUrl,
+): { kind: 'r2' | 'url'; value: string } | null {
   const s = String(raw || '').trim()
   if (!s) return null
+  const directKey = privateStatementPhotoKey(s, keyFromR2Url)
+  if (directKey) return { kind: 'r2', value: directKey }
   const abs = (() => {
     if (/^https?:\/\//i.test(s)) return s
     if (s.startsWith('//')) return `https:${s}`
@@ -218,16 +274,15 @@ function normalizeFetchUrl(raw: string, apiBase: string): { sourceUrl: string; k
     if (/\/public\/r2-image\b|\/r2-image\b/.test(String(u.pathname || ''))) {
       const original = String(u.searchParams.get('url') || '').trim()
       if (original) {
-        const key = r2KeyFromUrl(original)
-        if (key && isAllowedR2ImageKey(key)) return { sourceUrl: original, kind: 'r2', value: key }
-        return { sourceUrl: original, kind: 'url', value: original }
+        const key = privateStatementPhotoKey(original, keyFromR2Url)
+        if (key) return { kind: 'r2', value: key }
+        return /^https?:\/\//i.test(original) ? { kind: 'url', value: original } : null
       }
     }
-    const key = r2KeyFromUrl(abs)
-    if (key && isAllowedR2ImageKey(key)) return { sourceUrl: abs, kind: 'r2', value: key }
-    return /^https?:\/\//i.test(abs) ? { sourceUrl: abs, kind: 'url', value: abs } : null
+    const key = privateStatementPhotoKey(abs, keyFromR2Url)
+    if (key) return { kind: 'r2', value: key }
+    return /^https?:\/\//i.test(abs) ? { kind: 'url', value: abs } : null
   } catch {
-    if (isAllowedR2ImageKey(s)) return { sourceUrl: s, kind: 'r2', value: s }
     return null
   }
 }
@@ -252,14 +307,28 @@ async function fetchExternalBytes(url: string, timeoutMs: number): Promise<{ bod
   throw lastErr || new Error('fetch_failed')
 }
 
-async function fetchAssetBytes(target: { sourceUrl: string; kind: 'r2' | 'url'; value: string }, timeoutMs: number): Promise<{ body: Buffer; contentType: string }> {
+function safeAssetFailureReason(error: any): string {
+  const name = String(error?.name || error?.code || '').toLowerCase()
+  const message = String(error?.message || '').toLowerCase()
+  const http = message.match(/http_(\d{3})/)
+  if (http?.[1]) return `http_${http[1]}`
+  if (/abort|timeout/.test(`${name} ${message}`)) return 'fetch_timeout'
+  return 'fetch_failed'
+}
+
+async function fetchAssetBytes(
+  target: { kind: 'r2' | 'url'; value: string },
+  timeoutMs: number,
+  dependencies: StatementPhotoPackAssetDependencies,
+): Promise<{ body: Buffer; contentType: string }> {
   if (target.kind === 'r2') {
-    if (!hasR2) throw new Error('r2_not_configured')
-    const obj = await r2GetObjectByKey(target.value)
-    if (!obj?.body?.length) throw new Error('r2_not_found')
-    return { body: obj.body, contentType: String(obj.contentType || 'application/octet-stream') }
+    const result = await dependencies.readR2Object(target.value)
+    if (result.status === 'not_found') throw Object.assign(new Error('r2_not_found'), { code: 'r2_not_found' })
+    if (result.status !== 'ok') throw Object.assign(new Error('r2_unavailable'), { code: 'r2_unavailable' })
+    if (!result.object.body?.length) throw Object.assign(new Error('r2_not_found'), { code: 'r2_not_found' })
+    return { body: result.object.body, contentType: String(result.object.contentType || 'application/octet-stream') }
   }
-  return fetchExternalBytes(target.value, timeoutMs)
+  return dependencies.fetchExternal(target.value, timeoutMs)
 }
 
 async function compressImage(body: Buffer, contentType: string, maxEdge: number, jpegQuality: number): Promise<PhotoPackEmbeddedImage> {
@@ -275,18 +344,151 @@ async function compressImage(body: Buffer, contentType: string, maxEdge: number,
   return { dataUrl: dataUrl('image/jpeg', out), mimeType: 'image/jpeg', width: Number(meta?.width || 0), height: Number(meta?.height || 0) }
 }
 
-async function loadImageAsset(raw: string, apiBase: string, timeoutMs: number, maxEdge: number, jpegQuality: number): Promise<LoadedAsset> {
+export async function loadStatementPhotoAsset(input: {
+  raw: string
+  associatedReferences: ReadonlySet<string>
+  apiBase: string
+  timeoutMs: number
+  maxEdge: number
+  jpegQuality: number
+  dependencies: StatementPhotoPackAssetDependencies
+}): Promise<LoadedAsset> {
+  const raw = String(input.raw || '').trim()
+  const referenceId = photoReferenceId(raw)
+  if (!raw || !input.associatedReferences.has(raw)) return { ok: false, referenceId, reason: 'unassociated_source' }
   try {
-    const target = normalizeFetchUrl(raw, apiBase)
-    if (!target) return { ok: false, sourceUrl: raw, reason: 'invalid_source' }
-    const { body, contentType } = await fetchAssetBytes(target, timeoutMs)
+    const target = normalizeStatementPhotoFetchTarget(raw, input.apiBase, input.dependencies.keyFromR2Url)
+    if (!target) return { ok: false, referenceId, reason: 'invalid_source' }
+    const { body, contentType } = await fetchAssetBytes(target, input.timeoutMs, input.dependencies)
     const ct = String(contentType || '').toLowerCase()
-    if (!ct.startsWith('image/')) return { ok: false, sourceUrl: target.sourceUrl, reason: `invalid_content_type:${ct || 'unknown'}` }
-    const image = await compressImage(body, ct, maxEdge, jpegQuality)
-    return { ok: true, sourceUrl: target.sourceUrl, image }
+    if (target.kind === 'url' && !ct.startsWith('image/')) return { ok: false, referenceId, reason: 'invalid_content_type' }
+    try {
+      const image = await compressImage(body, ct, input.maxEdge, input.jpegQuality)
+      return { ok: true, referenceId, image }
+    } catch {
+      return { ok: false, referenceId, reason: 'image_decode_failed' }
+    }
   } catch (e: any) {
-    return { ok: false, sourceUrl: raw, reason: String(e?.message || 'load_failed') }
+    const code = String(e?.code || e?.message || '').trim()
+    const reason = code === 'r2_not_found' || code === 'r2_unavailable' ? code : safeAssetFailureReason(e)
+    return { ok: false, referenceId, reason }
   }
+}
+
+const productionAssetDependencies: StatementPhotoPackAssetDependencies = {
+  keyFromR2Url: r2KeyFromUrl,
+  readR2Object: r2GetObjectByKeyDetailed,
+  fetchExternal: fetchExternalBytes,
+}
+
+function plannedPhotoReferenceGroups(row: any): { before: string[]; after: string[] } {
+  const groups = statementPhotoReferenceGroups(row)
+  const keep = (reference: string) => !/\.(mp4|mov|avi|m4v|webm)(\?|#|$)/i.test(reference)
+  return {
+    before: groups.before.filter(keep),
+    after: groups.after.filter(keep),
+  }
+}
+
+export function countPlannedStatementPhotoReferences(sourceRows: StatementPhotoPackSourceRow[]): number {
+  return (sourceRows || []).reduce((sum, item) => {
+    const groups = plannedPhotoReferenceGroups(item.row)
+    return sum + groups.before.length + groups.after.length
+  }, 0)
+}
+
+export async function prepareStatementPhotoPackRecords(input: {
+  sourceRows: StatementPhotoPackSourceRow[]
+  apiBase: string
+  fetchConcurrency: number
+  fetchTimeoutMs: number
+  maxEdge: number
+  jpegQuality: number
+  dependencies?: StatementPhotoPackAssetDependencies
+}): Promise<PreparedStatementPhotoPackRecords> {
+  const dependencies = input.dependencies || productionAssetDependencies
+  const records: PhotoPackTemplateRecord[] = []
+  const failedDetails: Array<{ referenceId: string; reason: string }> = []
+  let successImages = 0
+  let skippedRecords = 0
+  for (const item of input.sourceRows || []) {
+    const row = item.row
+    const groups = plannedPhotoReferenceGroups(row)
+    const beforeRaw = groups.before
+    const afterRaw = groups.after
+    const associatedReferences = new Set([...beforeRaw, ...afterRaw])
+    const beforeResults: LoadedAsset[] = new Array(beforeRaw.length)
+    const afterResults: LoadedAsset[] = new Array(afterRaw.length)
+    await runLimited(beforeRaw, input.fetchConcurrency, async (raw, idx) => {
+      beforeResults[idx] = await loadStatementPhotoAsset({
+        raw,
+        associatedReferences,
+        apiBase: input.apiBase,
+        timeoutMs: input.fetchTimeoutMs,
+        maxEdge: input.maxEdge,
+        jpegQuality: input.jpegQuality,
+        dependencies,
+      })
+    })
+    await runLimited(afterRaw, input.fetchConcurrency, async (raw, idx) => {
+      afterResults[idx] = await loadStatementPhotoAsset({
+        raw,
+        associatedReferences,
+        apiBase: input.apiBase,
+        timeoutMs: input.fetchTimeoutMs,
+        maxEdge: input.maxEdge,
+        jpegQuality: input.jpegQuality,
+        dependencies,
+      })
+    })
+    const beforeImages = beforeResults.filter((result) => result?.ok && result.image).map((result) => result.image!)
+    const afterImages = afterResults.filter((result) => result?.ok && result.image).map((result) => result.image!)
+    const failures = [...beforeResults, ...afterResults].filter((result) => result && !result.ok)
+    failures.forEach((failure) => failedDetails.push({ referenceId: failure.referenceId, reason: String(failure.reason || 'load_failed') }))
+    successImages += beforeImages.length + afterImages.length
+    if (beforeRaw.length + afterRaw.length <= 0) continue
+    const missingNotice = failures.length && (beforeImages.length + afterImages.length) <= 0
+      ? '该记录的所有图片均无法加载，请检查关联照片或媒体存储状态'
+      : undefined
+    if ((beforeImages.length + afterImages.length) <= 0) skippedRecords += 1
+    records.push({
+      kind: item.kind,
+      jobNumber: String(row?.work_no || row?.id || '').trim(),
+      completionText: dayLabel(row) || '-',
+      areaText: item.kind === 'maintenance' ? String(row?.category_detail || row?.category || '').trim() : String(row?.category || '').trim(),
+      beforeImages,
+      afterImages,
+      beforeRawCount: beforeRaw.length,
+      afterRawCount: afterRaw.length,
+      missingNotice,
+    })
+  }
+  return { records, successImages, failedDetails, skippedRecords }
+}
+
+function summarizedFailureReasons(failures: Array<{ reason: string }>): string {
+  const counts = new Map<string, number>()
+  for (const failure of failures || []) {
+    const reason = String(failure.reason || 'load_failed')
+    counts.set(reason, (counts.get(reason) || 0) + 1)
+  }
+  return Array.from(counts.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(',')
+}
+
+export function assertStatementPhotoPackHasEmbeddableImages(
+  prepared: PreparedStatementPhotoPackRecords,
+  rawUrls: number,
+): void {
+  if (prepared.records.length > 0 && prepared.successImages > 0) return
+  const failureSummary = summarizedFailureReasons(prepared.failedDetails)
+  const suffix = failureSummary ? ` (${failureSummary})` : ''
+  throw jobError('PHOTO_PACK_RENDER_EMPTY', `photo pack render empty: no embeddable images${suffix}`, {
+    rawUrls,
+    failedUrls: prepared.failedDetails.slice(0, 8).map((failure) => `${failure.reason}:ref=${failure.referenceId}`),
+  })
 }
 
 function sectionSuffix(sections: StatementPhotoPackSection) {
@@ -321,7 +523,7 @@ async function createZipBuffer(entries: Array<{ name: string; body: Buffer }>): 
   return done
 }
 
-async function renderPhotoPackPdfFromRecords(input: {
+export async function renderPhotoPackPdfFromRecords(input: {
   monthKey: string
   property: { id: string; code?: string; address?: string }
   landlordName: string
@@ -457,7 +659,15 @@ async function prepareStatementPhotoPackData(input: GenerateStatementPhotoPackIn
   const totalRawUrls = countRawUrls(deepRows0) + countRawUrls(maintRows0)
   await stage('collect_assets', `正在整理照片记录（原始 ${totalRawUrls}）...`, { rawUrls: totalRawUrls })
   const apiBase = String(input.apiBase || '').trim().replace(/\/+$/g, '')
-  if (totalRawUrls > 0 && !/^https?:\/\//i.test(apiBase)) {
+  const allRows = [...deepRows0, ...maintRows0]
+  const needsApiBase = allRows.some((row) => {
+    const groups = statementPhotoReferenceGroups(row)
+    return [...groups.before, ...groups.after].some((reference) => {
+      const value = String(reference || '').trim()
+      return value.startsWith('/') && !value.startsWith('//') && !privateStatementPhotoKey(value, r2KeyFromUrl)
+    })
+  })
+  if (needsApiBase && !/^https?:\/\//i.test(apiBase)) {
     throw jobError('PHOTO_ASSETS_UNREACHABLE', 'photo assets unreachable: missing valid api base', { rawUrls: totalRawUrls })
   }
   const effectivePhotosMode = (() => {
@@ -472,65 +682,37 @@ async function prepareStatementPhotoPackData(input: GenerateStatementPhotoPackIn
     if (totalRawUrls > syncMaxPhotos) throw Object.assign(new Error('too_many_photos_for_sync_export'), { code: 'MEMORY_GUARD_BLOCKED', rawUrls: totalRawUrls, syncMaxPhotos })
   }
   const { totalLimit, fetchConcurrency, fetchTimeoutMs, maxEdge, jpegQuality } = photoPackLimits()
-  const sourceRows = [
+  const sourceRows: StatementPhotoPackSourceRow[] = [
     ...((wantDeep ? deepRows0 : []).map((row: any) => ({ kind: 'deep_cleaning' as const, row }))),
     ...((wantMaint ? maintRows0 : []).map((row: any) => ({ kind: 'maintenance' as const, row }))),
   ].sort((a, b) => dayLabel(a.row).localeCompare(dayLabel(b.row)) || String(a.row?.id || '').localeCompare(String(b.row?.id || '')))
-  const totalPlanned = sourceRows.reduce((sum, item) => {
-    return sum + listPhotoUrls(item.row?.photo_urls).filter(isLikelyImageUrl).length + listPhotoUrls(item.row?.repair_photo_urls).filter(isLikelyImageUrl).length
-  }, 0)
+  const totalPlanned = countPlannedStatementPhotoReferences(sourceRows)
   if (totalPlanned > totalLimit) {
     throw jobError('PHOTO_PACK_TOO_LARGE', `photo pack exceeds image hard limit (${totalPlanned}/${totalLimit})`, { rawUrls: totalRawUrls, totalPlanned, totalLimit })
   }
   await stage('fetch_assets', `正在抓取并压缩照片资源（${totalPlanned}）...`, { rawUrls: totalRawUrls, totalPlanned, totalLimit })
   const fetchStartedAt = nowMs()
-  const records: PhotoPackTemplateRecord[] = []
-  const failedDetails: Array<{ url: string; reason: string }> = []
-  let successImages = 0
-  let skippedRecords = 0
-  for (const item of sourceRows) {
-    const row = item.row
-    const beforeRaw = listPhotoUrls(row?.photo_urls).filter(isLikelyImageUrl)
-    const afterRaw = listPhotoUrls(row?.repair_photo_urls).filter(isLikelyImageUrl)
-    const beforeResults: LoadedAsset[] = new Array(beforeRaw.length)
-    const afterResults: LoadedAsset[] = new Array(afterRaw.length)
-    await runLimited(beforeRaw, fetchConcurrency, async (u, idx) => { beforeResults[idx] = await loadImageAsset(u, apiBase, fetchTimeoutMs, maxEdge, jpegQuality) })
-    await runLimited(afterRaw, fetchConcurrency, async (u, idx) => { afterResults[idx] = await loadImageAsset(u, apiBase, fetchTimeoutMs, maxEdge, jpegQuality) })
-    const beforeImages = beforeResults.filter((x) => x?.ok && x.image).map((x) => x.image!) as PhotoPackEmbeddedImage[]
-    const afterImages = afterResults.filter((x) => x?.ok && x.image).map((x) => x.image!) as PhotoPackEmbeddedImage[]
-    const failures = [...beforeResults, ...afterResults].filter((x) => x && !x.ok)
-    failures.forEach((f) => failedDetails.push({ url: f.sourceUrl, reason: String(f.reason || 'load_failed') }))
-    successImages += beforeImages.length + afterImages.length
-    if (beforeRaw.length + afterRaw.length <= 0) continue
-    const missingNotice = failures.length && (beforeImages.length + afterImages.length) <= 0 ? '该记录的所有图片均无法加载，请检查原始链接' : undefined
-    if ((beforeImages.length + afterImages.length) <= 0) skippedRecords += 1
-    records.push({
-      kind: item.kind,
-      jobNumber: String(row?.work_no || row?.id || '').trim(),
-      completionText: dayLabel(row) || '-',
-      areaText: item.kind === 'maintenance' ? String(row?.category_detail || row?.category || '').trim() : String(row?.category || '').trim(),
-      beforeImages,
-      afterImages,
-      beforeRawCount: beforeRaw.length,
-      afterRawCount: afterRaw.length,
-      missingNotice,
-    })
-  }
+  const preparedRecords = await prepareStatementPhotoPackRecords({
+    sourceRows,
+    apiBase,
+    fetchConcurrency,
+    fetchTimeoutMs,
+    maxEdge,
+    jpegQuality,
+  })
+  const { records, failedDetails, successImages, skippedRecords } = preparedRecords
   metrics.fetch_assets_ms = nowMs() - fetchStartedAt
   metrics.success_images = successImages
   metrics.failed_images = failedDetails.length
   metrics.skipped_records = skippedRecords
-  if (records.length <= 0 || successImages <= 0) {
-    throw jobError('PHOTO_PACK_RENDER_EMPTY', 'photo pack render empty: no embeddable images', {
-      rawUrls: totalRawUrls,
-      failedUrls: failedDetails.slice(0, 8).map((x) => `${x.reason}:${x.url}`),
-    })
-  }
+  const failureSummary = summarizedFailureReasons(failedDetails)
   await stage('transform_assets', `正在整理页面内容（成功 ${successImages} / 失败 ${failedDetails.length}）...`, {
     success_images: successImages,
     failed_images: failedDetails.length,
     skipped_records: skippedRecords,
+    failure_reasons: failureSummary,
   })
+  assertStatementPhotoPackHasEmbeddableImages(preparedRecords, totalRawUrls)
   return {
     monthKey,
     property: { id: String(prop.id), code: prop.code || '', address: prop.address || '' },
@@ -541,7 +723,7 @@ async function prepareStatementPhotoPackData(input: GenerateStatementPhotoPackIn
     records,
     rawUrls: totalRawUrls,
     cleanedUrls: successImages,
-    failedUrls: failedDetails.slice(0, 20).map((x) => `${x.reason}:${x.url}`),
+    failedUrls: failedDetails.slice(0, 20).map((x) => `${x.reason}:ref=${x.referenceId}`),
     notLoaded: failedDetails.length,
     metrics,
   }

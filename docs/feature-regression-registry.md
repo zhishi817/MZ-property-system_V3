@@ -2,6 +2,46 @@
 
 本文件只保存当前有效的业务不变量、责任范围、测试映射和最近一次完整验证索引。
 
+## FR-044：月度维修照片报告兼容私有媒体键并保持房源关联边界
+
+- **维护责任范围：** backend monthly statement photo pack / web finance export diagnostics
+- **最后审查日期：** 2026-11-04
+- **状态：** active
+
+### 业务保护规则
+
+- 房源营收的维修/深清照片报告必须处理已选房源、已选月份记录中持久化的无扩展名 `cleaning/media/...` 私有对象键；读取仅发生在后端，并且键必须来自当前已匹配记录的照片字段且通过安全键校验。不得通过扩大公开 `/r2-image` allowlist、返回 R2 直链或接受路径穿越来实现。
+- 维修前照片使用 `photo_urls`；维修后照片合并 `completion_photo_urls` 与历史 `repair_photo_urls` 并按原始引用去重。旧 `maintenance/`、`deep-cleaning/`、`deep-cleaning-upload/` 私有键和既有 HTTP(S) 图片链接继续兼容。
+- 部分照片失败时继续生成其余照片并记录脱敏失败样本；全部失败时保持 `PHOTO_PACK_RENDER_EMPTY`。R2 对象不存在、存储不可用、外链超时/内容类型错误、图片损坏、非法键和未关联引用必须可区分，日志和 job 错误不得包含原始私有键或敏感 URL。
+- 照片统计、硬上限计划数与最终嵌入数必须使用同一套前后照片合并规则，不能出现页面统计有图而 worker 前置计划为零。服务端直接取字节并以内嵌 data URL 渲染，浏览器 CORS 不参与照片抓取链。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 私有键、安全关联、兼容/去重、部分/全部失败 | `backend/scripts/tests/test_monthly_statement_photo_pack.ts` | 脱敏 2 条/4 图、无扩展名键、旧键/外链/代理混合、completion-only、重复引用、缺图/损坏/存储不可用/超时、非法与未关联拒绝；默认无浏览器 | sufficient | `DATABASE_URL='' R2_ENDPOINT='' R2_ACCESS_KEY_ID='' R2_SECRET_ACCESS_KEY='' R2_BUCKET='' PDF_JOBS_MODE=disabled npm run test:monthly-statement-photo-pack --prefix backend` |
+| 真实 PDF 页面 | `backend/scripts/tests/test_monthly_statement_photo_pack.ts` | 显式本地 Chromium 渲染 2 页 PDF，核对 2 条记录、4 图、Before/After 与页面布局；不接入未安装浏览器的快速 CI | sufficient | 同上环境，另加 `MZ103_PDF_OUTPUT=/tmp/mz103-photo-pack-test.pdf npm run test:monthly-statement-photo-pack:pdf --prefix backend` |
+| Web 错误分类 | `frontend/src/lib/statementPhotoPackJobs.test.ts` | API base、R2 不可用/对象不存在、损坏图和未关联引用分别显示准确中文提示 | sufficient | `npm run test --prefix frontend -- --run src/lib/statementPhotoPackJobs.test.ts --coverage.enabled=false --cache=false` |
+
+### 验证策略
+
+- 使用合成图片字节和脱敏房源记录结构在断开数据库/R2、关闭 PDF job 的本地环境运行；默认 CI 测试不得依赖 Chromium，显式本地 PDF 命令核对页数、记录分组、Before/After 和嵌入图片数。
+- 运行后端 TypeScript/隔离构建、Web 定向测试/lint/production build、照片/PDF/R2 相关既有回归、Root 聚合质量门、Feature Registry 与 CRL 审计。不得调用生产导出 API、创建或重放 `pdf_jobs`、上传测试 PDF 或写生产数据。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261104-001
+- **Commit：** local MZ-103 commit created；final SHA recorded in the handoff
+- **日期：** 2026-11-04；定向合成回归、显式 2 页/4 图离线 PDF 目检、backend aggregate、Web full suite 与独立复审通过（GO，P0/P1/P2/P3=0）；Root/Mobile 配对 aggregate 受当前 checkout 布局/版本不匹配阻断。
+
+### 相关 CRL
+
+- root/CRL-20261104-001；FR-010 的维修反馈认证读取边界保持不变。
+
+### 非保护范围
+
+- 不包含生产重导、`pdf_jobs` 重放、数据库/媒体记录修正、公开媒体权限扩大、部署、生产真实 PDF 验收或 Mobile 变更。
+
 ## FR-043：仅改密码入住执行任务参与本人混合排序
 
 - **维护责任范围：** backend MZ App mixed reorder / paired Mobile task ordering

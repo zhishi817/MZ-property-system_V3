@@ -21,7 +21,7 @@ import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 import { schedulePdfJobsKick } from '../services/pdfJobsWorker'
 import { r2GetObjectByKey } from '../r2'
 import { computeMonthSegmentsForOrders, sumSegmentsVisibleNetIncome } from '../lib/orderMonthSegments'
-import { countPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } from '../lib/monthlyStatementPhotoRecords'
+import { loadMonthlyStatementPhotoRows, recordHasPhotoUrls, statementPhotoReferenceGroups } from '../lib/monthlyStatementPhotoRecords'
 import {
   ANNUAL_REPORT_CURRENCY,
   ANNUAL_REPORT_LINE_KEYS,
@@ -1751,11 +1751,13 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
 
     const maintenancePhotoCount = maint.reduce((n, r) => {
       if (!recordHasPhotoUrls(r)) return n
-      return n + countPhotoUrls((r as any)?.photo_urls) + countPhotoUrls((r as any)?.repair_photo_urls)
+      const groups = statementPhotoReferenceGroups(r)
+      return n + groups.before.length + groups.after.length
     }, 0)
     const deepCleaningPhotoCount = deep.reduce((n, r) => {
       if (!recordHasPhotoUrls(r)) return n
-      return n + countPhotoUrls((r as any)?.photo_urls) + countPhotoUrls((r as any)?.repair_photo_urls)
+      const groups = statementPhotoReferenceGroups(r)
+      return n + groups.before.length + groups.after.length
     }, 0)
     const totalPhotoCount = maintenancePhotoCount + deepCleaningPhotoCount
 
