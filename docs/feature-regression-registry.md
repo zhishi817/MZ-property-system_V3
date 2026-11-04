@@ -2,6 +2,89 @@
 
 本文件只保存当前有效的业务不变量、责任范围、测试映射和最近一次完整验证索引。
 
+## FR-045：房东月报取消订单完全排除
+
+- **维护责任范围：** backend finance owner-statement projections / web owner monthly statement
+- **最后审查日期：** 2026-11-04
+- **状态：** active
+
+### 业务保护规则
+
+- 房东月报不是公司取消收入报表。订单状态只要是 `canceled` / `cancelled`（大小写兼容），无论金额为零或非零、`count_in_income` 为真或假，都不得进入房东月报订单明细、月报日历、租金收入、住晚数、入住率、日均价、管理费自动计算基数、结转或应付房东金额。
+- `cancellation_pending` 是取消处理中而非取消终态，必须继续作为有效订单进入月报；取消状态判断只能精确匹配 `canceled` / `cancelled`，不得用包含 `cancel` 的模糊匹配扩大排除范围。
+- 正常非取消的 $0 订单仍是有效入住记录，必须保留在明细和日历中并计算住晚；取消后恢复为有效非取消状态的订单重新按正常规则进入月报。
+- 后端 `/finance/rent-segments`、`/finance/rent-income-by-property`、`/finance/property-revenue` 和未来管理费自动计算共用显式房东月报筛选；前端预览、公共打印/PDF、房源营收汇总与月报结转计算使用同一规则。跨月取消订单在每个相交月份都必须排除。
+- 精确终态判断只用于房东月报专用分段；共享 `computeMonthSegmentsForOrders` 及公司报告调用链必须保持本修复前语义，不能因房东修复新增、删除或改算公司管理费、清洁费或其他公司收入。
+- `cancel_fee` 交易继续由公司收入链处理，不得作为房源“其他收入”回流房东月报。本规则只改变报告取数，不删除订单、不批量改 `count_in_income`、不重写既有结算快照或生产账。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 后端房东月报分段与财务入口一致性 | `backend/scripts/tests/test_owner_monthly_statement_orders.ts` | 零/非零取消、勾选/未勾选计入收入、`cancellation_pending` 保留、正常 $0、正常非零、跨月取消、取消后恢复、共享公司分段及公司报告金额保持基线，以及月报分段、房源汇总、批量租金和管理费入口接线 | sufficient | `npm run test:owner-monthly-statement --prefix backend`（由 root `check:fast` / `check:backend` / `check:full` 执行） |
+| Web 预览/PDF/汇总/结转口径 | `frontend/src/lib/ownerMonthlyStatementOrders.test.ts` | 取消终态不进入明细、住晚、入住率、ADR、租金、管理费基数和应付；`cancellation_pending` 仍进入；公司取消费不成为房源其他收入；正常 $0 与恢复订单保留 | sufficient | `npm run test --prefix frontend -- --run src/lib/ownerMonthlyStatementOrders.test.ts --coverage.enabled=false`（由前端全量测试执行） |
+
+### 验证策略
+
+- 只使用纯函数、合成 fixtures、源码路由契约、no-emit TypeScript、前端全量 Vitest/lint/production build 与 ledger/registry audit；所有数据库连接环境变量清空，不启动服务、不调用 API、不写生产或共享数据库。
+- 部署后需用授权的非生产账号核对同一月份的汇总、展开分段、月报预览和 PDF 数字一致；本地源码验证不等同生产已修复。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261104-002
+- **Commit：** not committed
+- **日期：** 2026-11-04；post-MZ-103 Dev 基线候选 focused/backend aggregate/frontend 59 files / 320 tests/lint/build/ledger/registry 验证通过，仓库级 frontend no-emit 仍仅有两个未改动的既有测试类型错误；未提交、推送、部署或执行生产数据/账务操作。
+
+### 相关 CRL
+
+- root/CRL-20261104-002：MZ-102 房东月报取消订单完全排除。
+
+### 非保护范围
+
+- 公司收入报告中取消费镜像，以及取消订单错误派生的公司清洁费/管理费属于独立公司账修复；当前已知 `companyRevenueReport.ts` 的通用分段与 `activeOrder()` 仍允许 `count_in_income=true` 的取消单派生费用，本 FR 不修改或回填该公司账链。
+- 不包含生产历史数据更正、已结算快照重写、数据库迁移、部署、真实 PDF/账号验收或公司账补记。
+
+
+## FR-044：月度维修照片报告兼容私有媒体键并保持房源关联边界
+
+- **维护责任范围：** backend monthly statement photo pack / web finance export diagnostics
+- **最后审查日期：** 2026-11-04
+- **状态：** active
+
+### 业务保护规则
+
+- 房源营收的维修/深清照片报告必须处理已选房源、已选月份记录中持久化的无扩展名 `cleaning/media/...` 私有对象键；读取仅发生在后端，并且键必须来自当前已匹配记录的照片字段且通过安全键校验。不得通过扩大公开 `/r2-image` allowlist、返回 R2 直链或接受路径穿越来实现。
+- 维修前照片使用 `photo_urls`；维修后照片合并 `completion_photo_urls` 与历史 `repair_photo_urls` 并按原始引用去重。旧 `maintenance/`、`deep-cleaning/`、`deep-cleaning-upload/` 私有键和既有 HTTP(S) 图片链接继续兼容。
+- 部分照片失败时继续生成其余照片并记录脱敏失败样本；全部失败时保持 `PHOTO_PACK_RENDER_EMPTY`。R2 对象不存在、存储不可用、外链超时/内容类型错误、图片损坏、非法键和未关联引用必须可区分，日志和 job 错误不得包含原始私有键或敏感 URL。
+- 照片统计、硬上限计划数与最终嵌入数必须使用同一套前后照片合并规则，不能出现页面统计有图而 worker 前置计划为零。服务端直接取字节并以内嵌 data URL 渲染，浏览器 CORS 不参与照片抓取链。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 私有键、安全关联、兼容/去重、部分/全部失败 | `backend/scripts/tests/test_monthly_statement_photo_pack.ts` | 脱敏 2 条/4 图、无扩展名键、旧键/外链/代理混合、completion-only、重复引用、缺图/损坏/存储不可用/超时、非法与未关联拒绝；默认无浏览器 | sufficient | `DATABASE_URL='' R2_ENDPOINT='' R2_ACCESS_KEY_ID='' R2_SECRET_ACCESS_KEY='' R2_BUCKET='' PDF_JOBS_MODE=disabled npm run test:monthly-statement-photo-pack --prefix backend` |
+| 真实 PDF 页面 | `backend/scripts/tests/test_monthly_statement_photo_pack.ts` | 显式本地 Chromium 渲染 2 页 PDF，核对 2 条记录、4 图、Before/After 与页面布局；不接入未安装浏览器的快速 CI | sufficient | 同上环境，另加 `MZ103_PDF_OUTPUT=/tmp/mz103-photo-pack-test.pdf npm run test:monthly-statement-photo-pack:pdf --prefix backend` |
+| Web 错误分类 | `frontend/src/lib/statementPhotoPackJobs.test.ts` | API base、R2 不可用/对象不存在、损坏图和未关联引用分别显示准确中文提示 | sufficient | `npm run test --prefix frontend -- --run src/lib/statementPhotoPackJobs.test.ts --coverage.enabled=false --cache=false` |
+
+### 验证策略
+
+- 使用合成图片字节和脱敏房源记录结构在断开数据库/R2、关闭 PDF job 的本地环境运行；默认 CI 测试不得依赖 Chromium，显式本地 PDF 命令核对页数、记录分组、Before/After 和嵌入图片数。
+- 运行后端 TypeScript/隔离构建、Web 定向测试/lint/production build、照片/PDF/R2 相关既有回归、Root 聚合质量门、Feature Registry 与 CRL 审计。不得调用生产导出 API、创建或重放 `pdf_jobs`、上传测试 PDF 或写生产数据。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261104-001
+- **Commit：** local MZ-103 commit created；final SHA recorded in the handoff
+- **日期：** 2026-11-04；定向合成回归、显式 2 页/4 图离线 PDF 目检、backend aggregate、Web full suite 与独立复审通过（GO，P0/P1/P2/P3=0）；Root/Mobile 配对 aggregate 受当前 checkout 布局/版本不匹配阻断。
+
+### 相关 CRL
+
+- root/CRL-20261104-001；FR-010 的维修反馈认证读取边界保持不变。
+
+### 非保护范围
+
+- 不包含生产重导、`pdf_jobs` 重放、数据库/媒体记录修正、公开媒体权限扩大、部署、生产真实 PDF 验收或 Mobile 变更。
+
 ## FR-043：仅改密码入住执行任务参与本人混合排序
 
 - **维护责任范围：** backend MZ App mixed reorder / paired Mobile task ordering

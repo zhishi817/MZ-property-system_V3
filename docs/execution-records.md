@@ -1,5 +1,49 @@
 # Execution Records
 
+## MZ-103 修复维修照片报告导出失败
+
+- Date: 2026-11-04
+- Task: MZ-103 修复维修照片报告导出失败
+- Status: implemented, locally verified and locally committed; not released
+
+### Confirmed Plan
+
+- 只修改房源营收维修/深清照片分卷的照片引用识别、服务器私有读取、完成照片合并和错误诊断；不扩大公开媒体权限，不修改角色、页面流程或数据库 schema。
+- 在独立 `origin/Dev` worktree 使用合成图片和脱敏 2 条/4 图样本验证无扩展名私有键、旧键/外链、completion-only、重复、部分/全部失败、非法和未关联拒绝。
+- 禁止生产数据库写入、真实导出/重放、`pdf_jobs` 写入、生产照片或历史记录修改；不提交、推送、合并或部署。
+
+### Implementation Result
+
+- 无扩展名 `cleaning/media/...` 键不再被扩展名判断提前丢弃，且只在当前已匹配记录关联集合内经安全键校验后由服务器私有读取。
+- `completion_photo_urls` 与 `repair_photo_urls` 合并去重，统计、计划数和 PDF Before/After 使用同一引用分组。
+- 对象不存在、存储不可用、外链超时/内容类型、损坏图、非法与未关联引用产生可区分且脱敏的诊断；Web 不再把全部失败统一提示为“链接失效”。
+- 公开 `r2-image` allowlist 未修改；旧 maintenance/deep-cleaning 键和 HTTP(S) 图片继续兼容。
+
+### Validation
+
+- 离线专项回归通过：2 条记录、4 张合成照片、2 页 PDF；Before/After、completion-only 和去重均符合预期。
+- 两页 PNG 逐页目检通过：记录标题、日期、区域、Before/After 与四色图片无重叠、截断或缺失。
+- 后端 TypeScript no-emit、隔离 production emit 与 exact `check:backend` 全部通过；Web 定向及完整 Vitest（58 files / 317 tests）、lint、production build、PDF job/R2/media/maintenance 相关回归通过。
+- 快速 CI 默认专项不启动 Chromium；显式本地 PDF 命令仍生成 2 页/4 图文件并完成逐页目检。初审发现的混合失败提示只显示单一原因也已改为中文原因汇总。
+- Root `check:fast` 未宣称通过：当前干净 Root worktree 缺少配对 Mobile checkout；临时只读链接的本机 Mobile 版本又与 Root Dev 基线不一致，Registry 缺 8 个登记测试文件。Backend 和 Web 质量门已独立完整通过。
+
+### Files / Areas
+
+- `backend/src/lib/monthlyStatementPhotoPack.ts`
+- `backend/src/lib/monthlyStatementPhotoRecords.ts`
+- `backend/src/modules/finance.ts`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts`
+- `frontend/src/lib/statementPhotoPackJobs.ts`
+- `frontend/src/lib/statementPhotoPackJobs.test.ts`
+- `backend/package.json`, root `package.json`
+- `docs/feature-regression-registry.md`, `docs/change-release-ledger.md`
+
+### Open Issues / Follow-ups
+
+- 候选已在独立 MZ-103 分支创建一个本地 commit；未获 push、PR、合并或部署授权。线上仍运行旧版本，真实 LA812 导出未执行。
+- 此轮只用脱敏同规模合成样本生成 PDF；既有只读调查已确认线上四个对象可 GET/Sharp 解析，但没有把真实私有字节写入源码或 Git。
+- 独立复审最终 `GO`，P0/P1/P2/P3 = 0/0/0/0；此结论仅覆盖未提交本地候选，不授权发布或生产重导。
+
 ## 清洁开始超时扫描默认关闭
 
 - Date: 2026-10-04

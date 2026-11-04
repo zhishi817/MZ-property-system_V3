@@ -20,8 +20,12 @@ import { v4 as uuidv4 } from 'uuid'
 import { ensurePdfJobsSchema } from '../services/pdfJobsSchema'
 import { schedulePdfJobsKick } from '../services/pdfJobsWorker'
 import { r2GetObjectByKey } from '../r2'
-import { computeMonthSegmentsForOrders, sumSegmentsVisibleNetIncome } from '../lib/orderMonthSegments'
-import { countPhotoUrls, loadMonthlyStatementPhotoRows, recordHasPhotoUrls } from '../lib/monthlyStatementPhotoRecords'
+import {
+  computeOwnerRentIncomeWithExistingProration,
+  computeOwnerStatementMonthSegmentsForOrders,
+  sumSegmentsVisibleNetIncome,
+} from '../lib/orderMonthSegments'
+import { loadMonthlyStatementPhotoRows, recordHasPhotoUrls, statementPhotoReferenceGroups } from '../lib/monthlyStatementPhotoRecords'
 import {
   ANNUAL_REPORT_CURRENCY,
   ANNUAL_REPORT_LINE_KEYS,
@@ -1751,11 +1755,13 @@ router.get('/monthly-statement-photo-stats', requireAnyPerm(['finance.payout', '
 
     const maintenancePhotoCount = maint.reduce((n, r) => {
       if (!recordHasPhotoUrls(r)) return n
-      return n + countPhotoUrls((r as any)?.photo_urls) + countPhotoUrls((r as any)?.repair_photo_urls)
+      const groups = statementPhotoReferenceGroups(r)
+      return n + groups.before.length + groups.after.length
     }, 0)
     const deepCleaningPhotoCount = deep.reduce((n, r) => {
       if (!recordHasPhotoUrls(r)) return n
-      return n + countPhotoUrls((r as any)?.photo_urls) + countPhotoUrls((r as any)?.repair_photo_urls)
+      const groups = statementPhotoReferenceGroups(r)
+      return n + groups.before.length + groups.after.length
     }, 0)
     const totalPhotoCount = maintenancePhotoCount + deepCleaningPhotoCount
 
@@ -2773,8 +2779,6 @@ router.get('/property-revenue', async (req, res) => {
     const y = Number(ym.slice(0,4))
     const m = Number(ym.slice(5,7))
     if (!y || !m) return res.status(400).json({ message: 'invalid month format' })
-    const start = new Date(Date.UTC(y, m - 1, 1))
-    const end = new Date(Date.UTC(y, m, 0))
     let pid = String(property_id || '')
     let pcode = String(property_code || '')
     let label = ''
@@ -2801,25 +2805,7 @@ router.get('/property-revenue', async (req, res) => {
       if (hasPg) {
         const orders = await pgSelect('orders', '*', { property_id: pid })
         const ords: any[] = Array.isArray(orders) ? orders : []
-        function toDate(s: any): Date | null { try { return s ? new Date(String(s)) : null } catch { return null } }
-        function overlapNights(ci?: any, co?: any): number {
-          const a = toDate(ci)
-          const b = toDate(co)
-          if (!a || !b) return 0
-          const A = a > start ? a : start
-          const B = b < end ? b : end
-          const ms = B.getTime() - A.getTime()
-          return ms > 0 ? Math.floor(ms / (24 * 3600 * 1000)) : 0
-        }
-        for (const o of ords) {
-          const ov = overlapNights(o.checkin, o.checkout)
-          const nights = Number(o.nights || 0) || 0
-          const visNet = Number((o as any).visible_net_income ?? o.net_income ?? 0)
-          const status = String((o as any).status || '').toLowerCase()
-          const isCanceled = status.includes('cancel')
-          const include = (!isCanceled) || !!(o as any).count_in_income
-          if (include && ov > 0 && nights > 0) rentIncome += (visNet * ov) / nights
-        }
+        rentIncome = computeOwnerRentIncomeWithExistingProration(ords, ym)
         let peRows: any[] = []
         try {
           const { pgPool } = require('../dbAdapter')
@@ -2978,7 +2964,7 @@ router.get('/rent-segments', requireAnyPerm(['finance.payout', 'finance.tx.write
       }
     }
     const enriched = orders.map((o) => ({ ...o, internal_deduction_total: Number((totals[String(o.id)] || 0).toFixed(2)) }))
-    const segments = computeMonthSegmentsForOrders(enriched, m.monthKey)
+    const segments = computeOwnerStatementMonthSegmentsForOrders(enriched, m.monthKey)
     const rent_income = sumSegmentsVisibleNetIncome(segments)
     return res.json({ month: m.monthKey, property_id, segments, rent_income })
   } catch (e: any) {
@@ -3010,7 +2996,7 @@ router.get('/rent-income-by-property', requireAnyPerm(['finance.payout', 'financ
       } catch {}
     }
     const enriched = orders.map((o) => ({ ...o, internal_deduction_total: Number((totals[String(o.id)] || 0).toFixed(2)) }))
-    const segments = computeMonthSegmentsForOrders(enriched, m.monthKey)
+    const segments = computeOwnerStatementMonthSegmentsForOrders(enriched, m.monthKey)
     const byProp: Record<string, any[]> = {}
     for (const s of segments) {
       const pid = String((s as any).property_id || '').trim()
@@ -3037,8 +3023,6 @@ router.post('/management-fee/calc', requireAnyPerm(['property_expenses.write','f
     const ym = String(month)
     const y = Number(ym.slice(0,4)), m = Number(ym.slice(5,7))
     if (!y || !m) return res.status(400).json({ message: 'invalid month format' })
-    const start = new Date(Date.UTC(y, m - 1, 1))
-    const end = new Date(Date.UTC(y, m, 0))
     let pid = String(property_id || '')
     let pcode = String(property_code || '')
     const { pgPool } = require('../dbAdapter')
@@ -3051,25 +3035,7 @@ router.post('/management-fee/calc', requireAnyPerm(['property_expenses.write','f
     // compute rent income for target month
     const orders = await pgSelect('orders', '*', { property_id: pid })
     const ords: any[] = Array.isArray(orders) ? orders : []
-    function toDate(s: any): Date | null { try { return s ? new Date(String(s)) : null } catch { return null } }
-    function overlapNights(ci?: any, co?: any): number {
-      const a = toDate(ci), b = toDate(co)
-      if (!a || !b) return 0
-      const A = a > start ? a : start
-      const B = b < end ? b : end
-      const ms = B.getTime() - A.getTime()
-      return ms > 0 ? Math.floor(ms / (24 * 3600 * 1000)) : 0
-    }
-    let rentIncome = 0
-    for (const o of ords) {
-      const ov = overlapNights(o.checkin, o.checkout)
-      const nights = Number(o.nights || 0) || 0
-      const visNet = Number((o as any).visible_net_income ?? o.net_income ?? 0)
-      const status = String((o as any).status || '').toLowerCase()
-      const isCanceled = status.includes('cancel')
-      const include = (!isCanceled) || !!(o as any).count_in_income
-      if (include && ov > 0 && nights > 0) rentIncome += (visNet * ov) / nights
-    }
+    const rentIncome = computeOwnerRentIncomeWithExistingProration(ords, ym)
     // read landlord rate
     const propRows = await pgSelect('properties', 'id,landlord_id,code', { id: pid })
     const prop = Array.isArray(propRows) ? propRows[0] : null

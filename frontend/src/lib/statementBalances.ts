@@ -1,5 +1,5 @@
 import dayjs from 'dayjs'
-import { monthSegments, toDayStr } from './orders'
+import { getOwnerStatementMonthSegments, shouldIncludeOrderInOwnerStatement, toDayStr } from './orders'
 import { isVoidedTx, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from './financeTx'
 
 type Order = { id: string; property_id?: string; checkin?: string; checkout?: string; price?: number; nights?: number; status?: string; count_in_income?: boolean }
@@ -152,20 +152,14 @@ function calcMonthOperatingNet(input: {
 
   const providedSegments = (input.orderSegments || []).filter(o => {
     if (property?.id && o.property_id !== property.id) return false
-    const st = String((o as any).status || '').toLowerCase()
-    const isCanceled = st.includes('cancel')
-    const include = (!isCanceled) || !!(o as any).count_in_income
-    return include && segmentOverlapsMonth(o)
+    return shouldIncludeOrderInOwnerStatement(o) && segmentOverlapsMonth(o)
   })
 
   const relatedOrders = providedSegments.length
     ? providedSegments
-    : monthSegments(orders.filter(o => {
+    : getOwnerStatementMonthSegments(orders.filter(o => {
       if (property?.id && o.property_id !== property.id) return false
-      const st = String((o as any).status || '').toLowerCase()
-      const isCanceled = st.includes('cancel')
-      const include = (!isCanceled) || !!(o as any).count_in_income
-      return include
+      return shouldIncludeOrderInOwnerStatement(o)
     }), start)
 
   const rentIncome = relatedOrders.reduce((s, x) => s + Number(((x as any).visible_net_income ?? (x as any).net_income ?? 0)), 0)
@@ -283,6 +277,7 @@ export function computeMonthlyStatementBalanceDebug(input: {
   const monthsWithData: string[] = []
   for (const o of input.orders || []) {
     if (String(o.property_id || '') !== property.id) continue
+    if (!shouldIncludeOrderInOwnerStatement(o)) continue
     const ci = toDayStr((o as any).__src_checkin || o.checkin)
     const co = toDayStr((o as any).__src_checkout || o.checkout)
     if (ci) monthsWithData.push(dayjs(ci).format('YYYY-MM'))
@@ -290,6 +285,7 @@ export function computeMonthlyStatementBalanceDebug(input: {
   }
   for (const o of input.orderSegments || []) {
     if (String(o.property_id || '') !== property.id) continue
+    if (!shouldIncludeOrderInOwnerStatement(o)) continue
     const ci = toDayStr((o as any).__src_checkin || o.checkin)
     const co = toDayStr((o as any).__src_checkout || o.checkout)
     if (ci) monthsWithData.push(dayjs(ci).format('YYYY-MM'))
