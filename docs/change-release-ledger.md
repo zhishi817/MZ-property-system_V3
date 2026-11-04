@@ -63,7 +63,7 @@
 - Base: `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`; fetched at `2026-11-04T14:12:00Z`
 - Candidate patch SHA-256: `75b18095a2bb87a9120df257705667ebff85dcecf1c2f47996fe043da43513d0`
 - Commit SHA: `9d704c7618657e999694c8e4466323707e29e9e1`
-- Dependencies: none; the migration files under test are already part of the recorded base
+- Dependencies: none
 - Required validation: `PASS`; evidence: pre-commit ledger gate GO, `git diff --cached --check` PASS, feature registry audit PASS, and independent commit review P0/P1/P2=0/0/0; PostgreSQL CI is a post-push validation and is not claimed here
 - Shared-hunk review: `PASS`; evidence: exact 7-hunk scope fingerprinted and independently reviewed; shared workflow/package/ledger hunks are exclusive to this selected CRL
 - Generated-file review: `PASS`; no generated artifacts or dependency trees included
