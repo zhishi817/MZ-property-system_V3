@@ -287,6 +287,25 @@
 - Independent review: `GO for local commit`; evidence: independent read-only review matched base, branch, CRL, 12 staged paths, 42 non-ledger hunks and candidate SHA-256 `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`; it verified cancellation boundaries, A$100/A$100 normal proration, company isolation and MZ-103 preservation with P0/P1/P2 = 0。
 - Action conclusion: `GO`; blockers: none。The reviewed local content commit completed as `caf3e1396b2276ba1f6ce0c45fd40e7bc94f9fd4` with parent `7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168` and preserved candidate SHA-256 `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`。Push remains a separate exact-SHA review and authorization gate。
 
+#### RA-20261104-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261104-002`
+- Selected CRL identities: `root/CRL-20261104-002`
+- Intended action: `push`
+- Branch: `codex/mz102-owner-statement-cancel-exclusion-post-mz103`
+- Base: `origin/Dev@7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168`; fetched at `2026-11-04 05:20 UTC` and remotely reverified unchanged before the authorization receipt
+- Candidate patch SHA-256: `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`
+- Commit SHA: `caf3e1396b2276ba1f6ce0c45fd40e7bc94f9fd4`; candidate content commit; approved source audit head was `9c06428c036c7e55841d836f71e996701fcb97cd`
+- Dependencies: `root/CRL-20261104-001@2a935382e1d22842c1911731e96e0cfcce967590`
+- Required validation: `PASS`; the exact `origin/Dev@7f1a29f...9c06428` range report passed before this receipt, with unchanged 12-path / 42-non-ledger-hunk scope and candidate fingerprint；remote Dev remained `7f1a29f` and the target feature ref remained absent。
+- Shared-hunk review: `PASS`; this receipt changes only this Release Attempt metadata；the reviewed MZ-102 business tree and MZ-103 shared-file behavior are unchanged。
+- Generated-file review: `PASS`; ledger-only metadata receipt；no generated files, credentials, environment values or production payloads。
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after being shown source audit head `9c06428c036c7e55841d836f71e996701fcb97cd` and branch `codex/mz102-owner-statement-cancel-exclusion-post-mz103`, the user answered “可以”。The authorization binds the unchanged selected CRL, base, candidate content commit and branch；this independently reviewed ledger-only receipt records that authorization without changing candidate content，and the exact post-receipt audit head must be supplied and verified by the clean release report。It does not authorize any other content/base/branch, force push, PR, merge, deployment or production write。
+- Independent review: `GO for this ledger-only authorization receipt and conditional push gate`; evidence: independent read-only review verified the staged scope is only `RA-20261104-003` in `docs/change-release-ledger.md`, with unchanged `root/CRL-20261104-002`, base `7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168`, candidate content commit `caf3e1396b2276ba1f6ce0c45fd40e7bc94f9fd4`, source audit head `9c06428c036c7e55841d836f71e996701fcb97cd`, branch, candidate fingerprint `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`, 12-path / 42-non-ledger-hunk range, ancestry, authorization evidence and clean generated/sensitive/production-write boundaries；P0/P1/P2 = 0。The exact post-receipt audit head is supplied externally by the release report。
+- Action conclusion: `GO`; blockers: none for committing this reviewed ledger-only receipt。One ordinary non-force push of the exact post-receipt HEAD to the authorized feature branch may proceed only after the worktree is clean, the exact `origin/Dev@7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168...<receipt-head>` release report returns GO, and immediate read-only remote preflight confirms Dev unchanged and the target ref still absent。No force push, PR, merge, deployment or production write is authorized。
+
 ### Risks / Release Notes
 
 - Push、PR、merge、deployment、migration、production report/data operations均未执行。
