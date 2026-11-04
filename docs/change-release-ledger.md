@@ -1,5 +1,84 @@
 # Change Release Ledger
 
+## CRL-20261104-008 — MZ-065 临时 PostgreSQL 迁移并发门禁
+
+- **Repository:** `root`
+- **Status:** in-progress isolated CI candidate; not merged, deployed, migrated or production-verified
+- **Updated:** 2026-11-04 14:20 UTC
+- **Request:** 使用 CI 的全新临时 PostgreSQL 服务验证 MZ-065 新迁移，覆盖重复请求、真实双会话并发锁、事务失败回滚与订单触发器；不得使用生产数据、修改生产、合并或部署。
+- **Outcome:** 为 Root 质量门禁增加独立 PostgreSQL 16 服务与 fail-closed 测试入口。测试只接受 `CI=true`、loopback、专用 `mz065_ci` 数据库和角色，并从合成最小 schema 验证旧迁移基线、新迁移原子回滚、幂等安装、receipt 去重及 code/UUID 统一锁域。
+
+### Implementation
+
+- Previous behavior: MZ-065 只有静态迁移契约与内存分支覆盖；Root CI 的临时 PostgreSQL 仅运行 MZ-034/035，无法证明 `20261104_mz065_manual_create_receipts` 的 DDL 原子性、主键争用或真实 advisory-lock 行为。
+- New behavior: 新增 MZ-065 专属 CI job，启动全新 `postgres:16-alpine` 服务并执行合成 fixture。测试先应用真实旧迁移，再向新迁移的 COMMIT 前注入失败并证明表、marker、函数和触发器全部恢复；随后应用未修改的新迁移两次，验证结构、重复 receipt、失败事务整体回滚、两会话同键争用，以及 property code/UUID 通过订单触发器竞争同一周转边界锁。
+- Safety: 测试入口要求显式写入/临时环境确认，URL 必须为 `127.0.0.1:5432/mz065_ci`、角色必须为 `mz065_ci`，并由数据库自报身份复核；fixture 仅含合成 UUID、房源代码、订单和请求 ID，不读取或复制生产数据。
+
+### Files / Areas
+
+- `.github/workflows/quality.yml` — modified: 新增 MZ-065 独立临时 PostgreSQL job，并纳入最终 Root Quality Check。
+- `backend/package.json` — modified: 新增 MZ-065 PostgreSQL 集成测试命令。
+- `backend/scripts/tests/test_mz065_manual_create_receipts_pg_integration.ts` — added: 真实迁移、失败回滚、幂等、重复请求、双会话争用和触发器验证。
+- `docs/change-release-ledger.md` — modified: 本测试门禁发布单元与审计证据。
+
+### Impact / Dependencies
+
+- API: none；不启动后端 HTTP 服务。
+- Database / migration: 仅在 GitHub Actions 临时 PostgreSQL 服务执行现有旧/新迁移和合成写入；不连接 Neon 或生产。
+- Config / environment: CI-only `MZ065_SQL_INTEGRATION_DATABASE_URL`、`MZ065_SQL_INTEGRATION_WRITE=1`、`MZ065_SQL_INTEGRATION_CONFIRM_EPHEMERAL=1`。
+- Dependencies: 无新 npm 依赖；复用 `pg` 与 `ts-node`。
+- Related units: `root/CRL-20261104-006`, `root/CRL-20261104-007`。
+
+### Validation
+
+- `git diff --check` — PASS。
+- `python3 scripts/audit_change_release_ledger.py --pre-commit --repo root --crl CRL-20261104-008` — GO；4 个 staged files、7 个非台账 hunks、无 untracked。
+- Independent read-only review — GO for commit；首轮只发现 premature push wording，修正为 commit-only 后复审 P0/P1/P2 = 0/0/0，fingerprint 匹配。
+- MZ-065 临时 PostgreSQL CI — not run；待独立测试分支推送后触发。
+- Root Quality Gate 其余层 — not run；待 CI。
+- 生产数据库、生产 API、部署和 OTA — not run；本候选明确排除。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；候选来自 clean `origin/Dev` worktree。
+- `.github/workflows/quality.yml` — SHA-256: `1fae671c84da6750a76044df1c1bdb4e262a4b2745027818b73656fd75c4ce08`
+- `.github/workflows/quality.yml` — SHA-256: `5d4a0dcefe815fee9112e0f015f1b8023c761efe7ee1653ec194ab236e7f3c3a`
+- `.github/workflows/quality.yml` — SHA-256: `672f9b5fe98007f79be91301acf7ccf4b758d99ec1ada3c7b2842c345d45b732`
+- `.github/workflows/quality.yml` — SHA-256: `b441cd0d8c04dbdcae330de1e1dfd74ec88d11b8c0545bfcb54a812a5736152f`
+- `.github/workflows/quality.yml` — SHA-256: `d5d7bdf502e38a4fa0f9b6c12bf6b417cab0fa9f72db278e9b72ee1e0aa7d32d`
+- `backend/package.json` — SHA-256: `0a4ea76ab30a4789d9f21c9b1d63be89f9822dfae3cf361dee30e62fa5211e94`
+- `backend/scripts/tests/test_mz065_manual_create_receipts_pg_integration.ts` — SHA-256: `6410c3587c49e8d1e0c5d0533533e34f346bfceca6d3e81e34a16c7c63416292`
+
+### Release Attempts
+
+#### RA-20261104-008
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261104-008`
+- Selected CRL identities: `root/CRL-20261104-008`
+- Intended action: `commit` the isolated CI candidate; no push, PR, merge, deployment or migration in this attempt
+- Branch: `codex/mz065-ephemeral-pg-ci`
+- Base: `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`; fetched at `2026-11-04T14:12:00Z`
+- Candidate patch SHA-256: `75b18095a2bb87a9120df257705667ebff85dcecf1c2f47996fe043da43513d0`
+- Commit SHA: not committed
+- Dependencies: `root/CRL-20261104-006` and existing migration files at base SHA
+- Required validation: `NOT VERIFIED`; evidence: CI not yet run
+- Shared-hunk review: `not applicable`; new test file plus dedicated workflow/package entries
+- Generated-file review: `PASS`; no generated artifacts or dependency trees included
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user explicitly selected the necessary MZ-065 ephemeral-PostgreSQL test code for an independent test branch, while prohibiting merge/deploy/production writes
+- Independent review: `GO for commit`; evidence: first pass found no technical P0/P1/P2 but blocked premature push wording; commit-only correction was independently re-reviewed with P0/P1/P2 = 0/0/0 and matching fingerprint
+- Action conclusion: `GO` for the exact commit candidate; blockers: none for commit; CI necessarily follows a later, separately audited push attempt
+
+### Risks / Release Notes
+
+- CI adds about two deliberate 1.2-second lock-timeout probes; job timeout remains 10 minutes.
+- Rollback: delete the isolated test branch; no production state exists to reverse.
+- Sensitive-information review: only synthetic CI-only credentials/IDs; no token, cookie, `.env`, production URL, customer row or secret added.
+- Git state: uncommitted on `codex/mz065-ephemeral-pg-ci`; not pushed, no PR, not merged, not deployed, migration not applied, OTA not published.
+
 ## CRL-20261104-007 — MZ-065/091/106/107 Root 统一特性分支发布单元
 
 - **Repository:** `root`

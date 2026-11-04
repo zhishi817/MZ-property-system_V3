@@ -23,6 +23,7 @@
     "test:cleaning-rules": "ts-node-dev --transpile-only scripts/tests/test_cleaning_rules.ts",
     "test:cleaning-start-timeout-schedule": "ts-node-dev --transpile-only scripts/tests/test_cleaning_start_timeout_schedule.ts",
     "test:cleaning-sync-v2": "ts-node-dev --transpile-only scripts/tests/test_cleaning_sync_v2.ts",
+    "test:mz065-manual-create-receipts:pg": "node -r ts-node/register/transpile-only scripts/tests/test_mz065_manual_create_receipts_pg_integration.ts",
     "test:mz091-password-authority": "ts-node-dev --transpile-only scripts/tests/test_mz091_password_authority_contract.ts",
     "test:mz091-password-chain:pg": "node -r ts-node/register/transpile-only scripts/tests/test_mz091_password_chain_pg_integration.ts",
     "test:mz091-password-authority:indexes": "node -r ts-node/register/transpile-only scripts/tests/test_mz091_password_authority_index_plan.ts",
