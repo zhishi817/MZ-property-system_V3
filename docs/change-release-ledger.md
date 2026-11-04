@@ -56,15 +56,15 @@
 - Branch: `codex/mz065-ephemeral-pg-ci`
 - Base: `b6041108e9850432a90a38f46eef7a0961f2008e`; fetched from the just-pushed same-name origin branch at `2026-11-04T14:24:00Z`
 - Candidate patch SHA-256: `058ff296cc4401419f894cca84df8b68b091dd513830b05ecd4f8b6659d51779`
-- Commit SHA: not committed
+- Commit SHA: `ec4045cc69dce26775cd6f9e1d32b866b2f397a7`
 - Dependencies: `root/CRL-20261104-008@b6041108e9850432a90a38f46eef7a0961f2008e`
 - Required validation: `PASS`; evidence: local workflow contract 11/11 and `git diff --check` passed; failed CI line is reproduced and directly covered
 - Shared-hunk review: `PASS`; evidence: five exact test-contract hunks are fingerprinted and scoped exclusively to this CRL
 - Generated-file review: `PASS`; no generated or dependency files
-- Technical state: `candidate`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user authorized autonomous routine release work but required failures to stop dependent production steps; this scoped repair only restores the failed CI prerequisite
 - Independent review: `GO for commit`; evidence: independent review found P0/P1/P2=0/0/0, confirmed exact CI-failure causality, safe job boundaries and unchanged production isolation, and reproduced 11/11 contract PASS
-- Action conclusion: `GO`; blockers: none for this exact follow-up commit; remote CI rerun requires a later push attempt
+- Action conclusion: `GO`; blockers: none; exact follow-up commit `ec4045cc69dce26775cd6f9e1d32b866b2f397a7` created; remote CI rerun requires a later push attempt
 
 ### Risks / Release Notes
 
