@@ -11,14 +11,33 @@ type PhotoPackJobStatus = {
   last_error_code?: string | null
 }
 
-function normalizePhotoPackError(message: string, payload?: any) {
+export function normalizePhotoPackError(message: string, payload?: any) {
   const raw = String(message || '').trim()
   const code = String(payload?.last_error_code || payload?.error_code || '').trim()
   if (code === 'PHOTO_PACK_TOO_LARGE' || /photo pack exceeds image hard limit/i.test(raw)) {
     return '照片总量超过当前系统硬上限，系统已停止导出以避免生成不完整文件；请联系管理员提升导出上限后重试'
   }
-  if (code === 'PHOTO_ASSETS_UNREACHABLE' || code === 'PHOTO_PACK_RENDER_EMPTY') {
-    return '照片资源未成功加载，已停止导出，请重试；若持续出现，请检查该房源照片链接是否失效'
+  if (code === 'PHOTO_ASSETS_UNREACHABLE') {
+    return '照片资源地址配置无效，已停止导出；请联系管理员检查服务端照片地址配置'
+  }
+  if (code === 'PHOTO_PACK_RENDER_EMPTY') {
+    const failureReasons = [
+      [/r2_unavailable/i, '照片存储服务当前不可用'],
+      [/r2_not_found/i, '关联的照片对象不存在'],
+      [/image_decode_failed|invalid_content_type/i, '关联照片已损坏或格式无法识别'],
+      [/invalid_source|unassociated_source/i, '照片引用无效或不属于当前房源记录'],
+      [/fetch_timeout/i, '外部照片读取超时'],
+      [/fetch_failed|http_\d{3}/i, '外部照片读取失败'],
+    ].filter(([pattern]) => (pattern as RegExp).test(raw)).map(([, label]) => String(label))
+    if (failureReasons.length > 1) return `照片导出失败：${failureReasons.join('；')}；请联系管理员查看失败原因汇总`
+    if (failureReasons.length === 1) {
+      if (/r2_unavailable/i.test(raw)) return `${failureReasons[0]}，已停止导出；请稍后重试`
+      if (/r2_not_found/i.test(raw)) return `${failureReasons[0]}，已停止导出；请检查该房源的维修照片记录`
+      if (/image_decode_failed|invalid_content_type/i.test(raw)) return `${failureReasons[0]}，已停止导出；请检查该房源的维修照片`
+      if (/invalid_source|unassociated_source/i.test(raw)) return `${failureReasons[0]}，已停止导出；请联系管理员检查照片关联`
+      return `${failureReasons[0]}，已停止导出；请稍后重试`
+    }
+    return '本月有照片记录，但没有可嵌入报告的有效图片；请检查关联照片或媒体存储状态'
   }
   if (code === 'PHOTO_PREFLIGHT_FAILED' || /photo resources failed preflight validation/i.test(raw)) {
     return '照片链接快检未通过，但这通常不代表全部失效；请重试，若仍失败请检查该房源照片链接'

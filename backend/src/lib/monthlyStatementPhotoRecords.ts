@@ -33,8 +33,20 @@ export function countPhotoUrls(raw: any): number {
   return listPhotoUrls(raw).length
 }
 
+function uniquePhotoUrls(values: any[]): string[] {
+  return Array.from(new Set(values.flatMap((value) => listPhotoUrls(value))))
+}
+
+export function statementPhotoReferenceGroups(row: any): { before: string[]; after: string[] } {
+  return {
+    before: uniquePhotoUrls([row?.photo_urls]),
+    after: uniquePhotoUrls([row?.completion_photo_urls, row?.repair_photo_urls]),
+  }
+}
+
 export function recordHasPhotoUrls(row: any): boolean {
-  return (countPhotoUrls(row?.photo_urls) + countPhotoUrls(row?.repair_photo_urls)) > 0
+  const groups = statementPhotoReferenceGroups(row)
+  return (groups.before.length + groups.after.length) > 0
 }
 
 export function recordMonthKey(row: any): string {

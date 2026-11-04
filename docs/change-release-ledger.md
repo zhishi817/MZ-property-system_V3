@@ -1,5 +1,174 @@
 # Change Release Ledger
 
+## CRL-20261104-001 — MZ-103 维修照片报告私有媒体兼容修复
+
+- **Repository:** `root`
+- **Status:** verified isolated candidate locally committed and approved for feature publication; equivalent Git Data content and receipt prepared under RA-20261104-103; backend aggregate, Web full regression, explicit PDF validation and independent review passed; not merged, production-deployed or production-verified
+- **Board item:** `MZ-103`
+- **Updated:** 2026-11-04 04:55 UTC
+- **Request:** 修复房源营收下载维修照片报告时，已关联的无扩展名私有媒体键被前置过滤并导致空报告失败的问题；同时兼容完成照片字段、旧照片来源和既有部分/全部缺图规则，保持生产零写入和公开媒体权限边界。
+- **Outcome:** 本地候选允许已选房源记录中的安全私有媒体键由后端直接读取并嵌入 PDF，合并去重完成/历史维修后照片；失败诊断区分存储、缺图、超时、格式和关联拒绝且只记录引用指纹。公开代理 allowlist、数据库、生产媒体和 job 均不变。
+
+### Implementation
+
+- Previous behavior: `isLikelyImageUrl` 只认可 HTTP(S)、代理路径或常见图片扩展名；无扩展名 `cleaning/media/...` 键在读取前被过滤，导致存在原始引用但 `totalPlanned=0`。导出只读取 `photo_urls` 与 `repair_photo_urls`，并把 R2 不可用和对象不存在统称为 `r2_not_found`，失败样本还可能包含原始 URL。
+- New behavior: 计划阶段保留非视频照片引用；安全的 `cleaning/`、`mzapp/`、`maintenance/`、`deep-cleaning/` 与 `deep-cleaning-upload/` 键只在当前已匹配记录的引用集合内经校验后走服务端 R2 detailed read。`completion_photo_urls` 与 `repair_photo_urls` 合并去重，统计/计划/渲染共享该规则。
+- Failure behavior: 部分失败继续输出可用照片；全部失败仍抛 `PHOTO_PACK_RENDER_EMPTY`，message 只含原因计数，失败样本仅含 SHA-256 短指纹。Web 分别提示 API base、存储不可用、对象不存在、图片损坏和无效/未关联引用。
+- Security decision: 未修改 `r2ImageProxyPolicy` 或任何公开/认证媒体路由；不新增跨房源查询，不从浏览器抓私有对象，不输出私有键、URL、凭证或真实照片 fixture。
+
+### Files / Areas
+
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — modified: 安全私有键解析、record association、R2 detailed read、图片处理/脱敏诊断与可注入离线测试入口。
+- `backend/src/lib/monthlyStatementPhotoRecords.ts` — modified: 统一 Before 与 completion/repair After 合并去重。
+- `backend/src/modules/finance.ts` — modified: 照片统计复用同一引用分组。
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — modified: 脱敏 2 条/4 图、兼容/拒绝/失败矩阵；默认 CI 路径无浏览器，显式命令执行真实 PDF 渲染。
+- `frontend/src/lib/statementPhotoPackJobs.ts` — modified: 精确错误提示。
+- `frontend/src/lib/statementPhotoPackJobs.test.ts` — added: Web 错误分类回归。
+- `backend/package.json`, `package.json` — modified: 接线专项测试至 backend/full 与 fast 质量门。
+- `docs/feature-regression-registry.md`, `docs/execution-records.md`, `docs/change-release-ledger.md` — modified: FR-044、MZ-103 执行与发布单元记录。
+
+### Impact / Dependencies
+
+- API: 路径与 job payload/结果结构不变；失败 message 更准确且脱敏，Web 文案更具体。
+- Database / migration: none；未运行 migration、导出 API、worker 或数据库写入测试。
+- Config / environment: none；私有键读取复用现有后端 R2 配置，不要求扩大公开代理。
+- Dependencies: none；只使用已有 `sharp`、Playwright、crypto 与 R2 adapter。
+- Related units: board `MZ-103`, FR-044；FR-010 媒体授权不变量保持不变。
+
+### Validation
+
+- `DATABASE_URL='' R2_ENDPOINT='' R2_ACCESS_KEY_ID='' R2_SECRET_ACCESS_KEY='' R2_BUCKET='' PDF_JOBS_MODE=disabled npm run test:monthly-statement-photo-pack --prefix backend` — PASS，无浏览器：2 records / 4 images；旧键/外链、completion-only、去重、缺图/损坏/不可用/超时、非法与未关联覆盖。
+- 同环境 `MZ103_PDF_OUTPUT=/tmp/mz103-photo-pack-test.pdf npm run test:monthly-statement-photo-pack:pdf --prefix backend` — PASS（显式本地 Chromium）：2 records / 4 images / 2 pages。
+- Generated PDF page review — PASS：两页分别包含 `TEST-812-A/B`，Before/After 四色图、标题/日期/区域无重叠、截断或破图；仅合成脱敏数据。
+- `./node_modules/.bin/tsc -p . --noEmit --incremental false`（backend）— PASS。
+- `npm run build -- --outDir /tmp/mz103-backend-dist --incremental false`（backend）— PASS；隔离输出未修改 tracked `backend/dist`。
+- `npm run test -- --run src/lib/statementPhotoPackJobs.test.ts --coverage.enabled=false --cache=false`（frontend）— PASS，1 file / 3 tests，含混合失败原因汇总。
+- `CI=true npm run test -- --cache=false`（frontend）— PASS，58 files / 317 tests，coverage 97.29% statements / 93.61% branches。
+- `npm run lint -- --no-cache`（frontend）— PASS with existing unrelated warnings；0 errors。
+- `npm run build`（frontend）— PASS with existing Browserslist/lint/chart SSR warnings。
+- `CI=true ... npm run check:backend`（隔离 `/tmp` worktree，DB/R2/job disabled）— PASS，含 build、专项测试及全部既有 backend contracts；为既有 `phase5-release-contract` 提供只读 Mobile source link，未修改 Mobile。
+- `test:pdf-jobs-runtime`, `test:r2-media-governance`, `test:cleaning-media-image`, `test:maintenance-workflow-actions`（backend，DB/R2/job disabled）— PASS。
+- `npm run check:feature-registry` 与 ledger audit（候选 worktree）— PASS。
+- Root `check:fast` — 环境布局阻断，未宣称 PASS：干净 Root checkout 不含独立 `mz-cleaning-app-frontend`，直接运行在 `phase5-release-contract` ENOENT；临时只读链接到本机另一 Mobile checkout 后，Registry 又因该 checkout 与 Root Dev 基线不配对而缺少 8 个登记测试文件。候选的 exact backend gate 与 Web full suite 已分别通过；未为绕过基线不匹配修改产品源码。
+- Independent review — final `GO` for the uncommitted local candidate，P0/P1/P2/P3 = 0/0/0/0。初审发现的 CI Chromium P1 与混合错误文案 P2 均已修正；复审以无浏览器路径、Web 错误分类、diff、CRL 与 Registry audit 独立确认闭环。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared and committed as one exact MZ-103 unit on branch `codex/mz103-photo-pack-private-media`, based on current `origin/Dev@0ce0ca254dd2d11c693c7b5d71961b58d4e6fdbd`.
+- **Untracked review:** PASS；the only untracked path is the current-task Web regression `frontend/src/lib/statementPhotoPackJobs.test.ts`，which is included in this unit. No dependency tree, generated output, environment file or unrelated task path is selected.
+- `backend/package.json` — SHA-256: `855ade9580b26fad978edf4b59ba434d127442e483a5f927a16c6453a21b0e4b`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — SHA-256: `52316215e0968be9ce83e2eb504ee5626d908900c431c7f32a06ff3034b1f93f`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — SHA-256: `58f26fcce36bcac10d84c21e1d2fb625e848338e6b1b9299931e578f4d58a7a2`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — SHA-256: `5dd0254e804141c695868a4097e5781621c83937139a956f55a220fbaafddcbf`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — SHA-256: `6810d9ca1fa07b02b1af3cbc5277318eaebce7433dea5ddb278df28985e7c5d3`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — SHA-256: `72cb43ab738b463aa9a92fd92796d8829d3d887877ca663483e4253e0b5fae18`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — SHA-256: `91280f0d6cbf2a59c705f1fcf3916f6a398a328ca3b33081c3dbf213bf169742`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — SHA-256: `a69517f2b2a196f9676b3be0a15e7859d79bb3764a4ef355ab7e88fc52b5577b`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — SHA-256: `a75dc725361b3209b981927ce918276d2d14b7a22f8f4fea29e9ebe77d1d7b54`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — SHA-256: `d0826ee78e1dcd9112e4f54aee06931470480e0e6e6655b47e7916a35c7b2b48`
+- `backend/scripts/tests/test_monthly_statement_photo_pack.ts` — SHA-256: `d146fa38cbac8ba235ca53613f991a4504e71def5bcb2f49a57bdfdfd2b1af7e`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `02088b2cbef8fec86f525e4349c97dc9e73d2ddc5f5670c48c13b0ddd280f201`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `07e40fc31aa6d4e53d35b22d8f04642df2cbb5b5f63dab6ab58caee0c55ec893`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `0963e4c32330986d5b74d2fdc152b9cba717d0820fcd17678ec04f45045a1cbe`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `0f44b2885cefb741aa7df40e7626c865b0e2d78963d8eaaba559dc8cbe3ce72d`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `1af8d9ef62da00b09a8e4cdc55e6089c46f3114ab1aceae270c308ec92309d3a`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `1af96c066fb199072012bc68cc7e1dda314ba666cdd31b7aee18b9146d26dcb6`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `1f870997ee155b669c5c6d8afbeeb8ae80055c54a4c46cf8a580f700b7ad9304`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `20c83b48ae356874ff3d0149694698c286257bdb1b2f33c4a5de047a65a22784`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `23ecad303bd4260ffa7daea2ab02a45a1fd796d5d2f4d4aa64696a60133127db`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `2484dcc96fabcc6fbb5404881ac2f48254a7b15ad7d6a080cef2070d004781df`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `2d240687df7448e0df5f7f5c71cffbc726244ac0cb7b599fdcde68ac639ff558`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `31a741be50a95a9014de2a3a2adc5648ca4f3533473730b370a439d928c26c9d`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `45bc4043cf135397da17101a2542f3bd483123e74214c273662527b60ef654d1`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `4a6ebbeae242e3a9874514ef50cacddd51ae4d6a5811dea5aba916f5a9054b1e`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `4f54a42598ca57126e47594dde64bb13fb3830fcaea284614266e7cae85d09a4`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `5ff8d4fa763945b489f78628040c8404f932a21754e3e82a558e0e5dc58800e8`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `65032ebfd0f239fb60eddcc04e2d86146db376cc94c9fac4b61d6d69db51bf8c`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `82cc766e41a5a4f46986f60813e6651df1def7f250303abefa5198a97bba8c5f`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `9c43a278ca6aab8f0d1603afc1c9a389d535254e2d50004d245a01b9a10bfe29`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `9c5822b0bc5bddb158790827bc1cf875ce1f0ee373f1a1ef6e9ef03d55cd65b0`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `a3311c0234693a8cde050662b00dd7b26b0eaf41e205d889451f96f7800d5038`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `befa50013b2f375e6a07ffb55bd8bdf4476b2f86dd627d083449001603d8db67`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `ce12532422aaf00c77172c6947233db73bfec2ee2dae06bde8a36a3654527bc0`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `cfce4b2f3ec8124fac637f896393b901683403a3e249ca7da2bed26ac09b1022`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `e21a862a5267f388cd7cd90443c1eb5ee7b540ad61cbf898bd8f0ff70aa08d41`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `e52194029d9cf557a0d828452e8d918962028ce18d8c17191197a22bffeb2d03`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `ece1074fd00be4bf06e056242b4153bcbeddd2b943465964f58a17077d9dc3f4`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `f21c93491ae9fca4af7da0fdc8e08f7b74ce6a86531fa45b9263de7f572c6725`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `f35412c0b896851a438209869ac5eb3c3ec9c8bf13e341841d4b92761350ea7b`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `f5a46d91587aec006beee396408693048a53a04e31e9be8504513c9c4355b161`
+- `backend/src/lib/monthlyStatementPhotoPack.ts` — SHA-256: `fdaf7bc38635fea924aeedbad6279331c409c00f6994313bee0b245a2f3cff45`
+- `backend/src/lib/monthlyStatementPhotoRecords.ts` — SHA-256: `06fbb90c174ecb3644fcd3461f980483f5f281709a62f51664087f3e99d88ccb`
+- `backend/src/lib/monthlyStatementPhotoRecords.ts` — SHA-256: `b586649a61bbe10c7d69bd2f7ad22fd6acc9e1491e943eddc38e131ee0e421c1`
+- `backend/src/modules/finance.ts` — SHA-256: `13bde79356288e172bfdeca02d6e4ed2b8ad67310a73c787d1a66b0dc034c8ca`
+- `backend/src/modules/finance.ts` — SHA-256: `bb68ec8b7f959737fb0a1578b3801a040aaecd0013509ac610c3fdfcc6b6c9df`
+- `backend/src/modules/finance.ts` — SHA-256: `c8c7ef58407bd57f5806721c6568c00010f407e8ee69847ee078c6a80c230f64`
+- `docs/execution-records.md` — SHA-256: `360792d6f60bda1d884384234d759ba5deb99a050903b8a6e4d429db29249ea9`
+- `docs/feature-regression-registry.md` — SHA-256: `19ce05f4336af0b67d6dce3afc2b13cb7aa571a3e41a6a082b4dfd512c1dbc4f`
+- `frontend/src/lib/statementPhotoPackJobs.test.ts` — SHA-256: `63ca7fe47b118fe4abbebd21030e462e249b24d99e6a4108823c571c9e938a53`
+- `frontend/src/lib/statementPhotoPackJobs.ts` — SHA-256: `9af7e416448460a96b5a8183e80beff4b088a9eedf29c4f3f723338c225bc0e4`
+- `frontend/src/lib/statementPhotoPackJobs.ts` — SHA-256: `d613c19011abd4e0c38cb44e45d839e78c5cf591665e3c57fa52883cf76c6f60`
+- `package.json` — SHA-256: `69d32c796cdb36e631942cde6d997c56dde0f3fc20ee19812bd7a7faea22f9c4`
+- `package.json` — SHA-256: `7fc7ee59431fca9ec4ab6fb4e0e73582cc4f25580abf50b567704dd73acee75c`
+
+### Release Attempts
+
+- At the local-commit stage the user selected MZ-103 together with separately handled MZ-102. One local MZ-103 content commit was created; feature publication was subsequently authorized under RA-20261104-103. PR, merge, production deployment, production export/replay and production data writes remain unauthorized.
+- MZ-102 remains isolated in `root/CRL-20261104-002`。Five known shared paths (`backend/package.json`, `backend/src/modules/finance.ts`, root `package.json`, this ledger and the Feature Registry) are task-local hunks in separate worktrees and are not combined in this commit.
+
+#### RA-20261104-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261104-001`
+- Selected CRL identities: `root/CRL-20261104-001`
+- Intended action: `commit`
+- Branch: `codex/mz103-photo-pack-private-media`
+- Base: `origin/Dev@0ce0ca254dd2d11c693c7b5d71961b58d4e6fdbd`; fetched at `2026-11-04T03:47:12Z` and verified unchanged after the content commit
+- Candidate patch SHA-256: `c511675ec0f9f1ef8420997a424019f63320274970ad01fef6419af709e00ddf`; exact `base...ca786b2bb273a8570e285a3a69f20f9669487fb0` content diff excluding this ledger file
+- Commit SHA: `ca786b2bb273a8570e285a3a69f20f9669487fb0`; exact MZ-103 content commit，followed only by this ledger receipt
+- Dependencies: none
+- Required validation: PASS；backend exact gate、backend TypeScript/isolated build、default no-browser 2-record/4-image regression、explicit 2-page/4-image PDF render and page review、Web full 58 files/317 tests、lint/build、Registry/ledger audits and diff hygiene passed. Root `check:fast` is not claimed because the paired Mobile checkout is absent/version-mismatched.
+- Shared-hunk review: PASS；the five paths also changed independently by MZ-102 contain only MZ-103-specific hunks in this branch. MZ-102 remains in separate `root/CRL-20261104-002` and no owner-statement code/test hunk is present.
+- Generated-file review: PASS；no generated build output、dependency directory、environment file、database artifact、log、private media、credential or production payload is present.
+- Technical state: committed locally
+- User authorization: selected-for-commit；evidence: the user instructed “先提交102和103吧”. Push, PR, merge and deployment were not authorized.
+- Independent review: GO for the MZ-103 candidate；P0/P1/P2/P3 = 0/0/0/0 after closing the Chromium CI and mixed-error-message findings.
+- Action conclusion: GO; blockers: none. The local content commit completed successfully. No push, PR, merge, deployment, production export/replay or production data write occurred；this ledger-only receipt records the exact committed range.
+
+#### RA-20261104-103
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261104-001`
+- Selected CRL identities: `root/CRL-20261104-001`
+- Intended action: `push`
+- Branch: `codex/mz103-photo-pack-private-media`
+- Base: `origin/Dev@0ce0ca254dd2d11c693c7b5d71961b58d4e6fdbd`; fetched at `2026-11-04T04:29:57Z` through the authenticated GitHub connector; remote base and tree `4e98c0980e552b8cefdc7198107bc3331db0c3e8` reverified before equivalent content creation.
+- Original local sources: content `ca786b2bb273a8570e285a3a69f20f9669487fb0`; ledger receipt `6550a0b5dc86d4b0240590bd3642a94f194a25ff`. These original local commits remain unchanged and are not claimed as published remote commits.
+- Commit SHA: `2a935382e1d22842c1911731e96e0cfcce967590`; connector-created equivalent content commit with the exact same complete tree `b0bb24402b4a1b61a1de3ffa3161fa2229f80a4f` as the reviewed local content source. Commit metadata differs; product files and file modes are identical.
+- Candidate patch SHA-256: `c511675ec0f9f1ef8420997a424019f63320274970ad01fef6419af709e00ddf`; non-ledger content unchanged from the locally audited source.
+- Transfer integrity: archive SHA-256 `9b9fac1ae03e1e02edf338257dc5fe73829d76978099e72c1b7d2cd649a151fb`; all 11 source blobs matched their Git object SHAs after complete, non-truncated transfer. The 3,702,812-byte source ledger matched `bb769c4ec9a027d1cf23906ef59585cd2e60fc5c`. An earlier truncated unreachable blob was excluded; no ref pointed to it.
+- Receipt scope: only this CRL's current status, update time, authorization summary and this release-attempt record differ from the original local receipt. All historical CRL sections and all non-ledger files remain byte-identical.
+- Publication safety: Actions push workflows match only main/Dev; Render preview tracks Dev and production/cron track main. Vercel feature publication creates a frontend-only Preview using dependency installation, cache cleanup and next build; this candidate changes no deployment configuration, lifecycle script, build-time migration, database or worker entry point.
+- User authorization: approved-for-push; after being told MZ-102 and MZ-103 were locally committed and not pushed or deployed, the user instructed “推送吧”. This permits only feature publication, not PR creation, Dev/main merge, production deployment or production writes.
+- Technical state: committed; equivalent content and ledger-only receipt prepared for one feature-ref creation. The final ref and remote CI/Preview result must be verified after publication; this pre-publication receipt does not assert CI success.
+- Dependencies: none
+- Shared-hunk review: PASS; same 54 non-ledger hunk fingerprints as the independently reviewed local MZ-103 content; no MZ-102 code was added.
+- Generated-file review: PASS; all source blobs unchanged, no generated output, secrets, environment files or production data were added.
+- Independent review: GO for the original content candidate, P0/P1/P2/P3 = 0/0/0/0; equivalent full tree verified separately, final receipt-only delta and exact range audit required before ref creation.
+- Required validation: PASS; unchanged reviewed content retains the previously recorded backend, Web, PDF and independent-review evidence. Full Root check:fast remains unverified because the paired Mobile checkout is absent/version-mismatched. Real LA812 export remains unexecuted.
+- Action conclusion: GO; blockers: none. Authorized feature-ref publication may proceed after final receipt-delta and full-tree audit. No force push, PR, merge, production deployment, export/replay or production database write is included.
+
+### Risks / Release Notes
+
+- Production continues to run the old version until a separately authorized release. No real LA812 export or `pdf_jobs` replay was performed, so production end-to-end acceptance remains unverified.
+- Existing monthly photo row loading still follows its pre-existing data query path; this unit changes only photo reference selection/read/render diagnostics and does not modify schema or production records.
+- Default CI regression deliberately does not launch Chromium；真实 PDF 由显式 `:pdf` 命令覆盖，避免 GitHub runner 未安装浏览器时产生伪失败。
+- Sensitive-information review: PASS for current diff; fixtures are synthetic/redacted and failure output contains only reason codes plus 12-character hashes.
+- Git state: local branch `codex/mz103-photo-pack-private-media` contains one MZ-103 commit over `origin/Dev@0ce0ca254dd2d11c693c7b5d71961b58d4e6fdbd`；the final local commit SHA is reported in the handoff. No push is part of this unit.
+- Canonical commit patch SHA-256: `c511675ec0f9f1ef8420997a424019f63320274970ad01fef6419af709e00ddf`（final commit diff excluding this ledger file；the independent reviewer inspected the same product code at pre-disposition fingerprint `cc6fd72b7e0436354ea304d0fcb1e71011c0b622e6a70320c9ee90f03e1c8870`, after which only review/commit lifecycle status text in non-ledger governance records changed）。Production main observed by the read-only investigation: `2c9322827d79f3053768901496f527ad32552f7a`。
+- Independent review boundary: `GO` is technical approval for this local candidate；the later user instruction separately authorizes the local commit only. It does not authorize push, PR, merge, deployment, production export/replay or data writes。
+
 ## CRL-20261102-001 — MZ-091 同订单入住新密码唯一来源纠正
 
 - **Repository:** `root`

@@ -74,6 +74,8 @@
     "test:expense-receipt-media-contract": "ts-node-dev --transpile-only scripts/tests/test_mzapp_expense_receipt_media_contract.ts",
     "test:pdf-jobs-runtime": "ts-node-dev --transpile-only scripts/tests/test_pdf_jobs_runtime_contract.ts",
     "test:pdf-render-service-auth": "ts-node-dev --transpile-only scripts/tests/test_pdf_render_service_auth.ts",
+    "test:monthly-statement-photo-pack": "ts-node-dev --transpile-only scripts/tests/test_monthly_statement_photo_pack.ts",
+    "test:monthly-statement-photo-pack:pdf": "MZ103_RENDER_PDF=yes ts-node-dev --transpile-only scripts/tests/test_monthly_statement_photo_pack.ts",
     "test:r5-request-schema": "ts-node-dev --transpile-only scripts/tests/test_r5_1_request_schema_contract.ts",
     "test:r5-task-runtime-schema": "ts-node-dev --transpile-only scripts/tests/test_r5_2a_core_task_schema_contract.ts",
     "test:r5-property-guide-runtime-schema": "ts-node-dev --transpile-only scripts/tests/test_r5_2b_property_guide_schema_contract.ts",
