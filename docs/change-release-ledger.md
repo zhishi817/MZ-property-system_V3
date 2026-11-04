@@ -63,14 +63,14 @@
 - Base: `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`; fetched at `2026-11-04T14:12:00Z`
 - Candidate patch SHA-256: `75b18095a2bb87a9120df257705667ebff85dcecf1c2f47996fe043da43513d0`
 - Commit SHA: `9d704c7618657e999694c8e4466323707e29e9e1`
-- Dependencies: `root/CRL-20261104-006` and existing migration files at base SHA
-- Required validation: `NOT VERIFIED`; evidence: CI not yet run
-- Shared-hunk review: `not applicable`; new test file plus dedicated workflow/package entries
+- Dependencies: `root/CRL-20261104-006@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`
+- Required validation: `PASS`; evidence: pre-commit ledger gate GO, `git diff --cached --check` PASS, feature registry audit PASS, and independent commit review P0/P1/P2=0/0/0; PostgreSQL CI is a post-push validation and is not claimed here
+- Shared-hunk review: `PASS`; evidence: exact 7-hunk scope fingerprinted and independently reviewed; shared workflow/package/ledger hunks are exclusive to this selected CRL
 - Generated-file review: `PASS`; no generated artifacts or dependency trees included
 - Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user explicitly selected the necessary MZ-065 ephemeral-PostgreSQL test code for an independent test branch, while prohibiting merge/deploy/production writes
 - Independent review: `GO for commit`; evidence: first pass found no technical P0/P1/P2 but blocked premature push wording; commit-only correction was independently re-reviewed with P0/P1/P2 = 0/0/0 and matching fingerprint
-- Action conclusion: `GO`; exact commit `9d704c7618657e999694c8e4466323707e29e9e1` created; CI necessarily follows a later, separately audited push attempt
+- Action conclusion: `GO`; blockers: none for exact commit `9d704c7618657e999694c8e4466323707e29e9e1`; CI necessarily follows a later, separately audited push attempt
 
 ### Risks / Release Notes
 
