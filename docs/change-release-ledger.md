@@ -1,5 +1,78 @@
 # Change Release Ledger
 
+## CRL-20261104-009 — MZ-065 CI 工作流契约同步
+
+- **Repository:** `root`
+- **Status:** in-progress follow-up candidate; dedicated MZ-065 PostgreSQL job passed, aggregate CI repair not yet pushed
+- **Updated:** 2026-11-04 14:30 UTC
+- **Request:** 修复 MZ-065 临时 PostgreSQL job 接入后 Root Quality workflow contract 仍锁定旧 job 列表导致的总门禁失败；保持隔离测试与 ledger-only 跳过策略可审计。
+- **Outcome:** workflow contract 现在要求总聚合器包含 `mz065_sql`，分别切分 MZ-034 与 MZ-065 job 段，并验证 MZ-065 只能使用 PostgreSQL 16 临时服务、专用数据库/角色、显式写入确认且不引用 GitHub secrets。
+
+### Implementation
+
+- Previous behavior: 专用 MZ-065 PostgreSQL job 在 CI 中 33 秒通过，但 `test_root_quality_workflow_contract.py` 仍精确断言旧 `needs: [..., mz034_sql]`，使 Full Regression 在运行其他测试前失败。
+- New behavior: 契约同步新的聚合依赖，并新增 MZ-065 job 的 ephemeral-only、防 secret、ledger-only skip 和依赖安装条件断言；MZ-034 job 的边界也改为止于 `mz065_sql`，避免两个 job 段混读。
+- Key decisions: 只修契约测试，不改已通过的迁移测试、生产迁移、业务代码或发布渠道。
+
+### Files / Areas
+
+- `scripts/tests/test_root_quality_workflow_contract.py` — modified: 同步 `mz065_sql` 聚合依赖并新增隔离服务安全契约。
+- `docs/change-release-ledger.md` — modified: 记录 CI 失败、修复和重跑门禁。
+
+### Impact / Dependencies
+
+- API / Database / migration: none；不连接或修改任何数据库。
+- CI: Root Full Regression 不再因旧聚合 job 列表误报；MZ-065 临时服务隔离条件受契约保护。
+- Config / dependencies: none。
+- Related units: `root/CRL-20261104-008`。
+
+### Validation
+
+- `python3 scripts/tests/test_root_quality_workflow_contract.py` — PASS（11 tests）；修复前 CI run `41846267003` 在相同契约的旧 `needs` 断言失败。
+- CI run `41846267003` MZ-065 Isolated PostgreSQL Integration — PASS（33s）；真实 migration rollback、重复 receipt、两会话争用与订单触发器锁均通过。
+- `git diff --check` — PASS。
+- Independent read-only review — GO for commit；P0/P1/P2=0/0/0，复跑 contract 11/11、pre-commit GO、fingerprint 匹配。
+- Full Root Quality Gate rerun — not run；待本修复提交并推送测试分支。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；仅修改已跟踪的契约测试与本 ledger。
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `392cff7e1f72bde3bb1892f5a5edddf7b9bf4959580894f65a1deca1d4dc472d`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `50b04496c6d0ce1eded7c980187bb537430bd25db029bb789ab21f88a58f09e3`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `6bb8c89bdeec222d7a123207bbabe096f6980da8f5e237dae139b409d4e588a5`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `a89b02e2218896763d481586a237c096d1dcc40001f4f075dbb271276cce4808`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `e399192aca69363c1f72348b8479028e4c64037ad46eabeb081be49aea2f7bab`
+
+### Release Attempts
+
+#### RA-20261104-010
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261104-009`
+- Selected CRL identities: `root/CRL-20261104-009`
+- Intended action: `commit` the CI contract repair; no push, PR, merge, deployment, production migration or OTA in this attempt
+- Branch: `codex/mz065-ephemeral-pg-ci`
+- Base: `b6041108e9850432a90a38f46eef7a0961f2008e`; fetched from the just-pushed same-name origin branch at `2026-11-04T14:24:00Z`
+- Candidate patch SHA-256: `058ff296cc4401419f894cca84df8b68b091dd513830b05ecd4f8b6659d51779`
+- Commit SHA: not committed
+- Dependencies: `root/CRL-20261104-008@b6041108e9850432a90a38f46eef7a0961f2008e`
+- Required validation: `PASS`; evidence: local workflow contract 11/11 and `git diff --check` passed; failed CI line is reproduced and directly covered
+- Shared-hunk review: `PASS`; evidence: five exact test-contract hunks are fingerprinted and scoped exclusively to this CRL
+- Generated-file review: `PASS`; no generated or dependency files
+- Technical state: `candidate`
+- User authorization: `selected-for-commit`; evidence: user authorized autonomous routine release work but required failures to stop dependent production steps; this scoped repair only restores the failed CI prerequisite
+- Independent review: `GO for commit`; evidence: independent review found P0/P1/P2=0/0/0, confirmed exact CI-failure causality, safe job boundaries and unchanged production isolation, and reproduced 11/11 contract PASS
+- Action conclusion: `GO`; blockers: none for this exact follow-up commit; remote CI rerun requires a later push attempt
+
+### Risks / Release Notes
+
+- Risk is limited to CI contract assertions; an incorrect boundary could hide another job section, so local job-section tests cover both MZ-034 and MZ-065.
+- Rollback: revert this test-only commit; production state is untouched.
+- Sensitive-information review: no secrets, database URLs, customer data or production payloads added.
+- Git state: uncommitted follow-up on `codex/mz065-ephemeral-pg-ci`; remote remains at `b6041108e9850432a90a38f46eef7a0961f2008e`；no PR/merge/deploy/migration/OTA。
+
 ## CRL-20261104-008 — MZ-065 临时 PostgreSQL 迁移并发门禁
 
 - **Repository:** `root`
