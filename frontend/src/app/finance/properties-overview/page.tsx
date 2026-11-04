@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getJSON, apiList, API_BASE, authHeaders, patchJSON } from '../../../lib/api'
 import { sortProperties, sortPropertiesByRegionThenCode } from '../../../lib/properties'
 import MonthlyStatementView from '../../../components/MonthlyStatement'
-import { monthSegments, toDayStr, getMonthSegmentsForProperty } from '../../../lib/orders'
+import { getOwnerStatementMonthSegmentsForProperty, monthSegments, toDayStr } from '../../../lib/orders'
 import { computePropertyRevenueMetrics } from '../../../lib/propertyRevenueMetrics'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome } from '../../../lib/financeTx'
 import { computeMonthlyStatementBalanceDebug, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../../../lib/statementBalances'
@@ -920,7 +920,7 @@ export default function PropertyRevenuePage() {
     }
     for (const p of list) {
       for (const rm of rangeMonths) {
-        const related = getMonthSegmentsForProperty(orders as any, rm.start, String(p.id))
+        const related = getOwnerStatementMonthSegmentsForProperty(orders as any, rm.start, String(p.id))
         const mk = rm.start.format('YYYY-MM')
         const rentIncome = Number(rentIncomeByMonth[mk]?.[String(p.id)] ?? 0) || 0
         const b = txBucketIndex.get(String(p.id))?.get(mk)

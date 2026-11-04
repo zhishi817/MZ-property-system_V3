@@ -1,6 +1,6 @@
 "use client"
 import dayjs from 'dayjs'
-import { monthSegments, toDayStr, parseDateOnly } from '../lib/orders'
+import { resolveOwnerStatementMonthSegments, toDayStr, parseDateOnly } from '../lib/orders'
 import { computePropertyRevenueMetrics } from '../lib/propertyRevenueMetrics'
 import { normalizeReportCategory, shouldIncludeIncomeTxInPropertyOtherIncome, txInMonth, txMatchesProperty } from '../lib/financeTx'
 import { computeMonthlyStatementBalanceDebug, isFurnitureOwnerPayment, isFurnitureRecoverableCharge } from '../lib/statementBalances'
@@ -91,22 +91,11 @@ export default forwardRef<HTMLDivElement, {
   const calendarWeekCount = Math.max(1, endNext.subtract(1, 'day').endOf('week').diff(start.startOf('week'), 'week') + 1)
   const calendarShouldStartNewPage = isPdfMode && renderEngine === 'print' && calendarWeekCount >= 5
   const fetchTimeoutMs = isPdfMode ? 20000 : 30000
-  const relatedOrdersRaw = Array.isArray(orderSegments) && orderSegments.length
-    ? orderSegments
-    : monthSegments(
-      orders.filter(o => {
-        if (propertyId && o.property_id !== propertyId) return false
-        const st = String((o as any).status || '').toLowerCase()
-        const isCanceled = st.includes('cancel')
-        const include = (!isCanceled) || !!(o as any).count_in_income
-        return include
-      }),
-      start
-    )
-  const relatedOrders = relatedOrdersRaw.filter(r => {
-    const st = String((r as any).status || '').toLowerCase()
-    const isCanceled = st.includes('cancel')
-    return (!isCanceled) || !!(r as any).count_in_income
+  const relatedOrders = resolveOwnerStatementMonthSegments({
+    orders,
+    providedSegments: orderSegments,
+    monthStart: start,
+    propertyId,
   })
   const relatedOrdersSorted = [...relatedOrders].sort((a: any, b: any) => {
     const aci = a?.checkin ? dayjs(toDayStr(a.checkin)).valueOf() : 0
