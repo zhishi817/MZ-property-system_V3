@@ -278,7 +278,7 @@
 - Base: `origin/Dev@7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168`; fetched at `2026-11-04 05:20 UTC` and reverified at `2026-11-04T05:31:29Z`
 - Candidate patch SHA-256: `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`
 - Commit SHA: `caf3e1396b2276ba1f6ce0c45fd40e7bc94f9fd4`; content tree `28000023e5eb35694493635cd6a9e01eedcc431e`
-- Dependencies: `root/CRL-20261104-001@038c126cb0c62e0b5cf305366c6e6858e02eec63`
+- Dependencies: `root/CRL-20261104-001@2a935382e1d22842c1911731e96e0cfcce967590`
 - Required validation: `PASS`; combined backend aggregate, owner/photo/company tests, Web 320 tests/lint/build, paired Mobile typecheck and governance tests passed；repo-wide Web no-emit has only two unchanged baseline errors。
 - Shared-hunk review: `PASS`; five former shared paths preserve MZ-103 behavior/tests and FR-044；MZ-102 uses FR-045 and only owner-statement hunks。
 - Generated-file review: `PASS`; generated dist/build output, dependencies, caches, env files, secrets and production payloads excluded。
