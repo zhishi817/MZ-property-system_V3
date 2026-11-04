@@ -169,6 +169,153 @@
 - Canonical commit patch SHA-256: `c511675ec0f9f1ef8420997a424019f63320274970ad01fef6419af709e00ddf`（final commit diff excluding this ledger file；the independent reviewer inspected the same product code at pre-disposition fingerprint `cc6fd72b7e0436354ea304d0fcb1e71011c0b622e6a70320c9ee90f03e1c8870`, after which only review/commit lifecycle status text in non-ledger governance records changed）。Production main observed by the read-only investigation: `2c9322827d79f3053768901496f527ad32552f7a`。
 - Independent review boundary: `GO` is technical approval for this local candidate；the later user instruction separately authorizes the local commit only. It does not authorize push, PR, merge, deployment, production export/replay or data writes。
 
+## CRL-20261104-002 — MZ-102 房东月报取消订单完全排除
+
+- **Repository:** `root`
+- **Status:** verified local post-MZ-103 candidate on current `origin/Dev`; exact pre-commit gate and independent review pending; not committed, pushed, merged, deployed or production-verified
+- **Board item:** `MZ-102`
+- **Updated:** 2026-11-04 05:31 UTC
+- **Request:** 房东月报排除所有取消订单，无论金额或“计入收入”标记；取消订单不得进入房东明细、日历、租金、住晚、入住率、日均价、管理费基数或应付金额。正常 $0 订单保留，公司取消收入不删除或补账，不改生产历史订单和已结算快照。
+- **Outcome:** 候选基于已包含 MZ-103 的 `Dev@7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168`。房东月报各入口仅排除精确取消终态；正常 $0、`cancellation_pending`、恢复订单和正常订单既有跨月分摊保留，公司报告共享分段语义不变。
+
+### Implementation
+
+- Previous behavior: `!status.includes('cancel') || count_in_income` 会把勾选计入收入的取消订单重新放回房东月报。
+- New behavior: `shouldIncludeOrderInOwnerStatement`、`computeOwnerStatementMonthSegmentsForOrders` 与 `computeOwnerRentIncomeWithExistingProration` 只排除 `canceled` / `cancelled`；`cancellation_pending` 不误判。
+- Cross-scope preservation: 保留 MZ-103 的 `statementPhotoReferenceGroups`、默认无 Chromium photo-pack 测试、显式 `:pdf` 命令和 `FR-044`；MZ-102 使用 `FR-045`。
+- Historical/company boundary: 不删除订单、不批量改标记、不重写历史管理费/快照/公司账；共享 `computeMonthSegmentsForOrders` 与公司收入链保持基线语义。
+
+### Files / Areas
+
+- `backend/src/lib/orderMonthSegments.ts` — modified: 房东月报精确状态、专用跨月分段及既有正常分摊 helper。
+- `backend/src/modules/finance.ts` — modified: 房东租金/管理费入口使用专用 helper，保留 MZ-103 照片统计。
+- `backend/scripts/tests/test_owner_monthly_statement_orders.ts` — added: 状态、跨月、恢复、A$100/A$100 正常分摊和公司口径回归。
+- `backend/package.json` — modified: 新增 owner 专项并保留 MZ-103 默认及显式 PDF 命令。
+- `frontend/src/lib/orders.ts`, `frontend/src/components/MonthlyStatement.tsx`, `frontend/src/lib/statementBalances.ts`, `frontend/src/app/finance/properties-overview/page.tsx` — modified: 统一房东预览、PDF、汇总、结转口径。
+- `frontend/src/lib/ownerMonthlyStatementOrders.test.ts` — added: Web 状态、指标、跨月、恢复与公司取消费隔离回归。
+- `package.json` — modified: 聚合门禁同时接入 MZ-102 和 MZ-103 默认专项，显式 PDF 渲染不进入快速 CI。
+- `docs/feature-regression-registry.md` — modified: 新增 `FR-045`，MZ-103 `FR-044` 不变。
+- `docs/change-release-ledger.md` — modified: 登记新 Dev 基线候选和发布边界。
+
+### Impact / Dependencies
+
+- API: 结构不变；房东口径不再返回或累计取消终态订单。
+- Database / migration / backfill: none；未连接数据库、未运行迁移或生产写。
+- Config / dependencies: none added or upgraded；base 已包含 merged `root/CRL-20261104-001` / MZ-103。
+- Company accounting: 不修改、删除或补记公司取消收入，不改变公司报告共享分段。
+- Related units: `root/CRL-20261104-001` 已在本次 Dev 基线；本单仍为独立 `root/CRL-20261104-002`。
+
+### Validation
+
+- Fresh base — PASS: `origin/Dev@7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168`; MZ-103 HEAD `038c126cb0c62e0b5cf305366c6e6858e02eec63` 是其祖先且两者 tree 均为 `4b7be4658e0fa883e696b0aab10b250da10ca103`。
+- Backend owner专项、MZ-103默认photo-pack（2 records / 4 images / PDF skipped）、company revenue、no-emit — PASS。
+- `npm run check:backend`（DB/R2/PDF worker关闭；clean paired Mobile `2f30696ee160f17c2774e5be0039bf79ed74d0d2`）— PASS，含两项专项与 phase5 contract。
+- Frontend focused combination — PASS: 5 files / 25 tests；full Vitest — PASS: 59 files / 320 tests。
+- Frontend lint — PASS with existing warnings；production build — PASS, 96 static pages。
+- Frontend repo-wide no-emit — FAIL only at two unchanged Dev-baseline tests: `profileDocumentPreview.test.ts:12`, `recurringPaymentRules.test.ts:77`。
+- Paired Mobile typecheck — PASS；fixture未进入候选。
+- Registry audit — PASS: 40 FRs / 308 mappings, 89 Mobile deferred；workflow contract 10 tests and ledger-auditor 53 tests — PASS。
+- Root `npm run check:fast` with DB/R2/PDF worker disabled and paired Mobile source — PASS；包含 ledger/registry、backend build、两项专项、59 files / 320 Web tests及 Mobile typecheck。
+- Production database/API/report — not run；未启动服务、worker、迁移、导出或生产写。
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** `prepared`; exact post-MZ-103 MZ-102 paths only.
+- **Untracked review:** both new tests are staged；本地依赖链接和临时配对 Mobile fixture 仅用于测试，pre-commit gate 前移除。
+- `backend/package.json` — SHA-256: `f9aa07ef76df9346c67076120893303f77dcc555faf4a66155ae0e4ba9e4818c`
+- `backend/scripts/tests/test_owner_monthly_statement_orders.ts` — SHA-256: `507e99e96bcd186d83835a2a81e09fbcc1738b32769f61f4904f769f444a51b4`
+- `backend/src/lib/orderMonthSegments.ts` — SHA-256: `0913314f0d6826825a55e83d4206a2e6f792bdabda38cf8bf8c957a11daab6c1`
+- `backend/src/lib/orderMonthSegments.ts` — SHA-256: `09c58185eccd43f760c0673261bec0a090da07b5a41538842cdfbb0ac1a6f0cd`
+- `backend/src/lib/orderMonthSegments.ts` — SHA-256: `2281eac8716023cfd63074fd17d98a2961b6c7a73d94b164540e14f6bca8f0a2`
+- `backend/src/lib/orderMonthSegments.ts` — SHA-256: `55c8da5035d8983408678980d0d40ddc4984a203cd900633d165feb555d4599b`
+- `backend/src/lib/orderMonthSegments.ts` — SHA-256: `65fd8b156516d881a7ff5f01a133d6793e1e79e16438e408ca2e71f01e653df0`
+- `backend/src/lib/orderMonthSegments.ts` — SHA-256: `a532392ef705bd0bd3cb93714407bf108b5b0aff74dec865350cc3c1e4878201`
+- `backend/src/lib/orderMonthSegments.ts` — SHA-256: `b6bc55080423059862f2af7dd15e647966269f0a883f3f9678f52f27b8452726`
+- `backend/src/lib/orderMonthSegments.ts` — SHA-256: `d244542a1d3592d3a4f9092c68eccc05aea68a1f03ebca83b2730ee2ece92f1e`
+- `backend/src/modules/finance.ts` — SHA-256: `1050b2ebffc4f05aeb6c32065841c16bdffd40423e1fd16d1d59fb4886553769`
+- `backend/src/modules/finance.ts` — SHA-256: `4a9f45dfe7bfcb6aa1a8c1a649885678d12e220a061e471e165c466b9e1eae67`
+- `backend/src/modules/finance.ts` — SHA-256: `4af028ab49a0ee532e78af5c31bef5231ba17731a7f8986eb459ddf436864b14`
+- `backend/src/modules/finance.ts` — SHA-256: `69211fa96fb785584c73527b07b544d75dcb3bdefee35be920b5886ddba1e50d`
+- `backend/src/modules/finance.ts` — SHA-256: `8632179428219d5bfeb45ce19f4752dc05c6575ebdd0ad498d28ae8bef8ee08b`
+- `backend/src/modules/finance.ts` — SHA-256: `b062d45bc4825c3308cb2a585f69c1859cec84a43412df25131f67db7d244791`
+- `backend/src/modules/finance.ts` — SHA-256: `df209096ce12f6e9d28ab85b394040909f62fb4211482a008d3f3846b19b8d2e`
+- `docs/feature-regression-registry.md` — SHA-256: `19f64a8d734b4bf7635ef5ba7d8b9e9b7577c7dc7592efb89dac4f7d0bfe5a65`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `546853671cbc7723bacbc413dcb4cd289360117faf92d7db174d07a878f3a2e9`
+- `frontend/src/app/finance/properties-overview/page.tsx` — SHA-256: `94f9b9071e64764c2f76c2c6e44e47672d97b61e3e1e96cedb6b1078dd4a5330`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `3bdaf5ae158df2c6ca6516d8c5e53dab19f1ff64d3d656c8194c359f031c0dba`
+- `frontend/src/components/MonthlyStatement.tsx` — SHA-256: `ce90efd32d9686fc8529afc67bec0f77efcb5f89838ff02ffe6ca8bcadb10dcf`
+- `frontend/src/lib/orders.ts` — SHA-256: `05992f465046eb4570ed884a20eceaaedb5195b4f6de7c96f4fa7f321fc560af`
+- `frontend/src/lib/orders.ts` — SHA-256: `1791f9b742a5fd633ded187b3e1934f2f1fa00c5ffc451395c9516adb6a28652`
+- `frontend/src/lib/orders.ts` — SHA-256: `1b56cbcec735f22194e3390e8861ee6c261de56c16df52309d6357ffac13be7e`
+- `frontend/src/lib/orders.ts` — SHA-256: `33497712095e1433b52fb0c5b74a3abca29c722aae69e051fe8e1d25bd1e2dec`
+- `frontend/src/lib/orders.ts` — SHA-256: `3d23f8d716a619d78f91c9a542edd7ff33fc4a012fd2aa0f3668202a7036f128`
+- `frontend/src/lib/orders.ts` — SHA-256: `4b17bb7b093e462b12b3b908674c90c63250e8fe35d67d9f6d00332c881af22b`
+- `frontend/src/lib/orders.ts` — SHA-256: `7e57e5dace4459236c16b4acc2b966c2e1c756ea56adaa6c6c6745025909f727`
+- `frontend/src/lib/orders.ts` — SHA-256: `a2233764a0759d7e049d9d924e1742a773b825404fbf08dc7db360d87f4561be`
+- `frontend/src/lib/orders.ts` — SHA-256: `c4e246c5c739c67fee1643c7114830eea4819b841d6fbfd085e1f0eb0119384b`
+- `frontend/src/lib/orders.ts` — SHA-256: `ef9cb80ed124b2d2f75e5efd13c0fcbcdfb9428d8209d8e3e4833d5ce1dc7171`
+- `frontend/src/lib/orders.ts` — SHA-256: `f33612e5d479522d7b1897af746e3cd12cd9f2908589b94e9c6d365df594d321`
+- `frontend/src/lib/ownerMonthlyStatementOrders.test.ts` — SHA-256: `75197c20fba0717c61ce6f5b2f3b8f79c0d80899cc2fb4e961053dc5ecff3607`
+- `frontend/src/lib/statementBalances.ts` — SHA-256: `1ab911ab389a2d68de0c1d5e160001e28898d09054d7e95c58711f67f3527747`
+- `frontend/src/lib/statementBalances.ts` — SHA-256: `27f29886abb6dc438022cf062672b57b9dd0b56127c95fd36a991629755a9fc3`
+- `frontend/src/lib/statementBalances.ts` — SHA-256: `2f4c3302aa93abda6a253ecdb3596a6dea2a8ceea7b886b16064b1f73bf815e5`
+- `frontend/src/lib/statementBalances.ts` — SHA-256: `9478cf786f630a54f0c9fb073a71af174c6986c07e031216f4599636991421ab`
+- `frontend/src/lib/statementBalances.ts` — SHA-256: `a417bc365cb7e91fde62084b492b797ec8d050ed571c9b1c06098ecc2be43239`
+- `frontend/src/lib/statementBalances.ts` — SHA-256: `b6b70af260284b5653a1c735393eaf51ce27812dd3bfcaa995f8e3bda19ac501`
+- `package.json` — SHA-256: `471b6c6c7ee2438d696674fc5afbeb9dc9f987ff99d0039b46473556fb73cb88`
+- `package.json` — SHA-256: `85414b71e3778ef4e16bf08a950b00c73546c40d362b6a7939c2eb726a09b83a`
+
+### Release Attempts
+
+#### RA-20261104-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261104-002`
+- Selected CRL identities: `root/CRL-20261104-002`
+- Intended action: `commit`
+- Branch: `codex/mz102-owner-statement-cancel-exclusion-post-mz103`
+- Base: `origin/Dev@7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168`; fetched at `2026-11-04 05:20 UTC` and reverified at `2026-11-04T05:31:29Z`
+- Candidate patch SHA-256: `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`
+- Commit SHA: `caf3e1396b2276ba1f6ce0c45fd40e7bc94f9fd4`; content tree `28000023e5eb35694493635cd6a9e01eedcc431e`
+- Dependencies: `root/CRL-20261104-001@2a935382e1d22842c1911731e96e0cfcce967590`
+- Required validation: `PASS`; combined backend aggregate, owner/photo/company tests, Web 320 tests/lint/build, paired Mobile typecheck and governance tests passed；repo-wide Web no-emit has only two unchanged baseline errors。
+- Shared-hunk review: `PASS`; five former shared paths preserve MZ-103 behavior/tests and FR-044；MZ-102 uses FR-045 and only owner-statement hunks。
+- Generated-file review: `PASS`; generated dist/build output, dependencies, caches, env files, secrets and production payloads excluded。
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user instructed “我把103 合并到了Dev，你重新推送102吧”. Policy permits rebuilt-scope local commit；exact-SHA push authorization remains separate。
+- Independent review: `GO for local commit`; evidence: independent read-only review matched base, branch, CRL, 12 staged paths, 42 non-ledger hunks and candidate SHA-256 `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`; it verified cancellation boundaries, A$100/A$100 normal proration, company isolation and MZ-103 preservation with P0/P1/P2 = 0。
+- Action conclusion: `GO`; blockers: none。The reviewed local content commit completed as `caf3e1396b2276ba1f6ce0c45fd40e7bc94f9fd4` with parent `7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168` and preserved candidate SHA-256 `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`。Push remains a separate exact-SHA review and authorization gate。
+
+#### RA-20261104-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261104-002`
+- Selected CRL identities: `root/CRL-20261104-002`
+- Intended action: `push`
+- Branch: `codex/mz102-owner-statement-cancel-exclusion-post-mz103`
+- Base: `origin/Dev@7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168`; fetched at `2026-11-04 05:20 UTC` and remotely reverified unchanged before the authorization receipt
+- Candidate patch SHA-256: `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`
+- Commit SHA: `caf3e1396b2276ba1f6ce0c45fd40e7bc94f9fd4`; candidate content commit; approved source audit head was `9c06428c036c7e55841d836f71e996701fcb97cd`
+- Dependencies: `root/CRL-20261104-001@2a935382e1d22842c1911731e96e0cfcce967590`
+- Required validation: `PASS`; the exact `origin/Dev@7f1a29f...9c06428` range report passed before this receipt, with unchanged 12-path / 42-non-ledger-hunk scope and candidate fingerprint；remote Dev remained `7f1a29f` and the target feature ref remained absent。
+- Shared-hunk review: `PASS`; this receipt changes only this Release Attempt metadata；the reviewed MZ-102 business tree and MZ-103 shared-file behavior are unchanged。
+- Generated-file review: `PASS`; ledger-only metadata receipt；no generated files, credentials, environment values or production payloads。
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after being shown source audit head `9c06428c036c7e55841d836f71e996701fcb97cd` and branch `codex/mz102-owner-statement-cancel-exclusion-post-mz103`, the user answered “可以”。The authorization binds the unchanged selected CRL, base, candidate content commit and branch；this independently reviewed ledger-only receipt records that authorization without changing candidate content，and the exact post-receipt audit head must be supplied and verified by the clean release report。It does not authorize any other content/base/branch, force push, PR, merge, deployment or production write。
+- Independent review: `GO for this ledger-only authorization receipt and conditional push gate`; evidence: independent read-only review verified the staged scope is only `RA-20261104-003` in `docs/change-release-ledger.md`, with unchanged `root/CRL-20261104-002`, base `7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168`, candidate content commit `caf3e1396b2276ba1f6ce0c45fd40e7bc94f9fd4`, source audit head `9c06428c036c7e55841d836f71e996701fcb97cd`, branch, candidate fingerprint `0dd5d89ea08fd05af4c17a213362f6ba116ac23be1c61095ff1a0d89e55ccc64`, 12-path / 42-non-ledger-hunk range, ancestry, authorization evidence and clean generated/sensitive/production-write boundaries；P0/P1/P2 = 0。The exact post-receipt audit head is supplied externally by the release report。
+- Action conclusion: `GO`; blockers: none for committing this reviewed ledger-only receipt。One ordinary non-force push of the exact post-receipt HEAD to the authorized feature branch may proceed only after the worktree is clean, the exact `origin/Dev@7f1a29fdb7c0bbf50f62eca86227f1fbbbdd2168...<receipt-head>` release report returns GO, and immediate read-only remote preflight confirms Dev unchanged and the target ref still absent。No force push, PR, merge, deployment or production write is authorized。
+
+### Risks / Release Notes
+
+- Push、PR、merge、deployment、migration、production report/data operations均未执行。
+- Feature push预期只触发Vercel Preview，不触发Render Dev/Production；最终branch/SHA推送前仍须复核。
+- 既有手工管理费和已结算快照保持权威，不重写。
+- Sensitive review: staged source/tests/governance only；无秘密、环境值、生产payload或生成媒体。
+- Rollback: revert owner-statement helpers/tests and FR-045；无数据库回滚。
+- Git state: isolated current-Dev branch, staged candidate pending review/commit；not pushed。
+
+
 ## CRL-20261102-001 — MZ-091 同订单入住新密码唯一来源纠正
 
 - **Repository:** `root`

@@ -17,6 +17,26 @@ export type OrderLike = {
 
 export type OrderMonthSegment = OrderLike & { __rid: string }
 
+export function isCancelledOrderStatus(raw: any): boolean {
+  const status = String(raw || '').trim().toLowerCase()
+  return status === 'canceled' || status === 'cancelled'
+}
+
+/**
+ * Owner statements are an occupancy and owner-settlement view. Cancellation
+ * revenue belongs to the company, so count_in_income must never put a
+ * cancelled stay back into an owner's rent, nights, or calendar rows.
+ */
+export function shouldIncludeOrderInOwnerStatement(order: Pick<OrderLike, 'status'>): boolean {
+  return !isCancelledOrderStatus(order?.status)
+}
+
+type CancellationStatusMatcher = (raw: any) => boolean
+
+function isLegacyCancelLikeStatus(raw: any): boolean {
+  return String(raw || '').toLowerCase().includes('cancel')
+}
+
 function pad2(n: number): string {
   return String(n).padStart(2, '0')
 }
@@ -98,7 +118,45 @@ function parseMonthKeyStart(monthKey: string): DateOnly | null {
   return { y, m, d: 1 }
 }
 
-export function splitOrderByMonths(o: OrderLike): OrderMonthSegment[] {
+/**
+ * Preserve the existing property-revenue/management-fee month proration.
+ * MZ-102 changes only which order statuses are eligible at these legacy
+ * endpoints; it must not change the amount assigned to an active stay.
+ */
+export function computeOwnerRentIncomeWithExistingProration(orders: OrderLike[], monthKey: string): number {
+  const ms = parseMonthKeyStart(monthKey)
+  if (!ms) return 0
+  const start = new Date(Date.UTC(ms.y, ms.m - 1, 1))
+  const end = new Date(Date.UTC(ms.y, ms.m, 0))
+  const toDate = (raw: any): Date | null => {
+    try {
+      return raw ? new Date(String(raw)) : null
+    } catch {
+      return null
+    }
+  }
+  const overlapNights = (checkin?: any, checkout?: any): number => {
+    const a = toDate(checkin)
+    const b = toDate(checkout)
+    if (!a || !b) return 0
+    const overlapStart = a > start ? a : start
+    const overlapEnd = b < end ? b : end
+    const overlapMs = overlapEnd.getTime() - overlapStart.getTime()
+    return overlapMs > 0 ? Math.floor(overlapMs / (24 * 3600 * 1000)) : 0
+  }
+
+  let rentIncome = 0
+  for (const order of Array.isArray(orders) ? orders : []) {
+    if (!shouldIncludeOrderInOwnerStatement(order)) continue
+    const overlap = overlapNights(order.checkin, order.checkout)
+    const nights = Number(order.nights || 0) || 0
+    const visibleNet = Number((order as any).visible_net_income ?? order.net_income ?? 0)
+    if (overlap > 0 && nights > 0) rentIncome += (visibleNet * overlap) / nights
+  }
+  return rentIncome
+}
+
+function splitOrderByMonthsWithStatusMatcher(o: OrderLike, isCancelledStatus: CancellationStatusMatcher): OrderMonthSegment[] {
   const ciDay = toDayStr(o.checkin)
   const coDay = toDayStr(o.checkout)
   const ci = parseDateOnly(ciDay)
@@ -130,8 +188,7 @@ export function splitOrderByMonths(o: OrderLike): OrderMonthSegment[] {
       ? round2(Number(deductionTotal || 0) - Number(deducted || 0))
       : round2(dailyDeduction * nights)
     if (!isLast) deducted = round2(deducted + deductionSegment)
-    const statusRaw = String((o as any).status || '').toLowerCase()
-    const isCanceled = statusRaw.includes('cancel')
+    const isCanceled = isCancelledStatus((o as any).status)
     const include = (!isCanceled) || !!((o as any).count_in_income)
     const visibleNet = include ? Number((net - deductionSegment).toFixed(2)) : 0
     segments.push({
@@ -158,24 +215,35 @@ export function splitOrderByMonths(o: OrderLike): OrderMonthSegment[] {
   return segments
 }
 
-export function monthSegments(orders: OrderLike[], monthStart: any): OrderMonthSegment[] {
+export function splitOrderByMonths(o: OrderLike): OrderMonthSegment[] {
+  return splitOrderByMonthsWithStatusMatcher(o, isLegacyCancelLikeStatus)
+}
+
+function monthSegmentsWithStatusMatcher(
+  orders: OrderLike[],
+  monthStart: any,
+  isCancelledStatus: CancellationStatusMatcher,
+): OrderMonthSegment[] {
   const ms = (() => {
     const d = parseDateOnly(toDayStr(monthStart))
     return startOfMonth(d)
   })()
   const meNext = startOfMonth(addMonths(ms, 1))
-  const segs = (orders || []).flatMap((o) => splitOrderByMonths(o))
+  const segs = (orders || []).flatMap((o) => splitOrderByMonthsWithStatusMatcher(o, isCancelledStatus))
   return segs.filter((s) => {
     const ci = parseDateOnly(toDayStr((s as any).checkin))
     const co = parseDateOnly(toDayStr((s as any).checkout))
     const a = dateOnlyToUtcMs(ci) > dateOnlyToUtcMs(ms) ? ci : ms
     const b = dateOnlyToUtcMs(co) < dateOnlyToUtcMs(meNext) ? co : meNext
     const overlap = Math.max(0, diffDays(a, b))
-    const st = String((s as any).status || '').toLowerCase()
-    const isCanceled = st.includes('cancel')
+    const isCanceled = isCancelledStatus((s as any).status)
     const include = (!isCanceled) || !!((s as any).count_in_income)
     return overlap > 0 && include
   })
+}
+
+export function monthSegments(orders: OrderLike[], monthStart: any): OrderMonthSegment[] {
+  return monthSegmentsWithStatusMatcher(orders, monthStart, isLegacyCancelLikeStatus)
 }
 
 export function computeMonthSegmentsForOrders(orders: OrderLike[], monthKey: string): OrderMonthSegment[] {
@@ -183,6 +251,16 @@ export function computeMonthSegmentsForOrders(orders: OrderLike[], monthKey: str
   if (!ms) return []
   const monthStart = fmtYMD(ms)
   return monthSegments(Array.isArray(orders) ? orders : [], monthStart)
+}
+
+export function computeOwnerStatementMonthSegmentsForOrders(orders: OrderLike[], monthKey: string): OrderMonthSegment[] {
+  const ms = parseMonthKeyStart(monthKey)
+  if (!ms) return []
+  return monthSegmentsWithStatusMatcher(
+    (Array.isArray(orders) ? orders : []).filter(shouldIncludeOrderInOwnerStatement),
+    fmtYMD(ms),
+    isCancelledOrderStatus,
+  )
 }
 
 export function sumSegmentsVisibleNetIncome(segments: Array<{ visible_net_income?: any; net_income?: any }>): number {

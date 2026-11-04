@@ -11,7 +11,7 @@ export function parseDateOnly(raw?: any): any {
   return dayjs(d, 'YYYY-MM-DD', true).startOf('day')
 }
 
-export type OrderLike = { id: string; property_id?: string; stay_type?: 'guest' | 'owner' | string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; source?: string; guest_name?: string; net_income?: number; avg_nightly_price?: number }
+export type OrderLike = { id: string; property_id?: string; stay_type?: 'guest' | 'owner' | string; checkin?: string; checkout?: string; price?: number; cleaning_fee?: number; nights?: number; source?: string; guest_name?: string; net_income?: number; avg_nightly_price?: number; status?: string; count_in_income?: boolean }
 
 export function normalizeStayType(raw?: any): 'guest' | 'owner' {
   const s = String(raw || '').trim().toLowerCase()
@@ -21,6 +21,26 @@ export function normalizeStayType(raw?: any): 'guest' | 'owner' {
 
 export function isOwnerStay(o: any): boolean {
   return normalizeStayType((o as any)?.stay_type) === 'owner'
+}
+
+export function isCancelledOrderStatus(raw: any): boolean {
+  const status = String(raw || '').trim().toLowerCase()
+  return status === 'canceled' || status === 'cancelled'
+}
+
+/**
+ * Owner monthly statements never show cancelled stays. Company cancellation
+ * revenue is accounted for separately, so count_in_income is intentionally
+ * ignored here. A non-cancelled $0 stay remains a valid occupancy record.
+ */
+export function shouldIncludeOrderInOwnerStatement(order: { status?: string }): boolean {
+  return !isCancelledOrderStatus(order?.status)
+}
+
+type CancellationStatusMatcher = (raw: any) => boolean
+
+function isLegacyCancelLikeStatus(raw: any): boolean {
+  return String(raw || '').toLowerCase().includes('cancel')
 }
 
 function hasAmountValue(v: any): boolean {
@@ -36,7 +56,7 @@ export function toDayStr(raw?: any): string {
   return ''
 }
 
-export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string })[] {
+function splitOrderByMonthsWithStatusMatcher(o: OrderLike, isCancelledStatus: CancellationStatusMatcher): (OrderLike & { __rid: string })[] {
   const ciDay = toDayStr(o.checkin)
   const coDay = toDayStr(o.checkout)
   const ci = parseDateOnly(ciDay)
@@ -62,8 +82,7 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
     const avg = nights > 0 ? Number((net / nights).toFixed(2)) : 0
     const __rid = `${o.id}|${s.format('YYYYMM')}`
     const deductionSegment = e.isSame(co) ? deductionTotal : 0
-    const statusRaw = String((o as any).status || '').toLowerCase()
-    const isCanceled = statusRaw.includes('cancel')
+    const isCanceled = isCancelledStatus((o as any).status)
     const include = (!isCanceled) || !!((o as any).count_in_income)
     const visibleNet = include ? Number((net - deductionSegment).toFixed(2)) : 0
     segments.push({
@@ -90,6 +109,10 @@ export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string }
   return segments
 }
 
+export function splitOrderByMonths(o: OrderLike): (OrderLike & { __rid: string })[] {
+  return splitOrderByMonthsWithStatusMatcher(o, isLegacyCancelLikeStatus)
+}
+
 export function calcOrderMonthAmounts(o: OrderLike, monthStart: any) {
   const rawCi = (o as any).__src_checkin || o.checkin
   const rawCo = (o as any).__src_checkout || o.checkout
@@ -114,29 +137,35 @@ export function calcOrderMonthAmounts(o: OrderLike, monthStart: any) {
   const deductionTotal = Number((o as any).internal_deduction_total ?? (o as any).internal_deduction ?? 0)
   const deductionMonth = isDeductionMonth ? deductionTotal : 0
   const priceMonth = Number((netMonth + cleanMonth).toFixed(2))
-  const statusRaw = String((o as any).status || '').toLowerCase()
-  const isCanceled = statusRaw.includes('cancel')
+  const isCanceled = isLegacyCancelLikeStatus((o as any).status)
   const include = (!isCanceled) || !!((o as any).count_in_income)
   const visibleNetMonth = include ? Number((netMonth - deductionMonth).toFixed(2)) : 0
   const avgMonth = nightsMonth ? Number((visibleNetMonth / nightsMonth).toFixed(2)) : 0
   return { nightsMonth, netMonth, cleanMonth, priceMonth, avgMonth, deductionMonth, visibleNetMonth }
 }
 
-export function monthSegments(orders: OrderLike[], monthStart: any): (OrderLike & { __rid: string })[] {
+function monthSegmentsWithStatusMatcher(
+  orders: OrderLike[],
+  monthStart: any,
+  isCancelledStatus: CancellationStatusMatcher,
+): (OrderLike & { __rid: string })[] {
   const ms = dayjs(monthStart).startOf('month')
   const meNext = ms.add(1, 'month').startOf('month')
-  const segs = orders.flatMap(o => splitOrderByMonths(o))
+  const segs = orders.flatMap(o => splitOrderByMonthsWithStatusMatcher(o, isCancelledStatus))
   return segs.filter(s => {
     const ci = parseDateOnly(toDayStr(s.checkin))
     const co = parseDateOnly(toDayStr(s.checkout))
     const a = ci.isAfter(ms) ? ci : ms
     const b = co.isBefore(meNext) ? co : meNext
     const overlap = Math.max(0, b.diff(a, 'day'))
-    const st = String((s as any).status || '').toLowerCase()
-    const isCanceled = st.includes('cancel')
+    const isCanceled = isCancelledStatus((s as any).status)
     const include = (!isCanceled) || !!((s as any).count_in_income)
     return overlap > 0 && include
   })
+}
+
+export function monthSegments(orders: OrderLike[], monthStart: any): (OrderLike & { __rid: string })[] {
+  return monthSegmentsWithStatusMatcher(orders, monthStart, isLegacyCancelLikeStatus)
 }
 
 export function monthStats(orders: OrderLike[], monthStart: any) {
@@ -154,4 +183,33 @@ export function getMonthSegmentsForProperty(orders: OrderLike[], monthStart: any
   const ms = dayjs(monthStart).startOf('month')
   const list = pid ? orders.filter(o => String(o.property_id) === String(pid)) : orders
   return monthSegments(list, ms)
+}
+
+export function getOwnerStatementMonthSegments(orders: OrderLike[], monthStart: any): (OrderLike & { __rid: string })[] {
+  return monthSegmentsWithStatusMatcher(
+    (Array.isArray(orders) ? orders : []).filter(shouldIncludeOrderInOwnerStatement),
+    monthStart,
+    isCancelledOrderStatus,
+  )
+}
+
+export function getOwnerStatementMonthSegmentsForProperty(orders: OrderLike[], monthStart: any, pid?: string): (OrderLike & { __rid: string })[] {
+  const list = pid ? orders.filter(o => String(o.property_id) === String(pid)) : orders
+  return getOwnerStatementMonthSegments(list, monthStart)
+}
+
+export function resolveOwnerStatementMonthSegments(input: {
+  orders: OrderLike[]
+  providedSegments?: OrderLike[]
+  monthStart: any
+  propertyId?: string
+}): OrderLike[] {
+  const provided = Array.isArray(input.providedSegments) ? input.providedSegments : []
+  const raw = provided.length
+    ? provided
+    : getOwnerStatementMonthSegments(
+      (Array.isArray(input.orders) ? input.orders : []).filter(order => !input.propertyId || order.property_id === input.propertyId),
+      input.monthStart,
+    )
+  return raw.filter(shouldIncludeOrderInOwnerStatement)
 }
