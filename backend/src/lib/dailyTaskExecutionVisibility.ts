@@ -171,6 +171,22 @@ export function isDailyTaskManagerRoleNames(roleNames: unknown) {
   return names.some((name) => DAILY_TASK_MANAGER_ROLES.includes(name as typeof DAILY_TASK_MANAGER_ROLES[number]))
 }
 
+export function dailyTaskAllViewScopes(params: {
+  requestedView: unknown
+  roleNames: unknown
+  permissionCodes?: unknown
+}) {
+  const requestedAll = String(params.requestedView ?? '').trim().toLowerCase() === 'all'
+  const generic = requestedAll && isDailyTaskManagerRoleNames(params.roleNames)
+  const permissions = Array.isArray(params.permissionCodes)
+    ? params.permissionCodes.map((value) => String(value ?? '').trim())
+    : []
+  return {
+    generic,
+    cleaning: requestedAll && (generic || permissions.includes('cleaning.schedule.manage')),
+  }
+}
+
 export function isTurnoverDailyExecutionTask(task: DailyTaskExecutionCandidate) {
   if (normalized(task.source_type) !== 'cleaning_tasks') return false
   return TURNOVER_TYPES.has(normalized(task.task_type)) || TURNOVER_TYPES.has(normalized(task.task_kind))

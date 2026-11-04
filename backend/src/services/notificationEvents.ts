@@ -24,6 +24,7 @@ export type NotificationPriority = 'high' | 'medium' | 'low'
 export type NotificationEventType =
   | 'ORDER_UPDATED'
   | 'CLEANING_TASK_UPDATED'
+  | 'CLEANING_ORDER_TOPOLOGY_REVIEW_REQUIRED'
   | 'CLEANING_COMPLETED'
   | 'INSPECTION_COMPLETED'
   | 'KEY_PHOTO_UPLOADED'
@@ -147,6 +148,7 @@ function buildDefaultTitleBody(params: EmitNotificationEventParams) {
 
   if (type === 'ORDER_UPDATED') return { title: `订单信息已更新${suffix}`, body: changes.length ? `已更新：${changes.join(' + ')}` : '订单信息已更新' }
   if (type === 'CLEANING_TASK_UPDATED') return { title: `清洁任务已更新${suffix}`, body: changes.length ? `已更新：${changes.join(' + ')}` : '清洁任务已更新' }
+  if (type === 'CLEANING_ORDER_TOPOLOGY_REVIEW_REQUIRED') return { title: '清洁任务需人工检查', body: '订单房源或日期已变化；锁定任务未自动移动，请由排班管理人员检查。' }
   if (type === 'CLEANING_COMPLETED') return { title: '房源已完成清洁', body: '清洁已完成' }
   if (type === 'INSPECTION_COMPLETED') return { title: '房源已完成检查', body: '检查已完成' }
   if (type === 'KEY_PHOTO_UPLOADED') return { title: '钥匙照片已上传', body: '钥匙照片已上传' }
@@ -216,6 +218,7 @@ function resolvePriority(params: EmitNotificationEventParams): NotificationPrior
     if (changes.includes('password')) return 'high'
     return 'medium'
   }
+  if (params.type === 'CLEANING_ORDER_TOPOLOGY_REVIEW_REQUIRED') return 'high'
   if (params.type === 'ORDER_UPDATED') return 'medium'
   if (params.type === 'CLEANING_COMPLETED') return 'high'
   if (params.type === 'INSPECTION_COMPLETED') return 'high'

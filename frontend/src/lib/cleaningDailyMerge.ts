@@ -25,6 +25,12 @@ export type ManualCheckinLinkSelection = {
   checkin_inspection_scope: 'inspect_and_hang' | 'password_only'
 }
 
+export type ManualCheckoutLinkSelection = {
+  linked_checkin_task_id: string | null
+  checkout_link_decision: 'link' | 'independent' | null
+  checkout_link_decision_user_selected: boolean
+}
+
 export type ManualCheckinCandidateLoadState = 'loading' | 'ready' | 'error'
 
 export type ManualCheckinCandidateScope = {
@@ -41,13 +47,33 @@ export type ManualCheckinCheckoutCandidate = {
   status: string | null
 }
 
+export type ManualCheckoutCheckinCandidate = {
+  id: string
+  property_id: string
+  property_code: string
+  task_date: string
+  checkin_time: string | null
+  status: string | null
+  inspection_scope: 'inspect_and_hang'
+}
+
 const MANUAL_CHECKIN_LINK_STALE_ERROR_CODES = new Set([
   'manual_checkin_checkout_link_conflict',
   'manual_checkin_checkout_link_decision_required',
+  'manual_checkout_checkin_link_conflict',
+])
+
+const MANUAL_CLEANING_CREATE_REPLAY_REVIEW_CODES = new Set([
+  'manual_cleaning_create_replay_conflict',
+  'manual_cleaning_create_replay_inactive',
 ])
 
 export function manualCheckinLinkErrorNeedsCandidateRefresh(error: any): boolean {
   return MANUAL_CHECKIN_LINK_STALE_ERROR_CODES.has(String(error?.code || '').trim())
+}
+
+export function manualCleaningCreateReplayNeedsReview(error: any): boolean {
+  return MANUAL_CLEANING_CREATE_REPLAY_REVIEW_CODES.has(String(error?.code || '').trim())
 }
 
 export function clearManualCheckinLinkSelection<T extends ManualCheckinLinkSelection>(current: T): T {
@@ -56,6 +82,15 @@ export function clearManualCheckinLinkSelection<T extends ManualCheckinLinkSelec
     linked_checkout_task_id: null,
     checkin_link_decision: null,
     checkin_link_decision_user_selected: false,
+  }
+}
+
+export function clearManualCheckoutLinkSelection<T extends ManualCheckoutLinkSelection>(current: T): T {
+  return {
+    ...current,
+    linked_checkin_task_id: null,
+    checkout_link_decision: null,
+    checkout_link_decision_user_selected: false,
   }
 }
 
@@ -100,6 +135,40 @@ export function normalizeManualCheckinCheckoutCandidates(
   return out
 }
 
+export function normalizeManualCheckoutCheckinCandidates(
+  payload: any,
+  expectedPropertyId0?: string,
+  expectedTaskDate0?: string,
+): ManualCheckoutCheckinCandidate[] {
+  const expectedPropertyId = String(expectedPropertyId0 || '').trim()
+  const expectedTaskDate = expectedTaskDate0 ? dayOnly(expectedTaskDate0) : null
+  if (!payload || !Array.isArray(payload.items)) throw new Error('invalid_checkout_link_candidates_response')
+  const seen = new Set<string>()
+  const out: ManualCheckoutCheckinCandidate[] = []
+  for (const row of payload.items) {
+    const id = String(row?.id || '').trim()
+    const propertyId = String(row?.property_id || '').trim()
+    const taskDate = dayOnly(row?.task_date)
+    if (!id || !propertyId || !taskDate || String(row?.inspection_scope || '') !== 'inspect_and_hang') {
+      throw new Error('invalid_checkout_link_candidate')
+    }
+    if (expectedPropertyId && propertyId !== expectedPropertyId) throw new Error('invalid_checkout_link_candidate_context')
+    if (expectedTaskDate && taskDate !== expectedTaskDate) throw new Error('invalid_checkout_link_candidate_context')
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push({
+      id,
+      property_id: propertyId,
+      property_code: String(row?.property_code || '').trim(),
+      task_date: taskDate,
+      checkin_time: String(row?.checkin_time || '').trim() || null,
+      status: String(row?.status || '').trim() || null,
+      inspection_scope: 'inspect_and_hang',
+    })
+  }
+  return out
+}
+
 export function clearManualCheckinLinkSelectionForScopeChange<T extends ManualCheckinLinkSelection>(
   current: T,
   previousScope: ManualCheckinCandidateScope | null,
@@ -108,6 +177,15 @@ export function clearManualCheckinLinkSelectionForScopeChange<T extends ManualCh
   if (!previousScope) return current
   if (sameManualCheckinCandidateScope(previousScope, nextScope)) return current
   return clearManualCheckinLinkSelection(current)
+}
+
+export function clearManualCheckoutLinkSelectionForScopeChange<T extends ManualCheckoutLinkSelection>(
+  current: T,
+  previousScope: ManualCheckinCandidateScope | null,
+  nextScope: ManualCheckinCandidateScope,
+): T {
+  if (!previousScope || sameManualCheckinCandidateScope(previousScope, nextScope)) return current
+  return clearManualCheckoutLinkSelection(current)
 }
 
 export function reconcileManualCheckinLinkSelection<T extends ManualCheckinLinkSelection>(
@@ -142,6 +220,33 @@ export function reconcileManualCheckinLinkSelection<T extends ManualCheckinLinkS
   return current.checkin_link_decision == null
     ? current
     : { ...current, linked_checkout_task_id: null, checkin_link_decision: null, checkin_link_decision_user_selected: false }
+}
+
+export function reconcileManualCheckoutLinkSelection<T extends ManualCheckoutLinkSelection>(
+  current: T,
+  candidateIds0: string[],
+  loadState: ManualCheckinCandidateLoadState,
+): T {
+  if (loadState !== 'ready') return current
+  const candidateIds = Array.from(new Set((candidateIds0 || []).map((value) => String(value || '').trim()).filter(Boolean)))
+  const validIds = new Set(candidateIds)
+  if (current.linked_checkin_task_id && validIds.has(String(current.linked_checkin_task_id))) {
+    return current.checkout_link_decision === 'link' ? current : { ...current, checkout_link_decision: 'link' }
+  }
+  if (current.linked_checkin_task_id) return clearManualCheckoutLinkSelection(current)
+  if (current.checkout_link_decision === 'independent' && current.checkout_link_decision_user_selected) return current
+  if (candidateIds.length === 1) {
+    return {
+      ...current,
+      linked_checkin_task_id: candidateIds[0],
+      checkout_link_decision: 'link',
+      checkout_link_decision_user_selected: false,
+    }
+  }
+  if (candidateIds.length === 0) {
+    return { ...current, linked_checkin_task_id: null, checkout_link_decision: 'independent', checkout_link_decision_user_selected: false }
+  }
+  return current.checkout_link_decision == null ? current : clearManualCheckoutLinkSelection(current)
 }
 
 export function isOrderLinkedAutoCheckinNightsAuthoritative(item: CleaningTurnoverMergeItem | null | undefined): boolean {
