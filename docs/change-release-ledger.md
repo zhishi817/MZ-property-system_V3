@@ -66,6 +66,25 @@
 - Independent review: `GO for commit`; evidence: independent review found P0/P1/P2=0/0/0, confirmed exact CI-failure causality, safe job boundaries and unchanged production isolation, and reproduced 11/11 contract PASS
 - Action conclusion: `GO`; blockers: none; exact follow-up commit `ec4045cc69dce26775cd6f9e1d32b866b2f397a7` created; remote CI rerun requires a later push attempt
 
+#### RA-20261104-011
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261104-008`, `CRL-20261104-009`
+- Selected CRL identities: `root/CRL-20261104-008`; `root/CRL-20261104-009`
+- Intended action: `push` the updated exact test branch to rerun isolated CI; no PR, merge, deployment, production migration or OTA
+- Branch: `codex/mz065-ephemeral-pg-ci`
+- Base: `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`; fetched at `2026-11-04T14:12:00Z`
+- Candidate patch SHA-256: `89ba88f184400c060f88354e61b1bc63af7f24cc5bc8c706f0a2abadb8c269c0`
+- Commit SHA: `ec4045cc69dce26775cd6f9e1d32b866b2f397a7`; ledger audit head before this receipt: `6422810e147788afb6a32a11e415992d5414d068`
+- Dependencies: none
+- Required validation: `PASS`; evidence: MZ-065 real PostgreSQL CI job passed in run `41846267003`, the only aggregate failure was the exact old workflow-contract assertion now fixed locally with 11/11 PASS, both CRL pre-commit gates and independent commit reviews passed
+- Shared-hunk review: `PASS`; evidence: CRL-008 contributes 7 exact hunks and CRL-009 contributes 5 exact hunks; all shared workflow/package/ledger and contract-test ownership was reviewed
+- Generated-file review: `PASS`; no generated artifacts or dependency trees included
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: user authorized autonomous routine release continuation and required failed gates to be repaired/retested before any production step; this push only updates the isolated test branch
+- Independent review: `GO for ledger receipt commit`; evidence: independent review verified CRL-008+009 scope, cumulative fingerprint, latest content commit and truthful partial-CI evidence with P0/P1/P2=0/0/0; final push review remains pending
+- Action conclusion: `NOT VERIFIED`; blockers: ledger receipt commit, exact combined range audit and push review pending
+
 ### Risks / Release Notes
 
 - Risk is limited to CI contract assertions; an incorrect boundary could hide another job section, so local job-section tests cover both MZ-034 and MZ-065.
