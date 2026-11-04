@@ -209,6 +209,7 @@ export function projectCleaningKeyHandover(input: {
     status_after?: any
     metadata?: any
   } | null
+  formalInspectionSubmittedAt?: any
   manualConfirmedAt?: any
 }): CleaningKeyHandoverProjection | null {
   const taskId = String(input.taskId || '').trim()
@@ -223,11 +224,18 @@ export function projectCleaningKeyHandover(input: {
   const audit = input.latestUploadAudit || null
   const auditMetadata = audit?.metadata && typeof audit.metadata === 'object' ? audit.metadata : {}
   const finalizationPending = auditMetadata.finalization_pending === true
+  const uploadAuditAtMs = Date.parse(String(audit?.performed_at || ''))
+  const formalInspectionSubmittedAtMs = Date.parse(String(input.formalInspectionSubmittedAt || ''))
+  const formalInspectionSubmittedAfterVideo = Number.isFinite(uploadAuditAtMs)
+    && Number.isFinite(formalInspectionSubmittedAtMs)
+    && formalInspectionSubmittedAtMs >= uploadAuditAtMs
+  // The upload audit is an immutable snapshot. A later exact-task formal
+  // submission resolves its photo requirement without rewriting that history.
   const missingRequirements: string[] = Array.from(new Set<string>(
     (Array.isArray(auditMetadata.missing_requirements) ? auditMetadata.missing_requirements : [])
       .map((value: any) => String(value || '').trim().toLowerCase())
       .filter((value: string) => KEY_HANDOVER_PENDING_REQUIREMENTS.has(value)),
-  ))
+  )).filter((value) => value !== 'inspection_photos' || !formalInspectionSubmittedAfterVideo)
 
   // The exact task's current video is the strongest handover fact. Follow-up
   // cleaning, restocking, inspection, assignment, or material-completion

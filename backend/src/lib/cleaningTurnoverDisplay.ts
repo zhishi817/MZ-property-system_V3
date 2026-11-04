@@ -324,6 +324,14 @@ function unique(values: any[]): string[] {
   return Array.from(new Set(values.map((value) => text(value)).filter(Boolean)))
 }
 
+function uniquePasswordTargetId(
+  displays: CleaningTurnoverDisplay[],
+  field: 'old_code_task_id' | 'new_code_task_id',
+): string | null {
+  const ids = unique(displays.map((display) => display[field]))
+  return ids.length === 1 ? ids[0] : null
+}
+
 export function buildCleaningTurnoverDisplay(params: {
   propertyId?: any
   taskDate?: any
@@ -388,13 +396,13 @@ export function buildCleaningTurnoverDisplay(params: {
     guest_request_checkin: checkinRequest,
     guest_request_summary: unique([checkoutRequest, checkinRequest]).join('；') || null,
     old_code: displayOldCode?.value || null,
-    old_code_task_id: displayOldCode?.taskId || null,
+    old_code_task_id: isCheckout(checkout) ? taskId(checkout) : null,
     old_code_authority_status: displayOldCode?.authorityStatus || null,
     old_code_source_task_id: displayOldCode?.sourceTaskId || null,
     old_code_source_order_id: displayOldCode?.sourceOrderId || null,
     old_code_source_field: displayOldCode?.sourceField || null,
     new_code: cleaningTaskNewCodeForDisplay(checkin),
-    new_code_task_id: cleaningTaskNewCodeForDisplay(checkin) ? taskId(checkin) : null,
+    new_code_task_id: isCheckin(checkin) ? taskId(checkin) : null,
     new_code_authority_status: checkin ? passwordAuthorityValue(checkin, 'new_code') : null,
     keys_required_checkout: keysRequired(checkout),
     keys_required_checkin: keysRequired(checkin),
@@ -434,13 +442,13 @@ export function mergeCleaningTurnoverDisplays(displays: Array<CleaningTurnoverDi
     guest_request_checkin: checkinRequest,
     guest_request_summary: unique([checkoutRequest, checkinRequest, ...list.map((item) => item.guest_request_summary)]).join('；') || null,
     old_code: oldCodeDisplay?.old_code || null,
-    old_code_task_id: oldCodeDisplay?.old_code_task_id || null,
+    old_code_task_id: uniquePasswordTargetId(list, 'old_code_task_id'),
     old_code_authority_status: oldCodeDisplay?.old_code_authority_status || null,
     old_code_source_task_id: oldCodeDisplay?.old_code_source_task_id || null,
     old_code_source_order_id: oldCodeDisplay?.old_code_source_order_id || null,
     old_code_source_field: oldCodeDisplay?.old_code_source_field || null,
     new_code: checkinDisplay.new_code || null,
-    new_code_task_id: checkinDisplay.new_code_task_id || null,
+    new_code_task_id: uniquePasswordTargetId(list, 'new_code_task_id'),
     new_code_authority_status: checkinDisplay.new_code_authority_status || null,
     keys_required_checkout: checkoutDisplay.keys_required_checkout,
     keys_required_checkin: checkinDisplay.keys_required_checkin,

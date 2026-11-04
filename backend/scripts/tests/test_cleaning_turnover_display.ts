@@ -71,6 +71,7 @@ assert.equal(display.guest_request_checkout, 'late checkout bags')
 assert.equal(display.guest_request_checkin, 'early arrival')
 assert.equal(display.old_code, '1111')
 assert.equal(display.new_code, '2222')
+assert.equal(display.old_code_task_id, 'checkout-active')
 assert.equal(display.new_code_task_id, 'checkin-active')
 assert.equal(display.new_code_authority_status, 'needs_review')
 assert.equal(display.keys_required_checkout, 2)
@@ -145,6 +146,53 @@ assert.equal(merged?.new_code_task_id, 'checkin-active')
 assert.equal(merged?.new_code_authority_status, 'needs_review')
 assert.deepEqual(merged?.active_source_ids, ['checkout-active', 'checkin-active'])
 assert.deepEqual(merged?.superseded_source_ids, ['manual-superseded'])
+
+const blankPasswordTargets = buildCleaningTurnoverDisplay({
+  checkoutTask: {
+    id: 'checkout-blank-password',
+    task_type: 'checkout_clean',
+    order_id: 'blank-order',
+    old_code: null,
+    old_code_authority_status: 'needs_review',
+  },
+  checkinTask: {
+    id: 'checkin-blank-password',
+    task_type: 'checkin_clean',
+    order_id: 'blank-order',
+    new_code: null,
+    new_code_authority_status: 'needs_review',
+  },
+  activeRows: [{
+    id: 'checkout-blank-password',
+    task_type: 'checkout_clean',
+    order_id: 'blank-order',
+  }],
+})
+assert.equal(blankPasswordTargets.old_code, null)
+assert.equal(blankPasswordTargets.new_code, null)
+assert.equal(blankPasswordTargets.old_code_task_id, 'checkout-blank-password', 'an empty old value must not erase its checkout write target')
+assert.equal(blankPasswordTargets.new_code_task_id, 'checkin-blank-password', 'an empty new value must not erase its check-in write target')
+assert.deepEqual(blankPasswordTargets.active_source_ids, ['checkout-blank-password'], 'write targets must not widen the active execution source set')
+
+const mergedBlankPasswordTargets = mergeCleaningTurnoverDisplays([
+  buildCleaningTurnoverDisplay({
+    checkoutTask: { id: 'checkout-blank-password', task_type: 'checkout_clean', order_id: 'blank-order' },
+    activeRows: [{ id: 'checkout-blank-password', task_type: 'checkout_clean', order_id: 'blank-order' }],
+  }),
+  buildCleaningTurnoverDisplay({
+    checkinTask: { id: 'checkin-blank-password', task_type: 'checkin_clean', order_id: 'blank-order' },
+    activeRows: [],
+  }),
+])
+assert.equal(mergedBlankPasswordTargets?.old_code_task_id, 'checkout-blank-password')
+assert.equal(mergedBlankPasswordTargets?.new_code_task_id, 'checkin-blank-password')
+assert.deepEqual(mergedBlankPasswordTargets?.active_source_ids, ['checkout-blank-password'])
+
+const ambiguousPasswordTargets = mergeCleaningTurnoverDisplays([
+  buildCleaningTurnoverDisplay({ checkinTask: { id: 'checkin-candidate-a', task_type: 'checkin_clean', order_id: 'order-a' } }),
+  buildCleaningTurnoverDisplay({ checkinTask: { id: 'checkin-candidate-b', task_type: 'checkin_clean', order_id: 'order-b' } }),
+])
+assert.equal(ambiguousPasswordTargets?.new_code_task_id, null, 'multiple distinct check-in targets must fail closed')
 
 const staleFallbackHidden = buildCleaningTurnoverDisplay({
   checkoutTask: {

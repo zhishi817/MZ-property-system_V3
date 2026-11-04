@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   DAILY_TASK_MANAGER_ROLES,
+  dailyTaskAllViewScopes,
   dailyTaskExecutionVisibility,
   dailyTaskWorkRecordProjection,
   evidenceBackedWorkRecordState,
@@ -14,6 +15,22 @@ import {
   projectVisibleDailyTasks,
   selfCompleteKeyHandoverRecordEvidence,
 } from '../../src/lib/dailyTaskExecutionVisibility'
+
+assert.deepEqual(
+  dailyTaskAllViewScopes({ requestedView: 'all', roleNames: ['custom_scheduler'], permissionCodes: ['cleaning.schedule.manage'] }),
+  { generic: false, cleaning: true },
+  'a custom schedule manager may use all-view only for cleaning tasks',
+)
+assert.deepEqual(
+  dailyTaskAllViewScopes({ requestedView: 'all', roleNames: ['cleaner'], permissionCodes: ['cleaning.view'] }),
+  { generic: false, cleaning: false },
+  'an unrelated cleaning permission must not broaden all-view access',
+)
+assert.deepEqual(
+  dailyTaskAllViewScopes({ requestedView: 'all', roleNames: ['admin'], permissionCodes: [] }),
+  { generic: true, cleaning: true },
+  'existing manager roles keep both generic and cleaning all-view behavior',
+)
 
 const scheduled = '2026-10-09'
 const cases = [
@@ -463,6 +480,9 @@ const priorExecutionStart = mzapp.lastIndexOf('LEFT JOIN LATERAL (', priorExecut
 const priorExecution = mzapp.slice(priorExecutionStart, priorExecutionEnd)
 
 assert.match(mzapp, /projectDailyTaskListItems\(out,/, 'mobile API must apply the shared server execution-plus-record projection before action payloads')
+assert.match(mzapp, /const allViewScopes = dailyTaskAllViewScopes\([\s\S]*?const allowAll = allViewScopes\.generic[\s\S]*?const allowAllCleaningTasks = allViewScopes\.cleaning/, 'work-tasks must split generic manager scope from permission-scoped cleaning access')
+assert.match(mzapp, /const managerCanSeeAllTaskPool = allowAll[\s\S]*?const managerCanSeeAllCleaningTaskPool = allowAllCleaningTasks/, 'custom schedule permission must not broaden generic work-task pools')
+assert.match(mzapp, /pgPool\.query\(candidateSql\(true\), \[dateFrom, dateTo, userId, allowAllCleaningTasks\]\)[\s\S]*?pgPool\.query\(candidateSql\(false\), \[dateFrom, dateTo, userId, allowAllCleaningTasks\]\)/, 'both receipt-aware and legacy-fallback cleaning candidate queries must consume the permission-scoped cleaning all-view flag')
 assert.match(mzapp, /work_record_transition:[\s\S]*?state: 'rescheduled'/, 'a defer must append an immutable original-day record transition')
 assert.match(mzapp, /eventType: 'TASK_UPDATED',[\s\S]*?changeScope: 'membership',[\s\S]*?work_record_transition:/, 'a defer must force a canonical refetch so the active destination and original-day placeholder arrive together')
 assert.match(mzapp, /status: 'rescheduled',[\s\S]*?photo_urls: \[\],[\s\S]*?completion_photo_urls: normalizeWorkTaskPhotoUrls\(x\.transition_photo_urls\)/, 'an original-day reschedule record must not inherit mutable photos from the destination task')
@@ -552,7 +572,8 @@ assert.match(workTasks, /cancellation_reason_required[\s\S]*?eventType: complete
 assert.match(workTasks, /const upsertFromSourceSchema = z\.object[\s\S]*?\.partial\(\)\.strict\(\)/, 'source upsert must reject arbitrary database column patches')
 assert.match(workTasks, /ON CONFLICT \(source_type, source_id\) DO UPDATE SET[\s\S]*?WHERE lower\(COALESCE\(work_tasks\.status, ''\)\) NOT IN/, 'source upsert must never reopen a terminal record through a conflict update')
 assert.match(sourceUpsertRoute, /terminal_status_requires_transition[\s\S]*?client\.query\('BEGIN'\)[\s\S]*?FOR UPDATE[\s\S]*?work_record_read_only[\s\S]*?emitWorkTaskEvent\([\s\S]*?client\.query\('COMMIT'\)/, 'source upsert must reject terminal transitions and publish active mutations atomically')
-assert.match(mzapp, /const allowAll = view === 'all' && canViewAll\(user\)/, 'only the three business manager roles may request the all-task execution projection')
+assert.match(mzapp, /const allViewScopes = dailyTaskAllViewScopes\([\s\S]*?const allowAll = allViewScopes\.generic[\s\S]*?const allowAllCleaningTasks = allViewScopes\.cleaning/, 'the route must keep generic all-task access role-scoped while granting cleaning-only access through cleaning.schedule.manage')
+assert.match(mzapp, /const managerCanSeeAllTaskPool = allowAll[\s\S]*?const managerCanSeeAllCleaningTaskPool = allowAllCleaningTasks/, 'custom cleaning schedulers must not inherit offline, maintenance, or other generic task pools')
 assert.match(mzapp, /includeManagerUnassignedOffline: managerCanSeeAllTaskPool/, 'manager list and count projections must share the ordinary unassigned offline policy')
 assert.match(mzapp, /source_workflow_status: maintenanceSourceWorkflowStatus/, 'maintenance source workflow must survive the closed-to-done work-task mapping')
 assert.match(taskCenter, /projectTaskCenterManageableWorkTasks\(dedupeBoardTasks/, 'Web work-task loader must preserve assignment candidates while reusing shared execution semantics')

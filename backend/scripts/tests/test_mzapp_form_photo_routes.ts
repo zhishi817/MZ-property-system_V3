@@ -21,6 +21,7 @@ type FixtureTask = {
   assignee_id: string | null
   inspection_mode?: string | null
   inspection_scope?: string | null
+  linked_checkout_task_id?: string | null
 }
 
 type FixtureMedia = {
@@ -33,6 +34,38 @@ type FixtureMedia = {
 }
 
 const tasks: FixtureTask[] = [
+  {
+    id: 'manual-checkout-active',
+    task_date: '2026-10-22',
+    property_id: 'property-7',
+    property_code: 'ROUTE-707',
+    task_type: 'checkout_clean',
+    status: 'done',
+    execution_state: 'active',
+    order_id: null,
+    order_checkin: null,
+    order_checkout: null,
+    inspector_id: null,
+    cleaner_id: 'manual-cleaner-1',
+    assignee_id: null,
+  },
+  {
+    id: 'manual-checkin-active',
+    task_date: '2026-10-22',
+    property_id: 'property-7',
+    property_code: 'ROUTE-707',
+    task_type: 'checkin_clean',
+    status: 'done',
+    execution_state: 'active',
+    order_id: null,
+    order_checkin: null,
+    order_checkout: null,
+    inspector_id: 'manual-inspector-1',
+    cleaner_id: null,
+    assignee_id: 'manual-inspector-1',
+    inspection_scope: 'inspect_and_hang',
+    linked_checkout_task_id: 'manual-checkout-active',
+  },
   {
     id: 'self-complete-active',
     task_date: '2026-10-20',
@@ -93,6 +126,108 @@ const tasks: FixtureTask[] = [
     inspector_id: 'inspector-1',
     cleaner_id: null,
     assignee_id: 'inspector-1',
+  },
+  {
+    id: 'password-only-execution',
+    task_date: '2026-10-31',
+    property_id: 'property-106',
+    property_code: '3804609',
+    task_type: 'checkin_clean',
+    status: 'inspected',
+    execution_state: 'active',
+    order_id: 'password-only-order',
+    order_checkin: '2026-10-31',
+    order_checkout: '2026-11-02',
+    inspector_id: null,
+    cleaner_id: null,
+    assignee_id: 'mia-1',
+    inspection_mode: 'same_day',
+    inspection_scope: 'password_only',
+  },
+  {
+    id: 'password-only-cancelled',
+    task_date: '2026-10-30',
+    property_id: 'property-106-cancelled',
+    property_code: '3804610',
+    task_type: 'checkin_clean',
+    status: 'cancelled',
+    execution_state: 'cancelled',
+    order_id: 'password-only-cancelled-order',
+    order_checkin: '2026-10-30',
+    order_checkout: '2026-11-01',
+    inspector_id: null,
+    cleaner_id: null,
+    assignee_id: 'mia-1',
+    inspection_mode: 'same_day',
+    inspection_scope: 'password_only',
+  },
+  {
+    id: 'password-only-inspector-fallback',
+    task_date: '2026-10-29',
+    property_id: 'property-106-fallback',
+    property_code: '3804611',
+    task_type: 'checkin_clean',
+    status: 'inspected',
+    execution_state: 'active',
+    order_id: 'password-only-fallback-order',
+    order_checkin: '2026-10-29',
+    order_checkout: '2026-11-01',
+    inspector_id: 'fallback-inspector-1',
+    cleaner_id: null,
+    assignee_id: null,
+    inspection_mode: 'same_day',
+    inspection_scope: 'password_only',
+  },
+  {
+    id: 'password-only-reassigned',
+    task_date: '2026-10-28',
+    property_id: 'property-106-reassigned',
+    property_code: '3804612',
+    task_type: 'checkin_clean',
+    status: 'inspected',
+    execution_state: 'active',
+    order_id: 'password-only-reassigned-order',
+    order_checkin: '2026-10-28',
+    order_checkout: '2026-10-31',
+    inspector_id: 'replacement-inspector-1',
+    cleaner_id: null,
+    assignee_id: 'replacement-executor-1',
+    inspection_mode: 'same_day',
+    inspection_scope: 'password_only',
+  },
+  {
+    id: 'password-only-dual-assignment',
+    task_date: '2026-10-27',
+    property_id: 'property-106-dual',
+    property_code: '3804613',
+    task_type: 'checkin_clean',
+    status: 'inspected',
+    execution_state: 'active',
+    order_id: 'password-only-dual-order',
+    order_checkin: '2026-10-27',
+    order_checkout: '2026-10-30',
+    inspector_id: 'stale-inspector-1',
+    cleaner_id: null,
+    assignee_id: 'current-password-executor-1',
+    inspection_mode: 'same_day',
+    inspection_scope: 'password_only',
+  },
+  {
+    id: 'password-only-replaced-video',
+    task_date: '2026-10-26',
+    property_id: 'property-106-replaced',
+    property_code: '3804614',
+    task_type: 'checkin_clean',
+    status: 'inspected',
+    execution_state: 'active',
+    order_id: 'password-only-replaced-order',
+    order_checkin: '2026-10-26',
+    order_checkout: '2026-10-29',
+    inspector_id: null,
+    cleaner_id: null,
+    assignee_id: 'later-replacement-executor-1',
+    inspection_mode: 'same_day',
+    inspection_scope: 'password_only',
   },
   {
     id: 'feedback-task',
@@ -172,6 +307,7 @@ const tasks: FixtureTask[] = [
 ]
 
 const media: FixtureMedia[] = [
+  { id: 'manual-key-1', task_id: 'manual-checkout-active', type: 'key_photo', url: 'cleaning/route/manual-key.jpg', uploader_id: 'manual-cleaner-1' },
   { id: 'completion-1', task_id: 'checkout-active', type: 'completion_living', url: 'cleaning/route/cleaner-own.jpg', uploader_id: 'cleaner-1' },
   { id: 'key-1', task_id: 'checkout-active', type: 'key_photo', url: 'cleaning/route/guest-key.jpg', uploader_id: 'cleaner-1' },
   { id: 'lockbox-1', task_id: 'checkout-active', type: 'lockbox_video', url: 'cleaning/route/lockbox.mp4', uploader_id: 'cleaner-1' },
@@ -179,6 +315,19 @@ const media: FixtureMedia[] = [
   { id: 'inspection-1', task_id: 'checkin-active', type: 'inspection_living', url: 'cleaning/route/inspector-own.jpg', uploader_id: 'inspector-1' },
   { id: 'inspection-unclean', task_id: 'checkin-active', type: 'inspection_unclean', url: 'cleaning/route/inspection-unclean.jpg', uploader_id: 'inspector-1' },
   { id: 'inspection-lockbox', task_id: 'checkin-active', type: 'lockbox_video', url: 'cleaning/route/inspector-lockbox.mp4', uploader_id: 'inspector-1' },
+  { id: 'password-only-lockbox', task_id: 'password-only-execution', type: 'lockbox_video', url: 'cleaning/route/password-only-lockbox.mp4', uploader_id: 'mia-1' },
+  { id: 'password-only-completion', task_id: 'password-only-execution', type: 'completion_living', url: 'cleaning/route/password-only-cleaner.jpg', uploader_id: 'legacy-cleaner-1' },
+  { id: 'password-only-inspection', task_id: 'password-only-execution', type: 'inspection_living', url: 'cleaning/route/password-only-inspection.jpg', uploader_id: 'mia-1' },
+  { id: 'password-only-cancelled-lockbox', task_id: 'password-only-cancelled', type: 'lockbox_video', url: 'cleaning/route/password-only-cancelled.mp4', uploader_id: 'mia-1' },
+  { id: 'password-only-fallback-lockbox', task_id: 'password-only-inspector-fallback', type: 'lockbox_video', url: 'cleaning/route/password-only-fallback.mp4', uploader_id: 'legacy-video-writer' },
+  { id: 'password-only-fallback-inspection', task_id: 'password-only-inspector-fallback', type: 'inspection_living', url: 'cleaning/route/password-only-fallback-inspection.jpg', uploader_id: 'fallback-inspector-1' },
+  { id: 'password-only-fallback-key', task_id: 'password-only-inspector-fallback', type: 'key_photo', url: 'cleaning/route/password-only-fallback-key.jpg', uploader_id: 'fallback-inspector-1' },
+  { id: 'password-only-fallback-restock', task_id: 'password-only-inspector-fallback', type: 'restock_proof:soap', url: 'cleaning/route/password-only-fallback-restock.jpg', uploader_id: 'fallback-inspector-1' },
+  { id: 'password-only-reassigned-lockbox', task_id: 'password-only-reassigned', type: 'lockbox_video', url: 'cleaning/route/password-only-reassigned.mp4', uploader_id: 'service-video-writer-1', created_at: '2026-10-28T01:00:00.000Z' },
+  { id: 'password-only-reassigned-inspection', task_id: 'password-only-reassigned', type: 'inspection_living', url: 'cleaning/route/password-only-reassigned-inspection.jpg', uploader_id: 'former-password-executor-1' },
+  { id: 'password-only-reassigned-completion', task_id: 'password-only-reassigned', type: 'completion_living', url: 'cleaning/route/password-only-reassigned-completion.jpg', uploader_id: 'former-password-executor-1' },
+  { id: 'password-only-dual-lockbox', task_id: 'password-only-dual-assignment', type: 'lockbox_video', url: 'cleaning/route/password-only-dual.mp4', uploader_id: 'current-password-executor-1', created_at: '2026-10-27T01:00:00.000Z' },
+  { id: 'password-only-replaced-lockbox', task_id: 'password-only-replaced-video', type: 'lockbox_video', url: 'cleaning/route/password-only-replaced.mp4', uploader_id: null, created_at: '2026-10-26T02:00:00.000Z' },
   { id: 'reassigned-1', task_id: 'reassigned-task', type: 'completion_kitchen', url: 'cleaning/route/former-cleaner.jpg', uploader_id: 'cleaner-1' },
   { id: 'reassigned-video', task_id: 'reassigned-task', type: 'lockbox_video', url: 'cleaning/route/former-cleaner.mp4', uploader_id: 'cleaner-1' },
   { id: 'reassigned-replacement', task_id: 'reassigned-task', type: 'completion_living', url: 'cleaning/route/replacement-cleaner.jpg', uploader_id: 'cleaner-2' },
@@ -247,6 +396,17 @@ const completionEvidence = new Map<string, Set<string>>([
 ])
 const inspectionEvidence = new Map<string, Set<string>>([
   ['inspector-1', new Set(['checkin-active', 'same-day-independent'])],
+  ['inspection-only-historical-1', new Set(['password-only-reassigned'])],
+])
+const accessVideoEvidence = new Map<string, Set<string>>([
+  ['former-password-executor-1', new Set(['password-only-reassigned'])],
+  ['cross-source-video-actor-1', new Set(['password-only-execution'])],
+  ['old-replaced-video-actor-1', new Set(['password-only-replaced-video'])],
+  ['replacement-video-executor-1', new Set(['password-only-replaced-video'])],
+])
+const currentVideoAuditActorByTask = new Map<string, string>([
+  ['password-only-reassigned', 'former-password-executor-1'],
+  ['password-only-replaced-video', 'replacement-video-executor-1'],
 ])
 const inspectionSubmissionReceipts = new Map([
   ['checkin-active', {
@@ -272,7 +432,11 @@ function taskRows(ids: string[]) {
 }
 
 function auditRows(ids: string[], userId: string, action: string) {
-  const evidence = action === 'submit_inspection' ? inspectionEvidence : completionEvidence
+  const evidence = action === 'submit_inspection'
+    ? inspectionEvidence
+    : action === 'upload_access_video'
+      ? accessVideoEvidence
+      : completionEvidence
   const owned = evidence.get(userId) || new Set<string>()
   return ids.filter((id) => owned.has(id)).map((source_id) => ({ source_id }))
 }
@@ -285,9 +449,79 @@ dbAdapter.pgPool = {
     if (/^\s*(CREATE|ALTER|INSERT|UPDATE|DELETE|DROP|TRUNCATE|REPLACE|MERGE|GRANT|REVOKE)\b/i.test(sql)) {
       throw new Error(`write SQL is forbidden in this read-only route test: ${sql.replace(/\s+/g, ' ').slice(0, 180)}`)
     }
+    if (/SELECT 1 FROM schema_migrations WHERE version=\$1 LIMIT 1/.test(sql)) {
+      return { rows: [{ '?column?': 1 }], rowCount: 1 }
+    }
+    if (/LIMIT 0/.test(sql) && /FROM (property_maintenance|external_maintenance_orders|maintenance_workflow_events|work_tasks)/.test(sql)) {
+      return { rows: [], rowCount: 0 }
+    }
+    if (/WITH scheduled_match_ids AS MATERIALIZED/.test(sql) && /current_lockbox_video_actor AS MATERIALIZED/.test(sql)) {
+      const userId = String(params[2] || '')
+      if (!['former-password-executor-1', 'service-video-writer-1'].includes(userId)) return { rows: [], rowCount: 0 }
+      const task = tasks.find((item) => item.id === 'password-only-reassigned')!
+      const rows = [{
+        ...task,
+        property_id: null,
+        property_code: null,
+        historical_evidence: true,
+        order_keys_required: 1,
+        keys_required: 1,
+        assignee_name: 'Replacement',
+        cleaner_name: null,
+        inspector_name: 'Replacement inspector',
+        lockbox_video_url: null,
+        key_photo_url: null,
+        living_room_photo_url: null,
+        lockbox_audit_action: 'upload_access_video',
+        lockbox_audit_performed_at: '2026-10-28T01:00:00.000Z',
+        lockbox_audit_status_before: 'in_progress',
+        lockbox_audit_status_after: 'inspected',
+        lockbox_audit_metadata: {},
+        has_current_lockbox_video: true,
+        has_current_manual_key_handover: false,
+        current_manual_key_handover_at: null,
+        lockbox_record_at: '2026-10-28T01:00:00.000Z',
+        lockbox_record_actor_user_id: userId,
+        lockbox_record_actor_name: userId === 'former-password-executor-1' ? 'Former executor' : 'Video writer',
+        executor_record_confirmation_source: 'video',
+        cleaner_record_at: null,
+        cleaner_record_date: null,
+        cleaner_record_actor_user_id: null,
+        cleaner_record_actor_name: null,
+        has_cleaner_completion_evidence: false,
+        inspector_record_at: null,
+        inspector_record_date: null,
+        inspector_record_actor_user_id: null,
+        cancelled_record_at: null,
+        cancelled_record_actor_user_id: null,
+        updated_at: '2026-10-28T01:00:00.000Z',
+      }]
+      return { rows, rowCount: rows.length }
+    }
+    if (/WITH normalized_arrangement_tasks AS MATERIALIZED/.test(sql)) return { rows: [], rowCount: 0 }
+    if (/END AS cleaning_submission_ready/.test(sql) && /FROM cleaning_tasks t/.test(sql)) {
+      const ids = Array.isArray(params[0]) ? params[0].map(String) : []
+      const rows = ids.map((id) => ({ id, cleaning_submission_ready: true }))
+      return { rows, rowCount: rows.length }
+    }
+    if (/FROM cleaning_tasks[\s\S]*WHERE execution_state = 'superseded'/.test(sql)) return { rows: [], rowCount: 0 }
     if (/FROM cleaning_tasks t[\s\S]*LEFT JOIN orders o/.test(sql)) {
       const ids = Array.isArray(params[0]) ? params[0].map(String) : [String(params[0] || '')]
       const rows = taskRows(ids)
+      return { rows, rowCount: rows.length }
+    }
+    if (/WITH current_video AS \(/.test(sql) && /latest_upload AS \(/.test(sql)) {
+      const ids = new Set((Array.isArray(params[0]) ? params[0] : []).map(String))
+      const rows = media
+        .filter((item) => ids.has(item.task_id) && item.type === 'lockbox_video')
+        .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+        .filter((item, index, all) => all.findIndex((candidate) => candidate.task_id === item.task_id) === index)
+        .map((item) => ({
+          task_id: item.task_id,
+          media_id: item.id,
+          uploader_id: item.uploader_id,
+          actor_user_id: currentVideoAuditActorByTask.get(item.task_id) || null,
+        }))
       return { rows, rowCount: rows.length }
     }
     if (/FROM work_task_action_audits/.test(sql) && Array.isArray(params[0])) {
@@ -301,9 +535,11 @@ dbAdapter.pgPool = {
         return { rows, rowCount: rows.length }
       }
       const userId = String(params[1] || '')
-      const action = /performed_as_action\s*=\s*'submit_inspection'/.test(sql) || params[2] === 'submit_inspection'
-        ? 'submit_inspection'
-        : 'complete_cleaning'
+      const action = /performed_as_action\s*=\s*'upload_access_video'/.test(sql)
+        ? 'upload_access_video'
+        : /performed_as_action\s*=\s*'submit_inspection'/.test(sql) || params[2] === 'submit_inspection'
+          ? 'submit_inspection'
+          : 'complete_cleaning'
       const rows = auditRows(ids, userId, action)
       return { rows, rowCount: rows.length }
     }
@@ -314,6 +550,7 @@ dbAdapter.pgPool = {
         .map((item) => {
           const task = tasks.find((candidate) => candidate.id === item.task_id)!
           return {
+            media_id: item.id,
             type: item.type,
             url: item.url,
             source_task_id: item.task_id,
@@ -456,12 +693,18 @@ r2.r2GetObjectByKey = async (key: string) => {
   }
 }
 
-const { router: mzappRouter, canViewMzappPropertyFeedback, propertyFeedbackSourceTaskAccess } = require('../../src/modules/mzapp')
+const { warmupR5TaskRuntimeSchema } = require('../../src/lib/r5RequestSchema')
+const { warmupPasswordAuthoritySchema } = require('../../src/lib/passwordAuthoritySchema')
+const { warmupMaintenanceRuntimeSchema } = require('../../src/lib/maintenanceRuntimeSchema')
+const { router: mzappRouter, canViewMzappPropertyFeedback, propertyFeedbackSourceTaskAccess, workRecordReadOnlyViews } = require('../../src/modules/mzapp')
 const { router: cleaningAppRouter } = require('../../src/modules/cleaning_app')
 
 type TestUser = { id: string; role: string }
 
 async function withRouteServer(run: (baseUrl: string) => Promise<void>) {
+  await warmupR5TaskRuntimeSchema()
+  await warmupPasswordAuthoritySchema()
+  await warmupMaintenanceRuntimeSchema()
   const app = express()
   app.use((req: any, _res, next) => {
     const id = String(req.headers['x-test-user'] || '')
@@ -514,6 +757,58 @@ async function verifyFormPhotoRoute(baseUrl: string) {
   const cleaner = { id: 'cleaner-1', role: 'cleaner' }
   const inspector = { id: 'inspector-1', role: 'cleaning_inspector' }
   const manager = { id: 'manager-1', role: 'admin' }
+  const mia = { id: 'mia-1', role: 'cleaning_inspector' }
+
+  assert.deepEqual(workRecordReadOnlyViews({
+    work_record_read_only: true,
+    source_type: 'cleaning_tasks',
+    source_id: 'password-only-execution',
+    task_type: 'checkin_clean',
+    inspection_scope: 'password_only',
+    execution_role: 'execution',
+    work_record_state: 'completed',
+    status: 'inspected',
+    execution_state: 'active',
+    completed_by_user_id: 'mia-1',
+  }, { sub: 'mia-1', role: 'cleaning_inspector', roles: ['cleaning_inspector'] }, 'mia-1'), {
+    property_access: true,
+    guest_context: true,
+    lock_codes: false,
+    lockbox_video: true,
+    cleaner_photos: false,
+    inspection_photos: false,
+    guest_key_photo: false,
+    media_scope: 'inspector',
+    feedback_history: false,
+    feedback_report: false,
+    feedback_source_id: null,
+  }, 'password-only execution history exposes only its saved lockbox video capability')
+
+  assert.equal(workRecordReadOnlyViews({
+    work_record_read_only: true,
+    source_type: 'cleaning_tasks',
+    source_id: 'password-only-cancelled',
+    task_type: 'checkin_clean',
+    inspection_scope: 'password_only',
+    execution_role: 'execution',
+    work_record_state: 'cancelled',
+    status: 'cancelled',
+    execution_state: 'cancelled',
+    completed_by_user_id: 'mia-1',
+  }, { sub: 'mia-1', role: 'cleaning_inspector', roles: ['cleaning_inspector'] }, 'mia-1').lockbox_video, false, 'cancelled password-only records do not recover historical media')
+
+  assert.equal(workRecordReadOnlyViews({
+    work_record_read_only: true,
+    source_type: 'cleaning_tasks',
+    source_id: 'password-only-reassigned',
+    task_type: 'checkin_clean',
+    inspection_scope: 'password_only',
+    execution_role: 'execution',
+    work_record_state: 'reassigned',
+    status: 'inspected',
+    execution_state: 'active',
+    completed_by_user_id: 'former-password-executor-1',
+  }, { sub: 'former-password-executor-1', role: 'cleaning_inspector', roles: ['cleaning_inspector'] }, 'former-password-executor-1').lockbox_video, true, 'a reassigned password-only work record retains its read-only video capability')
 
   const cleanerResult = await getJson(baseUrl, formPhotoPath(pairId, ['checkout-active', 'checkin-active'], 'cleaner'), cleaner)
   assert.equal(cleanerResult.response.status, 200)
@@ -544,11 +839,118 @@ async function verifyFormPhotoRoute(baseUrl: string) {
   assert.equal(selfCompleteVideo.response.status, 200)
   assert.deepEqual(selfCompleteVideo.body.items.map((item: any) => item.id), ['self-complete-lockbox'])
 
+  const passwordOnlyVideo = await getJson(baseUrl, formPhotoPath('password-only-execution', ['password-only-execution'], 'inspector', true), mia)
+  assert.equal(passwordOnlyVideo.response.status, 200)
+  assert.deepEqual(passwordOnlyVideo.body.items.map((item: any) => item.id), ['password-only-lockbox'], 'the exact password-only executor sees only the saved lockbox video, never cleaner completion or inspection photos')
+
+  const passwordOnlyOutsider = await getJson(baseUrl, formPhotoPath('password-only-execution', ['password-only-execution'], 'inspector', true), { id: 'outsider-1', role: 'cleaning_inspector' })
+  assert.equal(passwordOnlyOutsider.response.status, 403, 'an unrelated inspector cannot read password-only execution history')
+
+  const passwordOnlyInspectorFallback = await getJson(
+    baseUrl,
+    formPhotoPath('password-only-inspector-fallback', ['password-only-inspector-fallback'], 'inspector', true),
+    { id: 'fallback-inspector-1', role: 'cleaning_inspector' },
+  )
+  assert.equal(passwordOnlyInspectorFallback.response.status, 200)
+  assert.deepEqual(passwordOnlyInspectorFallback.body.items.map((item: any) => item.id), ['password-only-fallback-lockbox'], 'inspector_id fallback stays on the video-only surface even when their inspection/key photos exist')
+
+  const staleInspectorWithAssignee = await getJson(
+    baseUrl,
+    formPhotoPath('password-only-dual-assignment', ['password-only-dual-assignment'], 'inspector', true),
+    { id: 'stale-inspector-1', role: 'cleaning_inspector' },
+  )
+  assert.equal(staleInspectorWithAssignee.response.status, 403, 'inspector_id is not a fallback when a different persisted assignee exists')
+
+  const currentDualAssignee = await getJson(
+    baseUrl,
+    formPhotoPath('password-only-dual-assignment', ['password-only-dual-assignment'], 'inspector', true),
+    { id: 'current-password-executor-1', role: 'cleaning_inspector' },
+  )
+  assert.equal(currentDualAssignee.response.status, 200)
+  assert.deepEqual(currentDualAssignee.body.items.map((item: any) => item.id), ['password-only-dual-lockbox'])
+
+  const passwordOnlyReassigned = await getJson(
+    baseUrl,
+    formPhotoPath('password-only-reassigned', ['password-only-reassigned'], 'inspector', true),
+    { id: 'former-password-executor-1', role: 'cleaning_inspector' },
+  )
+  assert.equal(passwordOnlyReassigned.response.status, 200)
+  assert.deepEqual(passwordOnlyReassigned.body.items.map((item: any) => item.id), ['password-only-reassigned-lockbox'], 'same-transaction upload_access_video audit restores the real executor even when a different non-empty uploader is persisted')
+
+  const passwordOnlyPersistedUploader = await getJson(
+    baseUrl,
+    formPhotoPath('password-only-reassigned', ['password-only-reassigned'], 'inspector', true),
+    { id: 'service-video-writer-1', role: 'cleaning_inspector' },
+  )
+  assert.equal(passwordOnlyPersistedUploader.response.status, 200)
+  assert.deepEqual(passwordOnlyPersistedUploader.body.items.map((item: any) => item.id), ['password-only-reassigned-lockbox'], 'the persisted uploader remains an independent legal evidence actor when the same-transaction audit actor differs')
+
+  const passwordOnlyInspectionOnlyActor = await getJson(
+    baseUrl,
+    formPhotoPath('password-only-reassigned', ['password-only-reassigned'], 'inspector', true),
+    { id: 'inspection-only-historical-1', role: 'cleaning_inspector' },
+  )
+  assert.equal(passwordOnlyInspectionOnlyActor.response.status, 403, 'generic inspection evidence cannot replace same-source password-only video evidence')
+
+  const passwordOnlyCrossSourceAuditActor = await getJson(
+    baseUrl,
+    formPhotoPath('password-only-reassigned', ['password-only-reassigned'], 'inspector', true),
+    { id: 'cross-source-video-actor-1', role: 'cleaning_inspector' },
+  )
+  assert.equal(passwordOnlyCrossSourceAuditActor.response.status, 403, 'an upload_access_video audit from another source cannot authorize reassigned history')
+
+  const oldReplacedVideoActor = await getJson(
+    baseUrl,
+    formPhotoPath('password-only-replaced-video', ['password-only-replaced-video'], 'inspector', true),
+    { id: 'old-replaced-video-actor-1', role: 'cleaning_inspector' },
+  )
+  assert.equal(oldReplacedVideoActor.response.status, 403, 'an older upload audit cannot authorize a later replacement video')
+
+  const currentBlankUploaderAuditActor = await getJson(
+    baseUrl,
+    formPhotoPath('password-only-replaced-video', ['password-only-replaced-video'], 'inspector', true),
+    { id: 'replacement-video-executor-1', role: 'cleaning_inspector' },
+  )
+  assert.equal(currentBlankUploaderAuditActor.response.status, 200, 'the exact current-video audit keeps legacy blank-uploader history readable after reassignment')
+  assert.deepEqual(currentBlankUploaderAuditActor.body.items.map((item: any) => item.id), ['password-only-replaced-lockbox'])
+
+  const cancelledPasswordOnly = await getJson(baseUrl, formPhotoPath('password-only-cancelled', ['password-only-cancelled'], 'inspector', true), mia)
+  assert.equal(cancelledPasswordOnly.response.status, 403, 'cancelled password-only media stays hidden even when the old source id is known')
+
   const outsider = await getJson(baseUrl, formPhotoPath(pairId, ['checkout-active', 'checkin-active'], 'cleaner'), { id: 'outsider-1', role: 'cleaner' })
   assert.equal(outsider.response.status, 403)
 
   const independent = await getJson(baseUrl, formPhotoPath(pairId, ['checkout-active', 'same-day-independent'], 'inspector'), inspector)
   assert.equal(independent.response.status, 403, 'same property/date without a booking boundary must not share photos')
+
+  const manualPairId = 'cleaning_tasks_merged:property-7:2026-10-22'
+  const manualPairIds = ['manual-checkout-active', 'manual-checkin-active']
+  const manualInspector = { id: 'manual-inspector-1', role: 'cleaning_inspector' }
+  const manualPair = await getJson(baseUrl, formPhotoPath(manualPairId, manualPairIds, 'inspector'), manualInspector)
+  assert.equal(manualPair.response.status, 200, 'the assigned checkin inspector may read the explicitly linked manual checkout evidence')
+  assert.deepEqual(manualPair.body.items.map((item: any) => item.id), ['manual-key-1'])
+
+  const wrongManualSource = await getJson(baseUrl, formPhotoPath(manualPairId, ['manual-checkout-active', 'same-day-independent'], 'inspector'), manualInspector)
+  assert.equal(wrongManualSource.response.status, 403, 'an explicit manual link cannot authorize an unrelated same-day source')
+
+  const manualCheckin = tasks.find((task) => task.id === 'manual-checkin-active')!
+  const originalInspectorId = manualCheckin.inspector_id
+  const originalAssigneeId = manualCheckin.assignee_id
+  manualCheckin.inspector_id = 'replacement-inspector'
+  manualCheckin.assignee_id = 'replacement-inspector'
+  const manualReassigned = await getJson(baseUrl, formPhotoPath(manualPairId, manualPairIds, 'inspector'), manualInspector)
+  assert.equal(manualReassigned.response.status, 403, 'reassignment revokes the former checkin inspector from the linked manual checkout evidence')
+  manualCheckin.inspector_id = originalInspectorId
+  manualCheckin.assignee_id = originalAssigneeId
+
+  const originalManualStatus = manualCheckin.status
+  const originalManualExecutionState = manualCheckin.execution_state
+  manualCheckin.status = 'cancelled'
+  manualCheckin.execution_state = 'cancelled'
+  const manualCancelled = await getJson(baseUrl, formPhotoPath(manualPairId, manualPairIds, 'inspector'), manualInspector)
+  assert.equal(manualCancelled.response.status, 403, 'a cancelled side invalidates explicit manual-pair evidence access')
+  manualCheckin.status = originalManualStatus
+  manualCheckin.execution_state = originalManualExecutionState
 
   const formerCleaner = await getJson(baseUrl, formPhotoPath('reassigned-task', ['reassigned-task'], 'cleaner'), cleaner)
   assert.equal(formerCleaner.response.status, 200)
@@ -572,10 +974,63 @@ async function verifyFormPhotoRoute(baseUrl: string) {
   assert.equal(superseded.response.status, 403, 'superseded records remain hidden even if the old source id is known')
 }
 
+async function verifyWorkTaskListToMediaRoute(baseUrl: string) {
+  const actor = { id: 'former-password-executor-1', role: 'cleaning_inspector' }
+  const listed = await getJson(baseUrl, '/mzapp/work-tasks?date_from=2026-10-28&date_to=2026-10-28', actor)
+  assert.equal(listed.response.status, 200, JSON.stringify(listed.body))
+  const record = (Array.isArray(listed.body) ? listed.body : []).find((item: any) => item.source_id === 'password-only-reassigned')
+  assert.ok(record, 'same-source current-video audit actor receives the password-only historical task record')
+  assert.equal(record.execution_role, 'execution')
+  assert.equal(record.read_only_views?.lockbox_video, true)
+  assert.equal(record.read_only_views?.inspection_photos, false)
+  assert.equal(record.read_only_views?.cleaner_photos, false)
+  assert.deepEqual(record.read_only_views?.media_source_ids, ['password-only-reassigned'])
+
+  const photos = await getJson(
+    baseUrl,
+    formPhotoPath(String(record.id), record.read_only_views.media_source_ids, record.read_only_views.media_scope, true),
+    actor,
+  )
+  assert.equal(photos.response.status, 200)
+  assert.deepEqual(photos.body.items.map((item: any) => item.id), ['password-only-reassigned-lockbox'])
+  const streamed = await fetch(
+    `${baseUrl}${mediaPath(photos.body.items[0].url, record.read_only_views.media_source_ids, record.read_only_views.media_scope, 'password-only-reassigned', 'source')}`,
+    { headers: { ...userHeaders(actor), range: 'bytes=2-7' } },
+  )
+  assert.equal(streamed.status, 206)
+  assert.equal(Buffer.from(await streamed.arrayBuffer()).toString(), '234567')
+
+  const uploaderActor = { id: 'service-video-writer-1', role: 'cleaning_inspector' }
+  const uploaderListed = await getJson(baseUrl, '/mzapp/work-tasks?date_from=2026-10-28&date_to=2026-10-28', uploaderActor)
+  const uploaderRecord = (Array.isArray(uploaderListed.body) ? uploaderListed.body : []).find((item: any) => item.source_id === 'password-only-reassigned')
+  assert.ok(uploaderRecord, 'a non-empty persisted uploader remains a separate task-list actor when the same-transaction audit identifies another executor')
+  const uploaderPhotos = await getJson(
+    baseUrl,
+    formPhotoPath(String(uploaderRecord.id), uploaderRecord.read_only_views.media_source_ids, uploaderRecord.read_only_views.media_scope, true),
+    uploaderActor,
+  )
+  assert.equal(uploaderPhotos.response.status, 200)
+  assert.deepEqual(uploaderPhotos.body.items.map((item: any) => item.id), ['password-only-reassigned-lockbox'])
+
+  for (const deniedActor of [
+    { id: 'old-replaced-video-actor-1', role: 'cleaning_inspector' },
+    { id: 'stale-inspector-1', role: 'cleaning_inspector' },
+  ]) {
+    const deniedList = await getJson(baseUrl, '/mzapp/work-tasks?date_from=2026-10-26&date_to=2026-10-28', deniedActor)
+    assert.equal(deniedList.response.status, 200)
+    assert.equal((Array.isArray(deniedList.body) ? deniedList.body : []).some((item: any) => [
+      'password-only-reassigned',
+      'password-only-replaced-video',
+      'password-only-dual-assignment',
+    ].includes(String(item.source_id || ''))), false, 'old audit actors and non-fallback inspectors receive no historical password-only entry')
+  }
+}
+
 async function verifyMediaByteRoute(baseUrl: string) {
   const cleaner = { id: 'cleaner-1', role: 'cleaner' }
   const inspector = { id: 'inspector-1', role: 'cleaning_inspector' }
   const pair = ['checkout-active', 'checkin-active']
+  const mia = { id: 'mia-1', role: 'cleaning_inspector' }
 
   const cleanerOwn = await fetch(`${baseUrl}${mediaPath('cleaning/route/cleaner-own.jpg', pair, 'cleaner', 'checkout-active')}`, { headers: userHeaders(cleaner) })
   assert.equal(cleanerOwn.status, 200)
@@ -628,6 +1083,93 @@ async function verifyMediaByteRoute(baseUrl: string) {
   assert.equal(managerVideo.headers.get('accept-ranges'), 'bytes')
   assert.equal(managerVideo.headers.get('content-range'), 'bytes 2-7/22')
   assert.equal(Buffer.from(await managerVideo.arrayBuffer()).toString(), '234567')
+
+  const passwordOnlyVideo = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-lockbox.mp4', ['password-only-execution'], 'inspector', 'password-only-execution', 'source')}`,
+    { headers: { ...userHeaders(mia), range: 'bytes=2-7' } },
+  )
+  assert.equal(passwordOnlyVideo.status, 206, 'the exact password-only executor may stream their saved historical lockbox video')
+  assert.equal(Buffer.from(await passwordOnlyVideo.arrayBuffer()).toString(), '234567')
+
+  const passwordOnlyCleanerPhoto = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-cleaner.jpg', ['password-only-execution'], 'inspector', 'password-only-execution')}`,
+    { headers: userHeaders(mia) },
+  )
+  assert.equal(passwordOnlyCleanerPhoto.status, 403, 'password-only history never grants the inspector cleaner completion-photo bytes')
+
+  const passwordOnlyCrossSource = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-lockbox.mp4', ['checkin-active'], 'inspector', 'password-only-execution', 'source')}`,
+    { headers: userHeaders(mia) },
+  )
+  assert.equal(passwordOnlyCrossSource.status, 403, 'a mismatched Root-issued source list cannot authorize password-only video bytes')
+
+  const cancelledPasswordOnlyVideo = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-cancelled.mp4', ['password-only-cancelled'], 'inspector', 'password-only-cancelled', 'source')}`,
+    { headers: userHeaders(mia) },
+  )
+  assert.equal(cancelledPasswordOnlyVideo.status, 403, 'cancelled password-only video bytes remain unavailable')
+
+  const passwordOnlyInspectorFallback = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-fallback.mp4', ['password-only-inspector-fallback'], 'inspector', 'password-only-inspector-fallback', 'source')}`,
+    { headers: userHeaders({ id: 'fallback-inspector-1', role: 'cleaning_inspector' }) },
+  )
+  assert.equal(passwordOnlyInspectorFallback.status, 200, 'inspector_id fallback may read only the exact password-only video even when the stored uploader differs')
+  await passwordOnlyInspectorFallback.arrayBuffer()
+
+  const passwordOnlyFallbackInspection = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-fallback-inspection.jpg', ['password-only-inspector-fallback'], 'inspector', 'password-only-inspector-fallback')}`,
+    { headers: userHeaders({ id: 'fallback-inspector-1', role: 'cleaning_inspector' }) },
+  )
+  assert.equal(passwordOnlyFallbackInspection.status, 403, 'inspector_id fallback cannot enter the generic inspection-photo surface')
+
+  const passwordOnlyFallbackKey = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-fallback-key.jpg', ['password-only-inspector-fallback'], 'inspector', 'password-only-inspector-fallback')}`,
+    { headers: userHeaders({ id: 'fallback-inspector-1', role: 'cleaning_inspector' }) },
+  )
+  assert.equal(passwordOnlyFallbackKey.status, 403, 'password-only fallback cannot inherit the generic guest-key exception')
+
+  const passwordOnlyFallbackRestock = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-fallback-restock.jpg', ['password-only-inspector-fallback'], 'inspector', 'password-only-inspector-fallback')}`,
+    { headers: userHeaders({ id: 'fallback-inspector-1', role: 'cleaning_inspector' }) },
+  )
+  assert.equal(passwordOnlyFallbackRestock.status, 403, 'password-only fallback cannot inherit restock/supplies photo access')
+
+  const passwordOnlyStaleInspector = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-dual.mp4', ['password-only-dual-assignment'], 'inspector', 'password-only-dual-assignment', 'source')}`,
+    { headers: userHeaders({ id: 'stale-inspector-1', role: 'cleaning_inspector' }) },
+  )
+  assert.equal(passwordOnlyStaleInspector.status, 403, 'a non-fallback inspector cannot stream the assignee-owned password-only video')
+
+  const passwordOnlyReassigned = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-reassigned.mp4', ['password-only-reassigned'], 'inspector', 'password-only-reassigned', 'source')}`,
+    { headers: { ...userHeaders({ id: 'former-password-executor-1', role: 'cleaning_inspector' }), range: 'bytes=2-7' } },
+  )
+  assert.equal(passwordOnlyReassigned.status, 206, 'same-source historical upload audit authorizes the reassigned actor even when legacy media has no uploader_id')
+  assert.equal(Buffer.from(await passwordOnlyReassigned.arrayBuffer()).toString(), '234567')
+
+  const passwordOnlyReassignedPhoto = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-reassigned-completion.jpg', ['password-only-reassigned'], 'inspector', 'password-only-reassigned')}`,
+    { headers: userHeaders({ id: 'former-password-executor-1', role: 'cleaning_inspector' }) },
+  )
+  assert.equal(passwordOnlyReassignedPhoto.status, 403, 'historical video evidence never grants completion-photo bytes')
+
+  const passwordOnlyInspectionOnlyActor = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-reassigned.mp4', ['password-only-reassigned'], 'inspector', 'password-only-reassigned', 'source')}`,
+    { headers: userHeaders({ id: 'inspection-only-historical-1', role: 'cleaning_inspector' }) },
+  )
+  assert.equal(passwordOnlyInspectionOnlyActor.status, 403, 'generic inspection history cannot authorize password-only video bytes')
+
+  const passwordOnlyCrossSourceAuditActor = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-reassigned.mp4', ['password-only-reassigned'], 'inspector', 'password-only-reassigned', 'source')}`,
+    { headers: userHeaders({ id: 'cross-source-video-actor-1', role: 'cleaning_inspector' }) },
+  )
+  assert.equal(passwordOnlyCrossSourceAuditActor.status, 403, 'a historical upload audit for a different source cannot authorize video bytes')
+
+  const oldReplacedVideoActor = await fetch(
+    `${baseUrl}${mediaPath('cleaning/route/password-only-replaced.mp4', ['password-only-replaced-video'], 'inspector', 'password-only-replaced-video', 'source')}`,
+    { headers: userHeaders({ id: 'old-replaced-video-actor-1', role: 'cleaning_inspector' }) },
+  )
+  assert.equal(oldReplacedVideoActor.status, 403, 'an old same-source audit cannot stream a newer replacement video')
 
   const unscopedVideo = await fetch(
     `${baseUrl}/cleaning-app/media/image?key=${encodeURIComponent('cleaning/route/lockbox.mp4')}&variant=source&source_task_id=checkout-active`,
@@ -852,6 +1394,7 @@ async function verifyInspectorCleaningProofRoutes(baseUrl: string) {
 }
 
 withRouteServer(async (baseUrl) => {
+  await verifyWorkTaskListToMediaRoute(baseUrl)
   await verifyFormPhotoRoute(baseUrl)
   await verifyMediaByteRoute(baseUrl)
   await verifyLegacyInspectionPhotoRoute(baseUrl)

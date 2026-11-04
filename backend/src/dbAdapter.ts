@@ -196,6 +196,26 @@ function orderBoundaryDay(value: any): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10)
 }
 
+async function canonicalOrderTurnoverPropertyKeys(executor: any, propertyIds: any[]): Promise<Map<string, string>> {
+  const rawKeys = Array.from(new Set((propertyIds || []).map((value) => String(value || '').trim()).filter(Boolean)))
+  const out = new Map<string, string>()
+  if (!rawKeys.length) return out
+  const result = await executor.query(
+    `SELECT raw.property_id AS raw_property_id,
+            COALESCE(p_id.id::text, p_code.id::text, raw.property_id) AS canonical_property_id
+       FROM unnest($1::text[]) AS raw(property_id)
+       LEFT JOIN properties p_id ON p_id.id::text = raw.property_id
+       LEFT JOIN properties p_code ON upper(p_code.code) = upper(raw.property_id)`,
+    [rawKeys],
+  )
+  for (const row of result?.rows || []) {
+    const raw = String(row?.raw_property_id || '').trim()
+    if (raw) out.set(raw, String(row?.canonical_property_id || raw).trim() || raw)
+  }
+  for (const raw of rawKeys) if (!out.has(raw)) out.set(raw, raw)
+  return out
+}
+
 async function lockOrderTurnoverIdentityWrite(executor: any, id: string, payload: Record<string, any>) {
   await executor.query(
     'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
@@ -210,6 +230,7 @@ async function lockOrderTurnoverIdentityWrite(executor: any, id: string, payload
   const nextPropertyId = payload.property_id !== undefined ? payload.property_id : current.property_id
   const nextCheckin = payload.checkin !== undefined ? payload.checkin : current.checkin
   const nextCheckout = payload.checkout !== undefined ? payload.checkout : current.checkout
+  const canonicalPropertyKeys = await canonicalOrderTurnoverPropertyKeys(executor, [current.property_id, nextPropertyId])
   const lockKeys = new Set<string>()
   for (const [propertyId, boundaryValue] of [
     [current.property_id, current.checkin],
@@ -217,7 +238,8 @@ async function lockOrderTurnoverIdentityWrite(executor: any, id: string, payload
     [nextPropertyId, nextCheckin],
     [nextPropertyId, nextCheckout],
   ] as Array<[any, any]>) {
-    const propertyKey = String(propertyId || '').trim()
+    const rawPropertyKey = String(propertyId || '').trim()
+    const propertyKey = canonicalPropertyKeys.get(rawPropertyKey) || rawPropertyKey
     const boundaryDay = orderBoundaryDay(boundaryValue)
     if (propertyKey && boundaryDay) lockKeys.add(`${propertyKey}\u0000${boundaryDay}`)
   }

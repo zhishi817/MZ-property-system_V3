@@ -3,7 +3,7 @@ import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { v4 as uuid } from 'uuid'
 import { pgPool } from '../../src/dbAdapter'
-import { __test_hasManualTaskExecutionRecords, claimTaskPasswordAuthorityFields, confirmTaskPasswordAuthority, ensureCleaningSchemaV2, guestReadyCheckinIdentityChangedFields, reconcilePasswordAuthorityAfterTaskTopologyChange, syncCheckinOldCodeFromPreviousStay, syncCheckoutOldCodeFromCheckinNewCode, syncNextCheckinOldCodeFromSourceOrder, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
+import { __test_hasManualTaskExecutionRecords, claimTaskPasswordAuthorityFields, cleaningTurnoverRelationshipVersion, confirmTaskPasswordAuthority, ensureCleaningSchemaV2, guestReadyCheckinIdentityChangedFields, invalidatePasswordDependentsForSourceTask, normalizeCleaningTurnoverTargetKeys, reconcilePasswordAuthorityAfterTaskTopologyChange, resolveCleaningScheduleManagerUserIds, resolveCleaningTopologyReviewEpisode, syncCheckinOldCodeFromPreviousStay, syncCheckoutOldCodeFromCheckinNewCode, syncNextCheckinOldCodeFromSourceOrder, syncOrderToCleaningTasks, backfillCleaningTasks } from '../../src/services/cleaningSync'
 import { cleaningSyncJobScope, enqueueCleaningSyncJobTx } from '../../src/services/cleaningSyncJobs'
 import { __test_dispatchCleaningSyncJob, __test_syncOrderOptionsForJob, __test_syncScopeForJob } from '../../src/services/cleaningSyncJobsWorker'
 import { db } from '../../src/store'
@@ -39,6 +39,7 @@ async function assertScopedQueueIdentity() {
   const rows: Array<{ id: string; order_id: string; action: string; payload_snapshot: any; fingerprint: string; status: string }> = []
   const orderStatuses = new Map<string, string>()
   let crossScopeSideEffects = 0
+  let directCleaningTaskWrites = 0
   const client = {
     async query(sql: string, params: any[] = []) {
       if (sql.includes("SELECT lower(coalesce(status, '')) AS s FROM orders")) {
@@ -60,11 +61,17 @@ async function assertScopedQueueIdentity() {
         row.payload_snapshot = payloadSnapshot
         return { rowCount: 1, rows: [] }
       }
-      if (
-        (sql.includes("UPDATE cleaning_sync_jobs") && (sql.includes("SET status='skipped'") || sql.includes("SET status='done'"))) ||
-        sql.includes('UPDATE cleaning_tasks')
-      ) {
+      if (sql.includes('UPDATE cleaning_sync_jobs') && (sql.includes("SET status='skipped'") || sql.includes("SET status='done'"))) {
+        const orderId = String(params[0] || '')
+        const targetStatus = sql.includes("SET status='skipped'") ? 'skipped' : 'done'
+        for (const row of rows) {
+          if (row.order_id === orderId && ['pending', 'running'].includes(row.status)) row.status = targetStatus
+        }
+        return { rowCount: 0, rows: [] }
+      }
+      if (sql.includes('UPDATE cleaning_tasks')) {
         crossScopeSideEffects += 1
+        directCleaningTaskWrites += 1
         return { rowCount: 0, rows: [] }
       }
       if (sql.includes('INSERT INTO cleaning_sync_jobs')) {
@@ -116,6 +123,13 @@ async function assertScopedQueueIdentity() {
   assert.equal(rows.filter((row) => row.order_id === scopedDeleted && cleaningSyncJobScope(row.payload_snapshot) === 'checkin_only' && row.action === 'deleted' && row.status === 'pending').length, 1, 'the scoped delete remains isolated for the worker no-op path')
   assert.equal(crossScopeSideEffects, 0, 'a scoped delete must not change normal queue state or task projections')
 
+  const fullCancelled = 'queue-full-cancelled'
+  orderStatuses.set(fullCancelled, 'cancelled')
+  const cancelledFullResult = await enqueueCleaningSyncJobTx(client, { order_id: fullCancelled, action: 'updated', payload_snapshot: { id: fullCancelled, revision: 'full-cancelled-1' } })
+  assert.equal(cancelledFullResult.merged, false, 'a normal cancellation must enqueue the full transactional worker path')
+  assert.equal(rows.filter((row) => row.order_id === fullCancelled && cleaningSyncJobScope(row.payload_snapshot) === 'full' && row.status === 'pending').length, 1)
+  assert.equal(directCleaningTaskWrites, 0, 'queue admission must never perform a raw task cancellation outside the worker transaction')
+
   const migration = readFileSync(resolve(__dirname, '../migrations/20260820_cleaning_sync_job_scope_identity.sql'), 'utf8')
   assert.match(migration, /DROP INDEX IF EXISTS uniq_cleaning_sync_jobs_order_action_active/i)
   assert.match(migration, /payload_snapshot->>'sync_scope'/)
@@ -126,6 +140,96 @@ async function assertScopedQueueIdentity() {
 }
 
 async function main() {
+  assert.deepEqual(resolveCleaningScheduleManagerUserIds({
+    permissionRoleIds: ['role.cleaning_manager', 'custom-role-id'],
+    roles: [
+      { id: 'role.cleaning_manager', name: 'cleaning_manager' },
+      { id: 'custom-role-id', name: 'custom_scheduler' },
+      { id: 'role.offline_manager', name: 'offline_manager' },
+    ],
+    users: [
+      { id: 'admin-user', role: 'admin' },
+      { id: 'cleaning-manager-user', role: 'cleaning_manager' },
+      { id: 'custom-user', role: 'cleaner' },
+      { id: 'offline-user', role: 'offline_manager' },
+      { id: 'ordinary-user', role: 'cleaner' },
+    ],
+    userRoles: [{ user_id: 'custom-user', role_name: 'custom_scheduler' }],
+  }), [
+    'admin-user',
+    'cleaning-manager-user',
+    'custom-user',
+  ], 'locked-task review prompts must target only admin or roles granted cleaning.schedule.manage')
+  const cleaningSyncSource = readFileSync(resolve(__dirname, '../../src/services/cleaningSync.ts'), 'utf8')
+  const reviewSignalStart = cleaningSyncSource.indexOf('async function emitLockedTaskTopologyReviewSignal')
+  const reviewSignalEnd = cleaningSyncSource.indexOf('async function syncOneTask', reviewSignalStart)
+  const reviewSignalSource = cleaningSyncSource.slice(reviewSignalStart, reviewSignalEnd)
+  assert.ok(reviewSignalStart >= 0 && reviewSignalEnd > reviewSignalStart, 'locked-task review signal source must remain present')
+  assert.match(reviewSignalSource, /type: 'CLEANING_ORDER_TOPOLOGY_REVIEW_REQUIRED'/)
+  assert.match(reviewSignalSource, /notificationRecipientUserIds = managerUserIds\.filter[\s\S]*?recipientUserIds: notificationRecipientUserIds/, 'a repeated topology episode must notify only newly authorized schedule managers')
+  assert.match(reviewSignalSource, /await ensureNotificationStorage\(\)/, 'notification storage must exist before idempotency lookup')
+  assert.match(reviewSignalSource, /FROM user_notifications[\s\S]*WHERE event_id = \$1/, 'same topology episode must reuse its persisted notification')
+  assert.match(reviewSignalSource, /if \(!notificationResult\?\.ok\) throw new Error\('cleaning_order_topology_review_notification_failed'\)/, 'notification persistence failure must abort the sync transaction')
+  assert.match(cleaningSyncSource, /return await pgRunInTransaction\(\(client\) => syncOrderToCleaningTasks/, 'task change, audit, review event, and notification must share one rollback boundary')
+  assert.doesNotMatch(reviewSignalSource, /next_property_id|next_task_date|nextPropertyId|nextTaskDate/, 'manager review payload must not disclose the order\'s new property or date')
+  assert.match(reviewSignalSource, /const taskDate = dayOnly\(params\.task\?\.task_date \?\? params\.task\?\.date\)[\s\S]*?task_date: taskDate/, 'the notice must include only the locked task\'s own safe business date for an empty-cache deep link')
+  assert.match(cleaningSyncSource, /async function emitCleaningTaskRemovalEvent[\s\S]*?eventType: 'TASK_REMOVED'[\s\S]*?changeScope: 'membership'/, 'every cancelled cleaning task kind needs a membership removal event')
+  assert.match(cleaningSyncSource, /cancelOrderCleaningTasks[\s\S]*?await emitCleaningTaskRemovalEvent\(\{ before: taskBefore, after, reason: params\.reason/, 'the transactional cancellation path must remove checkout-only as well as check-in tasks from live clients')
+  assert.match(cleaningSyncSource, /canonicalTargetPropertyId[\s\S]*?resolveCleaningTopologyReviewEpisode\(\{[\s\S]*?canonicalPropertyId: canonicalTargetPropertyId/, 'locked and terminal review episodes must use the canonical target property identity')
+  assert.doesNotMatch(cleaningSyncSource, /topologyFingerprint: sha256\(\[String\(propertyId/, 'review idempotency must not hash a raw code-or-UUID property representation')
+  assert.match(cleaningSyncSource, /review_task_id:[\s\S]*?review_topology_key:[\s\S]*?review_episode_id:[\s\S]*?review_relationship_version:/, 'both detach and locked-task audit rows must persist the shared review episode and relationship generation')
+  assert.match(cleaningSyncSource, /FROM work_task_events[\s\S]*?linked_checkout_task_id[\s\S]*?payload->'patch'->>'linked_checkout_task_id'/, 'PostgreSQL incidents must use the exact explicit-link event generation rather than an unrelated task edit timestamp')
+  const firstRelationshipVersion = cleaningTurnoverRelationshipVersion(
+    { id: 'review-checkin', linked_checkout_task_id: 'review-checkout', updated_at: '2026-05-19T00:00:00.000Z' },
+    { id: 'review-checkout' },
+  )
+  const relinkedRelationshipVersion = cleaningTurnoverRelationshipVersion(
+    { id: 'review-checkin', linked_checkout_task_id: 'review-checkout', updated_at: '2026-05-19T01:00:00.000Z' },
+    { id: 'review-checkout' },
+  )
+  assert.ok(firstRelationshipVersion && relinkedRelationshipVersion)
+  assert.notEqual(relinkedRelationshipVersion, firstRelationshipVersion, 'manual relinking must advance the relationship generation even for the same pair IDs')
+  const firstReviewEpisode = await resolveCleaningTopologyReviewEpisode({ taskId: 'review-episode-task', canonicalPropertyId: 'property-uuid-b', taskDate: '2026-05-20', reason: 'auto_sync_disabled', changeId: 'direct-change-b-1', relationshipVersion: firstRelationshipVersion })
+  const directRetryEpisode = await resolveCleaningTopologyReviewEpisode({ taskId: 'review-episode-task', canonicalPropertyId: 'property-uuid-b', taskDate: '2026-05-20', reason: 'auto_sync_disabled', changeId: 'direct-retry-b-1', relationshipVersion: firstRelationshipVersion })
+  assert.equal(directRetryEpisode.episodeId, firstReviewEpisode.episodeId, 'a direct retry of one relationship incident must reuse its review episode')
+  const backfillRetryEpisode = await resolveCleaningTopologyReviewEpisode({ taskId: 'review-episode-task', canonicalPropertyId: 'property-uuid-b', taskDate: '2026-05-20', reason: 'auto_sync_disabled', changeId: 'backfill-retry-b-1' })
+  assert.equal(backfillRetryEpisode.episodeId, firstReviewEpisode.episodeId, 'a backfill retry after detachment must reuse the committed relationship incident')
+  const relinkedReviewEpisode = await resolveCleaningTopologyReviewEpisode({ taskId: 'review-episode-task', canonicalPropertyId: 'property-uuid-b', taskDate: '2026-05-20', reason: 'auto_sync_disabled', changeId: 'direct-change-b-2', relationshipVersion: relinkedRelationshipVersion })
+  assert.notEqual(relinkedReviewEpisode.episodeId, firstReviewEpisode.episodeId, 'detach, manual relink, and a second move to the same topology must create a new incident')
+  const relinkedDirectRetry = await resolveCleaningTopologyReviewEpisode({ taskId: 'review-episode-task', canonicalPropertyId: 'property-uuid-b', taskDate: '2026-05-20', reason: 'auto_sync_disabled', changeId: 'direct-retry-b-2', relationshipVersion: relinkedRelationshipVersion })
+  const relinkedBackfillRetry = await resolveCleaningTopologyReviewEpisode({ taskId: 'review-episode-task', canonicalPropertyId: 'property-uuid-b', taskDate: '2026-05-20', reason: 'auto_sync_disabled', changeId: 'backfill-retry-b-2' })
+  assert.equal(relinkedDirectRetry.episodeId, relinkedReviewEpisode.episodeId, 'the second incident direct retry must remain idempotent')
+  assert.equal(relinkedBackfillRetry.episodeId, relinkedReviewEpisode.episodeId, 'the second incident backfill retry must remain idempotent')
+  assert.equal(new Set([firstReviewEpisode.episodeId, directRetryEpisode.episodeId, backfillRetryEpisode.episodeId, relinkedReviewEpisode.episodeId, relinkedDirectRetry.episodeId, relinkedBackfillRetry.episodeId]).size, 2, 'two real incidents must yield exactly two notification event identities')
+  const secondReviewEpisode = await resolveCleaningTopologyReviewEpisode({ taskId: 'review-episode-task', canonicalPropertyId: 'property-uuid-c', taskDate: '2026-05-20', reason: 'auto_sync_disabled', changeId: 'change-c' })
+  assert.notEqual(secondReviewEpisode.episodeId, relinkedReviewEpisode.episodeId, 'a real later move to another property must create a new review episode')
+  const returnedReviewEpisode = await resolveCleaningTopologyReviewEpisode({ taskId: 'review-episode-task', canonicalPropertyId: 'property-uuid-b', taskDate: '2026-05-20', reason: 'auto_sync_disabled', changeId: 'change-b-2' })
+  assert.notEqual(returnedReviewEpisode.episodeId, firstReviewEpisode.episodeId, 'returning to a previous property after an intervening topology must create a new incident')
+
+  const dbAdapterSource = readFileSync(resolve(__dirname, '../../src/dbAdapter.ts'), 'utf8')
+  const mz065Migration = readFileSync(resolve(__dirname, '../migrations/20261104_mz065_manual_create_receipts.sql'), 'utf8')
+  assert.match(cleaningSyncSource, /normalizeCleaningTurnoverTargetKeys[\s\S]*?canonicalCleaningPropertyIdentity[\s\S]*?\.sort\(\)/, 'application turnover locks must canonicalize every property alias and acquire one global sorted key set')
+  assert.match(dbAdapterSource, /canonicalOrderTurnoverPropertyKeys[\s\S]*?Array\.from\(lockKeys\)\.sort\(\)/, 'order updates must share the canonical globally sorted turnover lock domain')
+  assert.match(mz065Migration, /COALESCE\(p_id\.id::text, p_code\.id::text, NEW\.property_id::text\)[\s\S]*?ORDER BY key_parts\.property_key, key_parts\.boundary_day/, 'order inserts must canonicalize code/UUID aliases before taking sorted boundary locks')
+  if (!pgPool) {
+    const aliasPropertyId = uuid()
+    const secondPropertyId = uuid()
+    ;(db.properties as any[]).push(
+      { id: aliasPropertyId, code: 'P_TEST_LOCK_ALIAS' },
+      { id: secondPropertyId, code: 'P_TEST_LOCK_SECOND' },
+    )
+    assert.deepEqual(await normalizeCleaningTurnoverTargetKeys(null, [
+      { propertyId: 'P_TEST_LOCK_SECOND', taskDate: '2026-06-02' },
+      { propertyId: aliasPropertyId, taskDate: '2026-06-01' },
+      { propertyId: 'P_TEST_LOCK_ALIAS', taskDate: '2026-06-01' },
+      { propertyId: secondPropertyId, taskDate: '2026-06-01' },
+    ]), [
+      `${aliasPropertyId}\u00002026-06-01`,
+      `${secondPropertyId}\u00002026-06-01`,
+      `${secondPropertyId}\u00002026-06-02`,
+    ].sort(), 'code/UUID aliases must collapse to the same globally ordered lock key without losing distinct boundaries')
+  }
+
   let auditEvidenceQuerySeen = false
   assert.equal(await __test_hasManualTaskExecutionRecords(
     { id: 'manual-with-audit-only' },
@@ -182,6 +286,9 @@ async function main() {
   const o22 = uuid()
   const o23 = uuid()
   const o24 = uuid()
+  const o25 = uuid()
+  const o26 = uuid()
+  const o27 = uuid()
   const turnoverScopeJobId = uuid()
   const manualCheckin = uuid()
   const manualCheckout = uuid()
@@ -202,6 +309,11 @@ async function main() {
   const manualAmbiguousRelinkCheckout = uuid()
   const manualAmbiguousRelinkCheckinA = uuid()
   const manualAmbiguousRelinkCheckinB = uuid()
+  const orderMovedCheckinCheckout = uuid()
+  const orderMovedCheckinNewCandidate = uuid()
+  const orderMovedCheckoutCheckin = uuid()
+  const lockedMovedCheckoutCheckin = uuid()
+  const lockedPostprocessPlaceholder = uuid()
 
   await assertScopedQueueIdentity()
 
@@ -249,6 +361,9 @@ async function main() {
     { id: o22, property_id: 'P_TEST_PASSWORD_CREATION', checkin: '2026-04-20', checkout: '2026-04-23', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o22.slice(0, 8)}` },
     { id: o23, property_id: 'P_TEST_PASSWORD_CREATION', checkin: '2026-04-25', checkout: '2026-04-28', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o23.slice(0, 8)}` },
     { id: o24, property_id: 'P_TEST_PASSWORD_CREATION', checkin: '2026-05-01', checkout: '2026-05-04', nights: 3, status: 'confirmed', confirmation_code: `TEST_SYNC_${o24.slice(0, 8)}` },
+    { id: o25, property_id: 'P_TEST_LINK_MOVE_A', checkin: '2026-05-10', checkout: '2026-05-12', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o25.slice(0, 8)}` },
+    { id: o26, property_id: 'P_TEST_LINK_MOVE_B', checkin: '2026-05-15', checkout: '2026-05-17', nights: 2, status: 'confirmed', confirmation_code: `TEST_SYNC_${o26.slice(0, 8)}` },
+    { id: o27, property_id: 'P_TEST_LINK_MOVE_TOGETHER', checkin: '2026-05-20', checkout: '2026-05-20', nights: 0, status: 'confirmed', confirmation_code: `TEST_SYNC_${o27.slice(0, 8)}` },
   ]
 
   const orderIds = orders.map((order) => order.id)
@@ -258,7 +373,7 @@ async function main() {
     await warmupPasswordAuthoritySchema()
     await warmupR5TaskRuntimeSchema()
     await pgPool.query('DELETE FROM cleaning_sync_logs WHERE order_id = ANY($1)', [orderIds])
-    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [orderIds, [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights, manualLinkedCheckout, manualAmbiguousA, manualAmbiguousB, manualExecuted, manualIdentityConflict, manualCompetingOrder, manualStaleOfficial, manualRelinkCheckoutFirst, manualRelinkCheckinFirst, manualRelinkCheckoutSecond, manualRelinkCheckinSecond, manualAmbiguousRelinkCheckout, manualAmbiguousRelinkCheckinA, manualAmbiguousRelinkCheckinB]])
+    await pgPool.query('DELETE FROM cleaning_tasks WHERE order_id = ANY($1) OR id = ANY($2)', [orderIds, [manualCheckin, manualCheckout, manualExtraCheckin, manualCheckoutInProgress, manualCheckinZeroNights, manualLinkedCheckout, manualAmbiguousA, manualAmbiguousB, manualExecuted, manualIdentityConflict, manualCompetingOrder, manualStaleOfficial, manualRelinkCheckoutFirst, manualRelinkCheckinFirst, manualRelinkCheckoutSecond, manualRelinkCheckinSecond, manualAmbiguousRelinkCheckout, manualAmbiguousRelinkCheckinA, manualAmbiguousRelinkCheckinB, orderMovedCheckinCheckout, orderMovedCheckinNewCandidate, orderMovedCheckoutCheckin, lockedMovedCheckoutCheckin, lockedPostprocessPlaceholder]])
     await pgPool.query('DELETE FROM orders WHERE id = ANY($1)', [orderIds])
     for (const o of orders) {
       await pgPool.query(
@@ -486,9 +601,9 @@ async function main() {
     if (targetCheckin) { targetCheckin.old_code = 'manual-old-code'; targetCheckin.auto_sync_enabled = false }
   }
   const lockedWithoutSource = await syncCheckinOldCodeFromPreviousStay({ orderId: o7 })
-  assert.equal(lockedWithoutSource.action, 'updated', 'auto_sync_enabled=false alone must not preserve an unaudited password')
+  assert.equal(lockedWithoutSource.action, 'skipped_locked', 'automatic password cleanup must preserve all content on an auto-sync-disabled task')
   const lockedWithoutSourceCheckin = await fetchTaskByType(o7, 'checkin_clean')
-  assert.equal(lockedWithoutSourceCheckin?.old_code == null ? null : String(lockedWithoutSourceCheckin.old_code), null)
+  assert.equal(String(lockedWithoutSourceCheckin?.old_code), 'manual-old-code')
 
   if (pgPool) {
     await pgPool.query(`UPDATE cleaning_tasks SET old_code='manual-old-code', old_code_authority_status='manual_confirmed', old_code_source_field='manual', auto_sync_enabled=false WHERE order_id=$1 AND lower(COALESCE(task_type, type, ''))='checkin_clean'`, [o7])
@@ -604,6 +719,371 @@ async function main() {
   ])
   assert.equal(String((await fetchTaskByType(o24, 'checkout_clean'))?.old_code), 'CREATION_C', 'concurrent checkout generation and password sync must converge on the same-order source')
 
+  // MZ-065: an order identity move must detach only the now-invalid explicit
+  // relationship in the same sync transaction. Both source tasks and their
+  // execution evidence remain; the worker must never guess a replacement.
+  await syncOrderToCleaningTasks(o25)
+  const o25CheckinBefore = await fetchTaskByType(o25, 'checkin_clean')
+  assert.ok(o25CheckinBefore)
+  if (pgPool) {
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, type, task_date, date, status, source, execution_state, assignee_id, cleaner_id, guest_special_request, inspection_scope)
+       VALUES
+         ($1, NULL, 'P_TEST_LINK_MOVE_A', 'checkout_clean', 'checkout_clean', '2026-05-10'::date, '2026-05-10'::date, 'assigned', 'manual', 'active', 'MOVE-CHECKOUT-ASSIGNEE', 'MOVE-CHECKOUT-CLEANER', 'preserve-checkout-evidence', NULL),
+         ($2, NULL, 'P_TEST_LINK_MOVE_A2', 'checkout_clean', 'checkout_clean', '2026-05-11'::date, '2026-05-11'::date, 'pending', 'manual', 'active', NULL, NULL, 'do-not-auto-link', NULL)`,
+      [orderMovedCheckinCheckout, orderMovedCheckinNewCandidate],
+    )
+    await pgPool.query('UPDATE cleaning_tasks SET linked_checkout_task_id=$2 WHERE id=$1', [String(o25CheckinBefore.id), orderMovedCheckinCheckout])
+    await pgPool.query(`UPDATE orders SET property_id='P_TEST_LINK_MOVE_A2', checkin='2026-05-11'::date WHERE id=$1`, [o25])
+  } else {
+    ;(db.cleaningTasks as any[]).push(
+      { id: orderMovedCheckinCheckout, order_id: null, property_id: 'P_TEST_LINK_MOVE_A', task_type: 'checkout_clean', type: 'checkout_clean', task_date: '2026-05-10', date: '2026-05-10', status: 'assigned', source: 'manual', execution_state: 'active', assignee_id: 'MOVE-CHECKOUT-ASSIGNEE', cleaner_id: 'MOVE-CHECKOUT-CLEANER', guest_special_request: 'preserve-checkout-evidence' },
+      { id: orderMovedCheckinNewCandidate, order_id: null, property_id: 'P_TEST_LINK_MOVE_A2', task_type: 'checkout_clean', type: 'checkout_clean', task_date: '2026-05-11', date: '2026-05-11', status: 'pending', source: 'manual', execution_state: 'active', guest_special_request: 'do-not-auto-link' },
+    )
+    o25CheckinBefore.linked_checkout_task_id = orderMovedCheckinCheckout
+    const order = (db.orders as any[]).find((row: any) => String(row?.id || '') === o25)
+    order.property_id = 'P_TEST_LINK_MOVE_A2'
+    order.checkin = '2026-05-11'
+  }
+  await syncOrderToCleaningTasks(o25)
+  const o25CheckinAfter = await fetchTaskByType(o25, 'checkin_clean')
+  assert.equal(String(o25CheckinAfter?.id), String(o25CheckinBefore.id), 'order checkin movement must preserve the original task identity')
+  assert.equal(String(o25CheckinAfter?.property_id), 'P_TEST_LINK_MOVE_A2', 'order checkin task must follow the authoritative new property')
+  assert.equal(String(o25CheckinAfter?.task_date ?? o25CheckinAfter?.date).slice(0, 10), '2026-05-11', 'order checkin task must follow the authoritative new date')
+  assert.equal(o25CheckinAfter?.linked_checkout_task_id ?? null, null, 'moving an order checkin must detach its invalid old checkout relationship')
+  const preservedCheckout = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [orderMovedCheckinCheckout])).rows[0]
+    : (db.cleaningTasks as any[]).find((row: any) => String(row?.id || '') === orderMovedCheckinCheckout)
+  const unguessedCandidate = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [orderMovedCheckinNewCandidate])).rows[0]
+    : (db.cleaningTasks as any[]).find((row: any) => String(row?.id || '') === orderMovedCheckinNewCandidate)
+  assert.equal(String(preservedCheckout?.source), 'manual')
+  assert.equal(String(preservedCheckout?.assignee_id), 'MOVE-CHECKOUT-ASSIGNEE')
+  assert.equal(String(preservedCheckout?.cleaner_id), 'MOVE-CHECKOUT-CLEANER')
+  assert.equal(String(preservedCheckout?.guest_special_request), 'preserve-checkout-evidence', 'detaching must preserve the checkout source row and execution evidence')
+  assert.equal(String(unguessedCandidate?.guest_special_request), 'do-not-auto-link')
+  assert.equal(o25CheckinAfter?.linked_checkout_task_id ?? null, null, 'a unique same-day candidate at the new topology must not be guessed automatically')
+
+  await syncOrderToCleaningTasks(o26)
+  const o26CheckoutBefore = await fetchTaskByType(o26, 'checkout_clean')
+  assert.ok(o26CheckoutBefore)
+  if (pgPool) {
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, type, task_date, date, status, source, execution_state, linked_checkout_task_id, assignee_id, inspector_id, guest_special_request, inspection_scope)
+       VALUES($1, NULL, 'P_TEST_LINK_MOVE_B', 'checkin_clean', 'checkin_clean', '2026-05-17'::date, '2026-05-17'::date, 'assigned', 'manual', 'active', $2, 'MOVE-CHECKIN-ASSIGNEE', 'MOVE-CHECKIN-INSPECTOR', 'preserve-checkin-evidence', 'inspect_and_hang')`,
+      [orderMovedCheckoutCheckin, String(o26CheckoutBefore.id)],
+    )
+    await pgPool.query('UPDATE orders SET keys_required=2 WHERE id=$1', [o26])
+  } else {
+    ;(db.cleaningTasks as any[]).push({ id: orderMovedCheckoutCheckin, order_id: null, property_id: 'P_TEST_LINK_MOVE_B', task_type: 'checkin_clean', type: 'checkin_clean', task_date: '2026-05-17', date: '2026-05-17', status: 'assigned', source: 'manual', execution_state: 'active', linked_checkout_task_id: String(o26CheckoutBefore.id), assignee_id: 'MOVE-CHECKIN-ASSIGNEE', inspector_id: 'MOVE-CHECKIN-INSPECTOR', guest_special_request: 'preserve-checkin-evidence', inspection_scope: 'inspect_and_hang' })
+    const order = (db.orders as any[]).find((row: any) => String(row?.id || '') === o26)
+    order.keys_required = 2
+  }
+  await syncOrderToCleaningTasks(o26)
+  let preservedCheckin = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [orderMovedCheckoutCheckin])).rows[0]
+    : (db.cleaningTasks as any[]).find((row: any) => String(row?.id || '') === orderMovedCheckoutCheckin)
+  assert.equal(String(preservedCheckin?.linked_checkout_task_id), String(o26CheckoutBefore.id), 'a non-topology order update must preserve an accurate explicit relationship')
+  if (pgPool) await pgPool.query(`UPDATE orders SET checkout='2026-05-18'::date WHERE id=$1`, [o26])
+  else {
+    const order = (db.orders as any[]).find((row: any) => String(row?.id || '') === o26)
+    order.checkout = '2026-05-18'
+  }
+  await syncOrderToCleaningTasks(o26)
+  const o26CheckoutAfter = await fetchTaskByType(o26, 'checkout_clean')
+  preservedCheckin = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [orderMovedCheckoutCheckin])).rows[0]
+    : (db.cleaningTasks as any[]).find((row: any) => String(row?.id || '') === orderMovedCheckoutCheckin)
+  assert.equal(String(o26CheckoutAfter?.id), String(o26CheckoutBefore.id), 'order checkout movement must preserve the original task identity')
+  assert.equal(String(o26CheckoutAfter?.task_date ?? o26CheckoutAfter?.date).slice(0, 10), '2026-05-18', 'order checkout task must follow the authoritative new date')
+  assert.equal(preservedCheckin?.linked_checkout_task_id ?? null, null, 'moving an order checkout must detach every invalid active checkin reference')
+  assert.equal(String(preservedCheckin?.source), 'manual')
+  assert.equal(String(preservedCheckin?.assignee_id), 'MOVE-CHECKIN-ASSIGNEE')
+  assert.equal(String(preservedCheckin?.inspector_id), 'MOVE-CHECKIN-INSPECTOR')
+  assert.equal(String(preservedCheckin?.guest_special_request), 'preserve-checkin-evidence', 'detaching must preserve the checkin source row and execution evidence')
+  await syncOrderToCleaningTasks(o26)
+  const o26CheckoutAfterReplay = await fetchTaskByType(o26, 'checkout_clean')
+  const preservedCheckinAfterReplay = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [orderMovedCheckoutCheckin])).rows[0]
+    : (db.cleaningTasks as any[]).find((row: any) => String(row?.id || '') === orderMovedCheckoutCheckin)
+  assert.equal(String(o26CheckoutAfterReplay?.id), String(o26CheckoutAfter?.id), 'worker retry after a committed movement must remain idempotent')
+  assert.equal(String(o26CheckoutAfterReplay?.task_date ?? o26CheckoutAfterReplay?.date).slice(0, 10), '2026-05-18')
+  assert.equal(preservedCheckinAfterReplay?.linked_checkout_task_id ?? null, null, 'worker retry must not recreate or guess a detached relationship')
+
+  await syncOrderToCleaningTasks(o27)
+  const o27CheckoutBefore = await fetchTaskByType(o27, 'checkout_clean')
+  const o27CheckinBefore = await fetchTaskByType(o27, 'checkin_clean')
+  assert.ok(o27CheckoutBefore && o27CheckinBefore)
+  if (pgPool) {
+    await pgPool.query(
+      `UPDATE cleaning_tasks
+          SET linked_checkout_task_id=CASE WHEN id=$1 THEN $2 ELSE linked_checkout_task_id END,
+              auto_sync_enabled=CASE WHEN id=$2 THEN false ELSE auto_sync_enabled END,
+              inspection_scope=CASE WHEN id=$2 THEN 'password_only' ELSE inspection_scope END,
+              old_code=CASE WHEN id=$2 THEN 'locked-manual-evidence' ELSE old_code END,
+              guest_special_request=CASE WHEN id=$2 THEN 'locked-source-must-not-change' ELSE guest_special_request END
+        WHERE id = ANY($3::uuid[])`,
+      [String(o27CheckinBefore.id), String(o27CheckoutBefore.id), [String(o27CheckinBefore.id), String(o27CheckoutBefore.id)]],
+    )
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, type, task_date, date, status, source, execution_state, auto_sync_enabled, manual_task_purpose, guest_special_request)
+       VALUES($1, NULL, 'P_TEST_LINK_MOVE_TOGETHER', 'checkout_clean', 'checkout_clean', '2026-05-20'::date, '2026-05-20'::date, 'pending', 'manual', 'active', true, 'temporary_order_placeholder', 'placeholder-must-not-be-superseded')`,
+      [lockedPostprocessPlaceholder],
+    )
+  } else {
+    o27CheckinBefore.linked_checkout_task_id = String(o27CheckoutBefore.id)
+    o27CheckoutBefore.auto_sync_enabled = false
+    o27CheckoutBefore.inspection_scope = 'password_only'
+    o27CheckoutBefore.old_code = 'locked-manual-evidence'
+    o27CheckoutBefore.guest_special_request = 'locked-source-must-not-change'
+    ;(db.cleaningTasks as any[]).push({
+      id: lockedPostprocessPlaceholder,
+      order_id: null,
+      property_id: 'P_TEST_LINK_MOVE_TOGETHER',
+      task_type: 'checkout_clean',
+      type: 'checkout_clean',
+      task_date: '2026-05-20',
+      date: '2026-05-20',
+      status: 'pending',
+      source: 'manual',
+      execution_state: 'active',
+      auto_sync_enabled: true,
+      manual_task_purpose: 'temporary_order_placeholder',
+      guest_special_request: 'placeholder-must-not-be-superseded',
+    })
+  }
+  const lockedBeforeNoMove = await fetchTaskByType(o27, 'checkout_clean')
+  await syncOrderToCleaningTasks(o27)
+  const lockedAfterNoMove = await fetchTaskByType(o27, 'checkout_clean')
+  for (const field of ['property_id', 'task_date', 'status', 'auto_sync_enabled', 'inspection_scope', 'old_code', 'guest_special_request']) {
+    assert.deepEqual(lockedAfterNoMove?.[field] ?? null, lockedBeforeNoMove?.[field] ?? null, `locked task post-processing must preserve ${field}`)
+  }
+  const placeholderAfterLockedSync = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [lockedPostprocessPlaceholder])).rows[0]
+    : (db.cleaningTasks as any[]).find((row: any) => String(row?.id || '') === lockedPostprocessPlaceholder)
+  assert.equal(String(placeholderAfterLockedSync?.execution_state), 'active', 'a locked official task must not supersede a temporary manual source in post-processing')
+  assert.equal(placeholderAfterLockedSync?.superseded_by ?? null, null)
+  assert.equal(String(placeholderAfterLockedSync?.guest_special_request), 'placeholder-must-not-be-superseded')
+  if (pgPool) {
+    await pgPool.query('UPDATE cleaning_tasks SET auto_sync_enabled=true WHERE id=$1', [String(o27CheckoutBefore.id)])
+    await pgPool.query(`UPDATE orders SET property_id='P_TEST_LINK_MOVE_TOGETHER_2' WHERE id=$1`, [o27])
+  } else {
+    o27CheckoutBefore.auto_sync_enabled = true
+    const order = (db.orders as any[]).find((row: any) => String(row?.id || '') === o27)
+    order.property_id = 'P_TEST_LINK_MOVE_TOGETHER_2'
+  }
+  await syncOrderToCleaningTasks(o27)
+  const o27CheckoutAfter = await fetchTaskByType(o27, 'checkout_clean')
+  const o27CheckinAfter = await fetchTaskByType(o27, 'checkin_clean')
+  assert.equal(String(o27CheckoutAfter?.property_id), 'P_TEST_LINK_MOVE_TOGETHER_2')
+  assert.equal(String(o27CheckinAfter?.property_id), 'P_TEST_LINK_MOVE_TOGETHER_2')
+  assert.equal(String(o27CheckinAfter?.linked_checkout_task_id), String(o27CheckoutAfter?.id), 'a same-order pair that moves together to one final topology must keep its still-valid explicit relationship')
+
+  // Approved locked-task rule: the mutable side follows the order, the locked
+  // side stays untouched, and only the now-invalid explicit relation is removed.
+  if (pgPool) {
+    await pgPool.query(
+      `UPDATE cleaning_tasks
+          SET auto_sync_enabled=false,
+              inspection_scope='password_only',
+              new_code='locked-checkin-code',
+              guest_special_request='locked-checkin-must-not-change'
+        WHERE id=$1`,
+      [String(o27CheckinAfter.id)],
+    )
+    await pgPool.query(`UPDATE orders SET property_id='P_TEST_LINK_MOVE_TOGETHER_3' WHERE id=$1`, [o27])
+  } else {
+    o27CheckinAfter.auto_sync_enabled = false
+    o27CheckinAfter.inspection_scope = 'password_only'
+    o27CheckinAfter.new_code = 'locked-checkin-code'
+    o27CheckinAfter.guest_special_request = 'locked-checkin-must-not-change'
+    const order = (db.orders as any[]).find((row: any) => String(row?.id || '') === o27)
+    order.property_id = 'P_TEST_LINK_MOVE_TOGETHER_3'
+  }
+  const oneSideLockedBefore = JSON.parse(JSON.stringify(await fetchTaskByType(o27, 'checkin_clean')))
+  await syncOrderToCleaningTasks(o27)
+  const o27CheckoutOneSideLocked = await fetchTaskByType(o27, 'checkout_clean')
+  const o27CheckinOneSideLocked = await fetchTaskByType(o27, 'checkin_clean')
+  assert.equal(String(o27CheckoutOneSideLocked?.property_id), 'P_TEST_LINK_MOVE_TOGETHER_3', 'the mutable side must follow the authoritative order topology')
+  assert.equal(String(o27CheckinOneSideLocked?.property_id), 'P_TEST_LINK_MOVE_TOGETHER_2', 'the locked side must retain its original property')
+  assert.equal(o27CheckinOneSideLocked?.linked_checkout_task_id ?? null, null, 'one locked side must detach the relation when the other side moves away')
+  for (const field of ['task_date', 'status', 'auto_sync_enabled', 'inspection_scope', 'new_code', 'guest_special_request']) {
+    assert.deepEqual(o27CheckinOneSideLocked?.[field] ?? null, oneSideLockedBefore?.[field] ?? null, `one-side locked task must preserve ${field}`)
+  }
+
+  // Re-create the exact old pair after the first incident, then repeat the
+  // same authoritative A→B drift. The relationship generation must make this
+  // a new review incident, while direct/backfill retries of that incident stay
+  // idempotent. The pure episode assertions above verify the two event IDs;
+  // this integration path verifies unlink → manual relink → unlink again.
+  if (pgPool) {
+    await pgPool.query(
+      `UPDATE cleaning_tasks
+          SET property_id='P_TEST_LINK_MOVE_TOGETHER_2'
+        WHERE id=$1`,
+      [String(o27CheckoutOneSideLocked.id)],
+    )
+    await pgPool.query(
+      `UPDATE cleaning_tasks
+          SET linked_checkout_task_id=$2, updated_at=now()
+        WHERE id=$1`,
+      [String(o27CheckinOneSideLocked.id), String(o27CheckoutOneSideLocked.id)],
+    )
+  } else {
+    o27CheckoutOneSideLocked.property_id = 'P_TEST_LINK_MOVE_TOGETHER_2'
+    o27CheckinOneSideLocked.linked_checkout_task_id = String(o27CheckoutOneSideLocked.id)
+    o27CheckinOneSideLocked.updated_at = '2026-05-20T02:00:00.000Z'
+  }
+  const relinkedCheckin = await fetchTaskByType(o27, 'checkin_clean')
+  const relinkedCheckout = await fetchTaskByType(o27, 'checkout_clean')
+  const relinkedGeneration = cleaningTurnoverRelationshipVersion(relinkedCheckin, relinkedCheckout)
+  assert.ok(relinkedGeneration, 'manual relinking must expose a stable relationship generation')
+  await syncOrderToCleaningTasks(o27)
+  const o27CheckoutAfterRepeatedMove = await fetchTaskByType(o27, 'checkout_clean')
+  const o27CheckinAfterRepeatedMove = await fetchTaskByType(o27, 'checkin_clean')
+  assert.equal(String(o27CheckoutAfterRepeatedMove?.property_id), 'P_TEST_LINK_MOVE_TOGETHER_3', 'the mutable side must follow the same target again after manual relinking')
+  assert.equal(String(o27CheckinAfterRepeatedMove?.property_id), 'P_TEST_LINK_MOVE_TOGETHER_2', 'the locked side must remain untouched during the second incident')
+  assert.equal(o27CheckinAfterRepeatedMove?.linked_checkout_task_id ?? null, null, 'the manually restored relation must detach again on the second real incident')
+  const secondIncidentLockedSnapshot = JSON.parse(JSON.stringify(o27CheckinAfterRepeatedMove))
+  await syncOrderToCleaningTasks(o27)
+  const o27CheckinAfterRepeatedMoveRetry = await fetchTaskByType(o27, 'checkin_clean')
+  for (const field of ['property_id', 'task_date', 'status', 'auto_sync_enabled', 'inspection_scope', 'new_code', 'guest_special_request', 'linked_checkout_task_id']) {
+    assert.deepEqual(o27CheckinAfterRepeatedMoveRetry?.[field] ?? null, secondIncidentLockedSnapshot?.[field] ?? null, `second incident retry must preserve locked ${field}`)
+  }
+
+  // If both active tasks are locked and remain an accurate pair at their old
+  // topology, preserve that relation and leave both rows untouched for review.
+  if (pgPool) {
+    await pgPool.query(
+      `UPDATE cleaning_tasks
+          SET property_id='P_TEST_LINK_BOTH_LOCKED', auto_sync_enabled=false,
+              linked_checkout_task_id=CASE WHEN id=$1 THEN $2 ELSE linked_checkout_task_id END
+        WHERE id = ANY($3::uuid[])`,
+      [String(o27CheckinOneSideLocked.id), String(o27CheckoutOneSideLocked.id), [String(o27CheckinOneSideLocked.id), String(o27CheckoutOneSideLocked.id)]],
+    )
+    await pgPool.query(`UPDATE orders SET property_id='P_TEST_LINK_ORDER_MOVED' WHERE id=$1`, [o27])
+  } else {
+    o27CheckoutOneSideLocked.property_id = 'P_TEST_LINK_BOTH_LOCKED'
+    o27CheckoutOneSideLocked.auto_sync_enabled = false
+    o27CheckinOneSideLocked.property_id = 'P_TEST_LINK_BOTH_LOCKED'
+    o27CheckinOneSideLocked.auto_sync_enabled = false
+    o27CheckinOneSideLocked.linked_checkout_task_id = String(o27CheckoutOneSideLocked.id)
+    const order = (db.orders as any[]).find((row: any) => String(row?.id || '') === o27)
+    order.property_id = 'P_TEST_LINK_ORDER_MOVED'
+  }
+  const bothLockedCheckoutBefore = JSON.parse(JSON.stringify(await fetchTaskByType(o27, 'checkout_clean')))
+  const bothLockedCheckinBefore = JSON.parse(JSON.stringify(await fetchTaskByType(o27, 'checkin_clean')))
+  await syncOrderToCleaningTasks(o27)
+  const o27CheckoutBothLocked = await fetchTaskByType(o27, 'checkout_clean')
+  const o27CheckinBothLocked = await fetchTaskByType(o27, 'checkin_clean')
+  assert.equal(String(o27CheckoutBothLocked?.property_id), 'P_TEST_LINK_BOTH_LOCKED')
+  assert.equal(String(o27CheckinBothLocked?.property_id), 'P_TEST_LINK_BOTH_LOCKED')
+  assert.equal(String(o27CheckinBothLocked?.linked_checkout_task_id), String(o27CheckoutBothLocked?.id), 'two locked tasks that remain an accurate pair must keep their explicit relation')
+  for (const field of ['task_date', 'status', 'auto_sync_enabled', 'inspection_scope', 'old_code', 'new_code', 'guest_special_request']) {
+    assert.deepEqual(o27CheckoutBothLocked?.[field] ?? null, bothLockedCheckoutBefore?.[field] ?? null, `both-locked checkout must preserve ${field}`)
+    assert.deepEqual(o27CheckinBothLocked?.[field] ?? null, bothLockedCheckinBefore?.[field] ?? null, `both-locked checkin must preserve ${field}`)
+  }
+
+  // A terminal side is never moved. Once its mutable counterpart follows the
+  // order, the stale relation is removed without rewriting terminal history.
+  if (pgPool) {
+    await pgPool.query(`UPDATE cleaning_tasks SET auto_sync_enabled=true, status='completed' WHERE id=$1`, [String(o27CheckoutBothLocked.id)])
+    await pgPool.query(`UPDATE cleaning_tasks SET auto_sync_enabled=true, status='pending' WHERE id=$1`, [String(o27CheckinBothLocked.id)])
+  } else {
+    o27CheckoutBothLocked.auto_sync_enabled = true
+    o27CheckoutBothLocked.status = 'completed'
+    o27CheckinBothLocked.auto_sync_enabled = true
+    o27CheckinBothLocked.status = 'pending'
+  }
+  const terminalCheckoutBefore = JSON.parse(JSON.stringify(await fetchTaskByType(o27, 'checkout_clean')))
+  await syncOrderToCleaningTasks(o27)
+  const o27CheckoutTerminal = await fetchTaskByType(o27, 'checkout_clean')
+  const o27CheckinAfterTerminal = await fetchTaskByType(o27, 'checkin_clean')
+  assert.equal(String(o27CheckoutTerminal?.property_id), 'P_TEST_LINK_BOTH_LOCKED', 'terminal task topology must remain untouched')
+  assert.equal(String(o27CheckoutTerminal?.status), 'completed', 'terminal task status/history must remain untouched')
+  for (const field of ['task_date', 'auto_sync_enabled', 'inspection_scope', 'old_code', 'guest_special_request']) {
+    assert.deepEqual(o27CheckoutTerminal?.[field] ?? null, terminalCheckoutBefore?.[field] ?? null, `terminal task must preserve ${field}`)
+  }
+  assert.equal(String(o27CheckinAfterTerminal?.property_id), 'P_TEST_LINK_ORDER_MOVED', 'the mutable counterpart must still follow the order')
+  assert.equal(o27CheckinAfterTerminal?.linked_checkout_task_id ?? null, null, 'terminal-to-mutable topology drift must detach the stale explicit relation')
+
+  // Cancellation removes remaining active work but does not rewrite completed
+  // execution history. This is the recoverable-delete boundary for the user's
+  // "cancelled orders delete check-in/checkout tasks" decision.
+  if (pgPool) await pgPool.query(`UPDATE orders SET status='cancelled' WHERE id=$1`, [o27])
+  else {
+    const order = (db.orders as any[]).find((row: any) => String(row?.id || '') === o27)
+    if (order) order.status = 'cancelled'
+  }
+  await syncOrderToCleaningTasks(o27)
+  const completedCheckoutAfterCancellation = await fetchTaskByType(o27, 'checkout_clean')
+  const activeCheckinAfterCancellation = await fetchTaskByType(o27, 'checkin_clean')
+  assert.equal(String(completedCheckoutAfterCancellation?.status), 'completed', 'completed source evidence must remain immutable after order cancellation')
+  assert.equal(String(completedCheckoutAfterCancellation?.property_id), 'P_TEST_LINK_BOTH_LOCKED')
+  assert.equal(String(activeCheckinAfterCancellation?.status), 'cancelled', 'the still-active side must be recoverably cancelled')
+  assert.equal(String(activeCheckinAfterCancellation?.execution_state), 'cancelled')
+
+  if (!pgPool) {
+    // Historical rows can store a property code while newer order rows store
+    // the UUID. That representation-only change must update the mutable task
+    // without detaching a semantically valid explicit pair. A real property
+    // move still detaches it.
+    const aliasOrderId = uuid()
+    const aliasPropertyId = uuid()
+    const movedPropertyId = uuid()
+    const aliasCheckoutId = uuid()
+    ;(db.properties as any[]).push(
+      { id: aliasPropertyId, code: 'P_TEST_ALIAS_CODE', address: 'synthetic', type: '1br', capacity: 2 },
+      { id: movedPropertyId, code: 'P_TEST_ALIAS_MOVED', address: 'synthetic', type: '1br', capacity: 2 },
+    )
+    ;(db.orders as any[]).push({
+      id: aliasOrderId,
+      property_id: 'P_TEST_ALIAS_CODE',
+      checkin: '2026-06-01',
+      checkout: '2026-06-02',
+      nights: 1,
+      status: 'confirmed',
+      confirmation_code: `TEST_SYNC_${aliasOrderId.slice(0, 8)}`,
+    })
+    await syncOrderToCleaningTasks(aliasOrderId)
+    const aliasCheckin = await fetchTaskByType(aliasOrderId, 'checkin_clean')
+    assert.ok(aliasCheckin)
+    ;(db.cleaningTasks as any[]).push({
+      id: aliasCheckoutId,
+      order_id: null,
+      property_id: aliasPropertyId,
+      task_type: 'checkout_clean',
+      type: 'checkout_clean',
+      task_date: '2026-06-01',
+      date: '2026-06-01',
+      status: 'assigned',
+      source: 'manual',
+      execution_state: 'active',
+      auto_sync_enabled: true,
+      guest_special_request: 'alias-pair-evidence',
+    })
+    aliasCheckin.linked_checkout_task_id = aliasCheckoutId
+    aliasCheckin.assignee_id = 'ALIAS-ASSIGNEE'
+    aliasCheckin.scheduled_at = '2026-05-31T23:00:00.000Z'
+    const aliasOrder = (db.orders as any[]).find((row: any) => String(row?.id || '') === aliasOrderId)
+    aliasOrder.property_id = aliasPropertyId
+    await syncOrderToCleaningTasks(aliasOrderId)
+    const canonicalizedCheckin = await fetchTaskByType(aliasOrderId, 'checkin_clean')
+    assert.equal(String(canonicalizedCheckin?.property_id), aliasPropertyId, 'the mutable task may adopt the authoritative UUID representation')
+    assert.equal(String(canonicalizedCheckin?.linked_checkout_task_id), aliasCheckoutId, 'code/UUID representations of one property must not detach a valid explicit pair')
+    assert.equal(String(canonicalizedCheckin?.assignee_id), 'ALIAS-ASSIGNEE', 'a representation-only property update must preserve assignment')
+    assert.equal(String(canonicalizedCheckin?.scheduled_at), '2026-05-31T23:00:00.000Z', 'a representation-only property update must preserve scheduling')
+    aliasOrder.property_id = movedPropertyId
+    await syncOrderToCleaningTasks(aliasOrderId)
+    const trulyMovedCheckin = await fetchTaskByType(aliasOrderId, 'checkin_clean')
+    const aliasCheckout = (db.cleaningTasks as any[]).find((row: any) => String(row?.id || '') === aliasCheckoutId)
+    assert.equal(String(trulyMovedCheckin?.property_id), movedPropertyId)
+    assert.equal(trulyMovedCheckin?.linked_checkout_task_id ?? null, null, 'a real property identity change must still detach the invalid pair')
+    assert.equal(trulyMovedCheckin?.assignee_id ?? null, null, 'a real property move keeps the existing assignment reset rule')
+    assert.equal(trulyMovedCheckin?.scheduled_at ?? null, null, 'a real property move keeps the existing scheduling reset rule')
+    assert.equal(String(aliasCheckout?.guest_special_request), 'alias-pair-evidence', 'detaching a real move must preserve the historical counterpart row')
+  }
+
   if (pgPool) await pgPool.query('UPDATE orders SET checkout=$2::date WHERE id=$1', [o1, '2026-02-15'])
   else {
     const o = (db.orders as any[]).find((x: any) => String(x.id) === o1)
@@ -652,16 +1132,55 @@ async function main() {
   assert.ok(t2)
   if (pgPool) {
     await pgPool.query(`UPDATE cleaning_tasks SET auto_sync_enabled=false WHERE id=$1`, [String(t2.id)])
+    await pgPool.query(
+      `INSERT INTO cleaning_tasks(id, order_id, property_id, task_type, type, task_date, date, status, source, execution_state, linked_checkout_task_id, inspection_scope)
+       VALUES($1, NULL, 'P_TEST_B', 'checkin_clean', 'checkin_clean', '2026-02-20'::date, '2026-02-20'::date, 'pending', 'manual', 'active', $2, 'inspect_and_hang')`,
+      [lockedMovedCheckoutCheckin, String(t2.id)],
+    )
     await pgPool.query(`UPDATE orders SET checkout=$2::date WHERE id=$1`, [o2, '2026-02-22'])
   } else {
     const t = (db.cleaningTasks as any[]).find((x: any) => String(x.id) === String(t2.id))
     if (t) t.auto_sync_enabled = false
+    ;(db.cleaningTasks as any[]).push({ id: lockedMovedCheckoutCheckin, order_id: null, property_id: 'P_TEST_B', task_type: 'checkin_clean', type: 'checkin_clean', task_date: '2026-02-20', date: '2026-02-20', status: 'pending', source: 'manual', execution_state: 'active', linked_checkout_task_id: String(t2.id), inspection_scope: 'inspect_and_hang' })
     const o = (db.orders as any[]).find((x: any) => String(x.id) === o2)
     if (o) o.checkout = '2026-02-22'
   }
   await syncOrderToCleaningTasks(o2)
   const t2b = await fetchTask(o2)
   assert.equal(String(t2b.task_date).slice(0, 10), '2026-02-20', 'locked task should not be overwritten')
+  const lockedCheckinAfterOrderMove = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [lockedMovedCheckoutCheckin])).rows[0]
+    : (db.cleaningTasks as any[]).find((row: any) => String(row?.id || '') === lockedMovedCheckoutCheckin)
+  assert.equal(String(lockedCheckinAfterOrderMove?.linked_checkout_task_id), String(t2.id), 'a locked task and its still-co-located active counterpart must retain the existing accurate relation while management reviews the order drift')
+
+  // A cancelled order must leave no active check-in/checkout work, even when
+  // the order task has explicitly stopped auto sync. Cancellation is a
+  // recoverable lifecycle state: source rows remain for audit, while an active
+  // manual counterpart is detached and otherwise preserved.
+  if (pgPool) await pgPool.query(`UPDATE orders SET status='cancelled' WHERE id=$1`, [o2])
+  else {
+    const order = (db.orders as any[]).find((row: any) => String(row?.id || '') === o2)
+    if (order) order.status = 'cancelled'
+  }
+  await syncOrderToCleaningTasks(o2)
+  const cancelledLockedCheckout = await fetchTaskByType(o2, 'checkout_clean')
+  const cancelledOrderCheckin = await fetchTaskByType(o2, 'checkin_clean')
+  assert.equal(String(cancelledLockedCheckout?.status), 'cancelled', 'order cancellation must cancel an active auto-sync-disabled checkout')
+  assert.equal(String(cancelledLockedCheckout?.execution_state), 'cancelled')
+  assert.equal(cancelledLockedCheckout?.auto_sync_enabled, false, 'recoverable cancellation must retain the prior auto-sync flag as audit evidence')
+  assert.equal(String(cancelledOrderCheckin?.status), 'cancelled', 'order cancellation must cancel the corresponding active checkin')
+  assert.equal(String(cancelledOrderCheckin?.execution_state), 'cancelled')
+  const detachedManualCheckin = pgPool
+    ? (await pgPool.query('SELECT * FROM cleaning_tasks WHERE id=$1', [lockedMovedCheckoutCheckin])).rows[0]
+    : (db.cleaningTasks as any[]).find((row: any) => String(row?.id || '') === lockedMovedCheckoutCheckin)
+  assert.equal(detachedManualCheckin?.linked_checkout_task_id ?? null, null, 'cancelling the linked order checkout must remove the stale explicit relationship')
+  assert.equal(String(detachedManualCheckin?.status), 'pending', 'an independently created active manual counterpart must not be cancelled with another order')
+  assert.equal(String(detachedManualCheckin?.execution_state), 'active')
+  const activeCancelledOrderTasks = [cancelledLockedCheckout, cancelledOrderCheckin].filter((task: any) => (
+    String(task?.execution_state || '').toLowerCase() === 'active'
+    && !['cancelled', 'canceled'].includes(String(task?.status || '').toLowerCase())
+  ))
+  assert.equal(activeCancelledOrderTasks.length, 0, 'cancelled order tasks must no longer qualify for the active calendar/report projection')
 
   if (pgPool) {
     await pgPool.query(
@@ -1093,10 +1612,33 @@ async function main() {
     addTask({ id: 'mz091-cross-locked-source-in', order_id: 'mz091-cross-locked-source', property_id: 'P_MZ091_LOCKED_A', task_type: 'checkin_clean', task_date: '2026-12-26', new_code: '8383', new_code_authority_status: 'manual_confirmed' })
     addTask({ id: 'mz091-cross-locked-source-out', order_id: 'mz091-cross-locked-source', property_id: 'P_MZ091_LOCKED_B', task_type: 'checkout_clean', task_date: '2026-12-27', old_code: 'locked-cross-secret', old_code_authority_status: 'source_linked', auto_sync_enabled: false })
     addTask({ id: 'mz091-cross-locked-target-in', order_id: 'mz091-cross-locked-target', property_id: 'P_MZ091_LOCKED_B', task_type: 'checkin_clean', task_date: '2026-12-28', old_code: null })
-    assert.equal((await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-cross-locked-source' })).reason, 'property_mismatch')
+    assert.equal((await syncCheckoutOldCodeFromCheckinNewCode({ orderId: 'mz091-cross-locked-source' })).reason, 'auto_sync_disabled')
     await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-cross-locked-source' })
-    assert.equal((await fetchTaskByType('mz091-cross-locked-source', 'checkout_clean')).old_code, null, 'auto_sync_enabled=false without manual authority must not preserve a mismatched password')
+    assert.equal((await fetchTaskByType('mz091-cross-locked-source', 'checkout_clean')).old_code, 'locked-cross-secret', 'automatic reconciliation must preserve password content on an auto-sync-disabled task')
     assert.equal((await fetchTaskByType('mz091-cross-locked-target', 'checkin_clean')).old_code, null, 'locked cross-property values must never propagate')
+
+    addTask({
+      id: 'mz091-locked-dependent',
+      order_id: 'mz091-cross-locked-target',
+      property_id: 'P_MZ091_LOCKED_B',
+      task_type: 'checkin_clean',
+      task_date: '2026-12-29',
+      old_code: 'locked-dependent-secret',
+      old_code_authority_status: 'source_linked',
+      old_code_source_task_id: 'mz091-cross-locked-source-in',
+      old_code_source_order_id: 'mz091-cross-locked-source',
+      auto_sync_enabled: false,
+    })
+    await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: 'mz091-cross-locked-source' })
+    assert.equal((await fetchTaskByType('mz091-cross-locked-target', 'checkin_clean')).old_code, null)
+    const lockedDependent = (db.cleaningTasks as any[]).find((task: any) => String(task.id) === 'mz091-locked-dependent')
+    assert.equal(lockedDependent.old_code, 'locked-dependent-secret', 'source-order invalidation must skip an auto-sync-disabled dependent')
+    assert.deepEqual(await invalidatePasswordDependentsForSourceTask({
+      sourceTaskId: 'mz091-cross-locked-source-in',
+      sourceOrderId: 'mz091-cross-locked-source',
+      reason: 'locked_source_changed',
+    }), [], 'source-task invalidation must not write an auto-sync-disabled dependent')
+    assert.equal(lockedDependent.old_code, 'locked-dependent-secret')
 
     addOrder('mz091-stale-order-source', 'confirmed', undefined, 'P_MZ091_STALE_B')
     addTask({ id: 'mz091-stale-order-source-in', order_id: 'mz091-stale-order-source', property_id: 'P_MZ091_STALE_A', task_type: 'checkin_clean', task_date: '2027-01-01', new_code: '8484', new_code_authority_status: 'manual_confirmed' })
