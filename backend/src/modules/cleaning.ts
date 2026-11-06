@@ -19,6 +19,16 @@ import { isPasswordAuthoritySchemaReady } from '../lib/passwordAuthoritySchema'
 import { inspectionAssignmentConflictPayload } from '../lib/inspectionAssignmentConflict'
 import { redactPasswordAuditValues } from '../lib/passwordAudit'
 import { createHmac } from 'crypto'
+import {
+  IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH,
+  IdempotentStepReceiptsNotReady,
+  assertIdempotentStepReceiptsReady,
+  buildCanonicalIdempotencyPayloadHmac,
+  buildIdempotencyPayloadHash,
+  loadIdempotentStepReceipt,
+  saveIdempotentStepReceipt,
+} from '../lib/idempotentStepReceipts'
+import { isTerminalCleaningStatus } from '../lib/workTaskActionAudit'
 
 export const router = Router()
 
@@ -3512,6 +3522,457 @@ router.post('/tasks/password-verify', requirePerm('cleaning.task.assign'), requi
     return res.json({ ok: true, ...result })
   } catch (error: any) {
     return res.status(Number(error?.status || 500)).json({ message: String(error?.message || 'password_authority_verify_failed') })
+  }
+})
+
+const atomicTaskPatchSchema = z.object({
+  id: z.string().trim().min(1),
+  patch: patchTaskSchema,
+}).strict()
+
+const atomicOrderKeysPatchSchema = z.object({
+  order_id: z.string().trim().min(1),
+  keys_required: z.number().int().min(1).max(2),
+}).strict()
+
+const atomicPatchSchema = z.object({
+  operation_id: z.string().trim().min(8).max(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH),
+  items: z.array(atomicTaskPatchSchema).min(1).max(50),
+  order_key_updates: z.array(atomicOrderKeysPatchSchema).max(50).optional().default([]),
+}).strict()
+
+type AtomicTaskPatchResult = {
+  id: string
+  before: any
+  after: any
+  actualChangedFields: string[]
+}
+
+async function applyAtomicTaskPatchPg(params: {
+  client: any
+  id: string
+  inputPatch: z.infer<typeof patchTaskSchema>
+  operationId: string
+  req: any
+}): Promise<AtomicTaskPatchResult> {
+  const { client, id, operationId, req } = params
+  const snapshotResult = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+  const snapshot = snapshotResult?.rows?.[0] || null
+  if (!snapshot) {
+    const error: any = new Error('task not found')
+    error.status = 404
+    throw error
+  }
+
+  const patch: any = { ...params.inputPatch }
+  const passwordVerification = patch.password_verification
+  delete patch.password_verification
+  if (patch.guest_special_request === undefined && patch.note !== undefined) patch.guest_special_request = patch.note
+  delete patch.note
+  if (patch.keys_required === null) patch.keys_required = 1
+  if (patch.keys_required !== undefined && String(snapshot.order_id || '').trim()) {
+    const error: any = new Error('该任务关联订单，钥匙套数请按订单更新（orders.keys_required）')
+    error.status = 400
+    throw error
+  }
+  if (!(await isValidStaffId(patch.cleaner_id ?? null, 'cleaner'))) {
+    const error: any = new Error('无效的清洁人员')
+    error.status = 400
+    throw error
+  }
+
+  const hasPasswordWrite = patch.old_code !== undefined || patch.new_code !== undefined || !!passwordVerification?.fields?.length
+  const topologyTouched = patch.property_id !== undefined || patch.task_date !== undefined || patch.status !== undefined
+  let lockedPasswordProperties: string[] = []
+  if (hasPasswordWrite || topologyTouched) {
+    lockedPasswordProperties = await normalizeCleaningPasswordChainKeys(client, [
+      String(snapshot.property_id || '').trim(),
+      String(patch.property_id || '').trim(),
+    ])
+    for (const propertyId of lockedPasswordProperties) await lockCleaningPasswordChainKey(client, propertyId)
+  }
+  const lockedTurnoverTopologyKeys = await lockCleaningTurnoverTopologyTargets(client, snapshot, patch)
+  const lockedResult = await client.query(
+    `SELECT * FROM cleaning_tasks
+     WHERE id=$1
+       AND ${activeCleaningTaskWhereSql('')}
+     LIMIT 1
+     FOR UPDATE`,
+    [id],
+  )
+  const before = lockedResult?.rows?.[0] || null
+  if (!before || isTerminalCleaningStatus(before.status)) {
+    const error: any = new Error('atomic_patch_task_inactive')
+    error.status = 409
+    throw error
+  }
+  if (patch.keys_required !== undefined && String(before.order_id || '').trim()) {
+    const error: any = new Error('该任务关联订单，钥匙套数请按订单更新（orders.keys_required）')
+    error.status = 400
+    throw error
+  }
+
+  if (hasPasswordWrite || topologyTouched) {
+    const verifiedProperties = await normalizeCleaningPasswordChainKeys(client, [before.property_id, patch.property_id])
+    if (verifiedProperties.some((propertyId) => !lockedPasswordProperties.includes(propertyId))) {
+      const error: any = new Error('password_chain_topology_changed_retry')
+      error.status = 409
+      throw error
+    }
+    if (patch.property_id !== undefined && String(before.order_id || '').trim()) {
+      const currentProperty = String(before.property_id || '').trim()
+      const requestedProperty = String(patch.property_id || '').trim()
+      const propertyIdentityChanged = !currentProperty || !requestedProperty
+        ? currentProperty !== requestedProperty
+        : verifiedProperties.length !== 1
+      if (propertyIdentityChanged) {
+        const error: any = new Error('order_linked_task_property_managed_by_order')
+        error.status = 400
+        throw error
+      }
+    }
+  }
+
+  if (patch.nights_override !== undefined && patch.nights_override !== null && shouldIgnoreNightsOverrideForAutoCheckinTask(before)) {
+    delete patch.nights_override
+  }
+  const isCheckinSiteExecution = isCheckinSiteExecutionTask({
+    task_type: patch.task_type ?? before.task_type,
+    inspection_scope: patch.inspection_scope ?? before.inspection_scope,
+  })
+  if (isCheckinSiteExecution) {
+    if (!(await isValidAnyStaffId(patch.assignee_id ?? null)) || !(await isValidAnyStaffId(patch.inspector_id ?? null))) {
+      const error: any = new Error('无效的执行人')
+      error.status = 400
+      throw error
+    }
+    if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = null
+  } else {
+    if (!(await isValidStaffId(patch.inspector_id ?? null, 'inspector'))) {
+      const error: any = new Error('无效的检查人员')
+      error.status = 400
+      throw error
+    }
+    if (patch.cleaner_id !== undefined && patch.assignee_id === undefined) patch.assignee_id = patch.cleaner_id
+    if (patch.assignee_id !== undefined && patch.cleaner_id === undefined) patch.cleaner_id = patch.assignee_id
+  }
+  if (patch.task_date != null) patch.date = patch.task_date
+  if (patch.inspection_mode !== undefined || patch.inspection_due_date !== undefined) {
+    patch.inspection_replaced_by_checkin_task_id = null
+    patch.inspection_replaced_original_due_date = null
+  }
+  validateAndApplyInspectionPatch({ patch, current: before })
+  const lockedTurnoverTarget = turnoverInspectionScopeTarget(before, patch)
+  if (lockedTurnoverTarget) {
+    const verifiedTurnoverKeys = await normalizeCleaningTurnoverTargetKeys(client, [lockedTurnoverTarget])
+    if (verifiedTurnoverKeys.some((key) => !lockedTurnoverTopologyKeys.has(key))) {
+      const error: any = new Error('turnover_link_topology_changed_retry')
+      error.status = 409
+      throw error
+    }
+  }
+  await assertPgExplicitTurnoverLinkTopology(client, id, before, patch)
+  await assertPgTurnoverInspectionScope(client, id, before, patch)
+
+  const beforeStatus = String(before.status || 'pending')
+  const statusAutoEligible = beforeStatus === 'pending' || beforeStatus === 'assigned'
+  const incomingStatus = params.inputPatch.status
+  const incomingStatusEligible = incomingStatus === undefined || String(incomingStatus) === 'pending' || String(incomingStatus) === 'assigned'
+  const touchingAssignees = params.inputPatch.cleaner_id !== undefined
+    || params.inputPatch.inspector_id !== undefined
+    || params.inputPatch.assignee_id !== undefined
+    || params.inputPatch.inspection_mode !== undefined
+    || params.inputPatch.inspection_due_date !== undefined
+  if (touchingAssignees && statusAutoEligible && incomingStatusEligible) {
+    const nextCleanerId = isCheckinSiteExecution
+      ? (patch.assignee_id !== undefined ? (patch.assignee_id ?? null) : (before.assignee_id ?? before.inspector_id ?? null))
+      : (patch.cleaner_id !== undefined ? (patch.cleaner_id ?? null) : (before.cleaner_id ?? before.assignee_id ?? null))
+    const nextInspectorId = patch.inspector_id !== undefined ? (patch.inspector_id ?? null) : (before.inspector_id ?? null)
+    patch.status = assignedStatusFromAssignees(nextCleanerId, nextInspectorId)
+  }
+
+  const requestedPasswordFields = Array.from(new Set([
+    ...(params.inputPatch.old_code !== undefined ? ['old_code' as const] : []),
+    ...(params.inputPatch.new_code !== undefined ? ['new_code' as const] : []),
+    ...((passwordVerification?.fields || []) as Array<'old_code' | 'new_code'>),
+  ]))
+  const nextTaskType = String(patch.task_type || patch.type || before?.task_type || before?.type || '').trim().toLowerCase()
+  const passwordFields = assertCleaningPasswordFieldsApplicable(nextTaskType, requestedPasswordFields)
+  if (passwordFields.length) assertPasswordAuthorityTaskMutable({ ...before, ...patch })
+  const passwordAudit: PasswordAuthorityAuditContext = {
+    requestId: passwordVerification?.request_id || operationId,
+    actorUserId: String(req?.user?.sub || '').trim() || null,
+    actorRole: roleNamesOfRequest(req).join(',') || null,
+    client: passwordVerification?.client || 'web',
+  }
+  const claimedPasswordFields = passwordFields.length
+    ? await claimTaskPasswordAuthorityFields({ taskId: id, fields: passwordFields, client, audit: passwordAudit })
+    : []
+  for (const field of requestedPasswordFields) {
+    if (!claimedPasswordFields.includes(field)) delete patch[field]
+  }
+
+  const substantiveKeys = Object.keys(patch).filter((key) => key !== 'updated_at' && patch[key] !== undefined)
+  if (substantiveKeys.length) patch.updated_at = new Date().toISOString()
+  else delete patch.updated_at
+  const keys = Object.keys(patch).filter((key) => patch[key] !== undefined)
+  let after = before
+  if (keys.length) {
+    const set = keys.map((key, index) => `"${key}"=$${index + 1}`).join(', ')
+    const values = keys.map((key) => patch[key] === undefined ? null : patch[key])
+    const result = await client.query(`UPDATE cleaning_tasks SET ${set} WHERE id=$${keys.length + 1} RETURNING *`, [...values, id])
+    after = result?.rows?.[0] || before
+  }
+
+  let confirmedPasswordFields: Array<'old_code' | 'new_code'> = []
+  if (claimedPasswordFields.length) {
+    const confirmed = await confirmTaskPasswordAuthority({
+      taskId: id,
+      fields: claimedPasswordFields,
+      claimedFields: claimedPasswordFields,
+      client,
+      audit: passwordAudit,
+    })
+    confirmedPasswordFields = confirmed.updatedFields
+    after = confirmed.task || after
+  }
+  if (confirmedPasswordFields.includes('new_code')
+    && String(after?.order_id || '').trim()
+    && String(after?.task_type || after?.type || '').trim().toLowerCase() === 'checkin_clean') {
+    await syncCheckoutOldCodeFromCheckinNewCode({ orderId: String(after.order_id), client, audit: passwordAudit })
+    await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: String(after.order_id), client, audit: passwordAudit })
+  }
+  if (topologyTouched) {
+    await reconcilePasswordAuthorityAfterTaskTopologyChange({ before, after, client, audit: passwordAudit })
+    const refreshed = await client.query('SELECT * FROM cleaning_tasks WHERE id=$1 LIMIT 1', [id])
+    after = refreshed?.rows?.[0] || after
+  }
+
+  const actualChangedFields = actualCleaningTaskChangedFields(before, after, keys)
+  if (actualChangedFields.length) {
+    const workPatch = buildCleaningTaskWorkPatch(after, actualChangedFields)
+    const assignmentChanged = ['assignee_id', 'cleaner_id', 'inspector_id'].some((key) => actualChangedFields.includes(key))
+    const removed = String(after?.status || '').trim().toLowerCase() === 'cancelled'
+    const arrangementRevision = buildMz031CleaningArrangementRevision(
+      before,
+      after,
+      mz031ManagementStatusArrangementReasons(before, after, params.inputPatch.status !== undefined),
+    )
+    await emitWorkTaskEvent({
+      taskId: `cleaning_task:${id}`,
+      sourceType: 'cleaning_tasks',
+      sourceRefIds: [id],
+      eventType: assignmentChanged ? 'TASK_ASSIGNMENT_CHANGED' : (removed ? 'TASK_REMOVED' : 'TASK_UPDATED'),
+      changeScope: assignmentChanged || removed
+        ? 'membership'
+        : (workPatch.changedFields.some((field) => ['checkout_time', 'checkin_time', 'start_time', 'end_time', 'summary'].includes(field)) ? 'list' : 'detail'),
+      changedFields: workPatch.changedFields,
+      patch: workPatch.patch,
+      payload: arrangementRevision ? { arrangement_revision: arrangementRevision } : undefined,
+      causedByUserId: String(req?.user?.sub || '').trim() || null,
+      visibilityHints: buildCleaningTaskVisibilityHints(after || before),
+    }, client)
+  }
+  return { id, before, after, actualChangedFields }
+}
+
+async function applyAtomicOrderKeysPg(
+  client: any,
+  updates: Array<{ order_id: string; keys_required: number }>,
+  submittedTaskIds: string[],
+  req: any,
+) {
+  const affectedTaskIds = new Set<string>()
+  for (const update of [...updates].sort((a, b) => a.order_id.localeCompare(b.order_id))) {
+    const submittedTarget = await client.query(
+      `SELECT 1
+       FROM cleaning_tasks
+       WHERE id::text = ANY($1::text[])
+         AND order_id::text=$2::text
+         AND ${activeCleaningTaskWhereSql('')}
+         AND lower(COALESCE(status, '')) NOT IN ('ready','completed','done')
+       LIMIT 1`,
+      [submittedTaskIds, update.order_id],
+    )
+    if (!(submittedTarget?.rows || []).length) {
+      const error: any = new Error('order_key_target_not_in_items')
+      error.status = 400
+      throw error
+    }
+    const orderResult = await client.query('SELECT id::text AS id, COALESCE(keys_required, 1) AS keys_required FROM orders WHERE id::text=$1::text FOR UPDATE', [update.order_id])
+    const order = orderResult?.rows?.[0] || null
+    if (!order) {
+      const error: any = new Error('order not found')
+      error.status = 404
+      throw error
+    }
+    const nextKeys = Number(update.keys_required)
+    if (Number(order.keys_required || 1) === nextKeys) continue
+    const tasksResult = await client.query(
+      `SELECT * FROM cleaning_tasks
+       WHERE order_id::text=$1::text
+         AND lower(COALESCE(task_type,'')) IN ('checkin_clean','checkout_clean')
+         AND ${activeCleaningTaskWhereSql('')}
+         AND lower(COALESCE(status, '')) NOT IN ('ready','completed','done')
+       ORDER BY id
+       FOR UPDATE`,
+      [update.order_id],
+    )
+    await client.query('UPDATE orders SET keys_required=$1 WHERE id::text=$2::text', [nextKeys, update.order_id])
+    await client.query(
+      `UPDATE cleaning_tasks SET keys_required=$1, updated_at=now()
+       WHERE order_id::text=$2::text
+         AND lower(COALESCE(task_type,'')) IN ('checkin_clean','checkout_clean')
+         AND ${activeCleaningTaskWhereSql('')}
+         AND lower(COALESCE(status, '')) NOT IN ('ready','completed','done')`,
+      [nextKeys, update.order_id],
+    )
+    for (const before of tasksResult?.rows || []) {
+      const id = String(before?.id || '').trim()
+      if (!id) continue
+      affectedTaskIds.add(id)
+      const taskType = String(before?.task_type || '').trim().toLowerCase()
+      await emitWorkTaskEvent({
+        taskId: `cleaning_task:${id}`,
+        sourceType: 'cleaning_tasks',
+        sourceRefIds: [id],
+        eventType: 'TASK_UPDATED',
+        changeScope: 'list',
+        changedFields: [
+          'keys_required',
+          ...(taskType === 'checkout_clean' ? ['keys_required_checkout'] : []),
+          ...(taskType === 'checkin_clean' ? ['keys_required_checkin'] : []),
+          'key_tags',
+        ],
+        patch: {
+          keys_required: nextKeys,
+          ...(taskType === 'checkout_clean' ? { keys_required_checkout: nextKeys } : {}),
+          ...(taskType === 'checkin_clean' ? { keys_required_checkin: nextKeys } : {}),
+          key_tags: {
+            checkout_sets: taskType === 'checkout_clean' ? nextKeys : 0,
+            checkin_sets: taskType === 'checkin_clean' ? nextKeys : 0,
+            show_checkout: taskType === 'checkout_clean' && nextKeys >= 2,
+            show_checkin: taskType === 'checkin_clean' && nextKeys >= 2,
+          },
+        },
+        causedByUserId: String(req?.user?.sub || '').trim() || null,
+        visibilityHints: buildCleaningTaskVisibilityHints({ ...before, keys_required: nextKeys }),
+      }, client)
+    }
+  }
+  return Array.from(affectedTaskIds)
+}
+
+router.post('/tasks/atomic-patch', requirePerm('cleaning.task.assign'), requireR5TaskRuntimeSchema, async (req, res) => {
+  if (!isPasswordAuthoritySchemaReady()) return res.status(503).json({ code: 'password_authority_schema_not_ready' })
+  const parsed = atomicPatchSchema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json(parsed.error.format())
+  if (!hasPg || !pgPool) return res.status(503).json({ message: 'atomic_patch_requires_pg' })
+
+  const itemIds = parsed.data.items.map((item) => item.id)
+  if (new Set(itemIds).size !== itemIds.length) return res.status(400).json({ message: 'duplicate_task_id' })
+  const orderIds = parsed.data.order_key_updates.map((item) => item.order_id)
+  if (new Set(orderIds).size !== orderIds.length) return res.status(400).json({ message: 'duplicate_order_id' })
+  const operationId = parsed.data.operation_id
+  const actorUserId = String((req as any)?.user?.sub || '').trim()
+  const normalizedItems = [...parsed.data.items].sort((a, b) => a.id.localeCompare(b.id))
+  const normalizedOrderKeyUpdates = [...parsed.data.order_key_updates].sort((a, b) => a.order_id.localeCompare(b.order_id))
+  const payloadHash = buildCanonicalIdempotencyPayloadHmac({ items: normalizedItems, order_key_updates: normalizedOrderKeyUpdates })
+  const receiptScope = {
+    scopeType: 'cleaning_tasks_atomic_patch',
+    scopeId: actorUserId || 'unknown-actor',
+    submitId: operationId,
+    stepKey: 'save',
+  }
+  try {
+    await ensureCleaningSchemaV2()
+    const transactionResult = await pgRunInTransaction(async (client) => {
+      await assertIdempotentStepReceiptsReady(client)
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+        ['cleaning-tasks-atomic-patch', `${receiptScope.scopeId}:${operationId}`],
+      )
+      const existing = await loadIdempotentStepReceipt(client, receiptScope)
+      if (existing) {
+        if (String(existing.payload_hash || '') !== payloadHash) return { kind: 'conflict' as const }
+        return { kind: 'replay' as const, responseBody: existing.response_json }
+      }
+
+      const taskResults: AtomicTaskPatchResult[] = []
+      for (const item of normalizedItems) {
+        taskResults.push(await applyAtomicTaskPatchPg({
+          client,
+          id: item.id,
+          inputPatch: item.patch,
+          operationId,
+          req,
+        }))
+      }
+      const orderKeyTaskIds = await applyAtomicOrderKeysPg(client, normalizedOrderKeyUpdates, itemIds, req)
+      const deferredIds = taskResults
+        .filter((result) => result.actualChangedFields.length > 0
+          && isDeferredInspectionCheckinConflictRelevantChange(result.actualChangedFields))
+        .map((result) => result.id)
+      if (deferredIds.length) {
+        await reconcileDeferredInspectionCheckinReplacement({
+          taskIds: deferredIds,
+          actorUserId: actorUserId || null,
+          pgClient: client,
+        })
+      }
+      const responseBody = {
+        ok: true,
+        operation_id: operationId,
+        updated_task_ids: Array.from(new Set([
+          ...taskResults.filter((result) => result.actualChangedFields.length > 0).map((result) => result.id),
+          ...orderKeyTaskIds,
+        ])).sort(),
+        replayed: false,
+      }
+      await saveIdempotentStepReceipt(client, receiptScope, payloadHash, responseBody)
+      return { kind: 'committed' as const, responseBody, taskResults, deferredIds }
+    })
+    if (!transactionResult) throw new Error('pg not available')
+    if (transactionResult.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', operation_id: operationId })
+    if (transactionResult.kind === 'replay') {
+      return res.json({ ...(transactionResult.responseBody || { ok: true, operation_id: operationId }), replayed: true })
+    }
+
+    const changedResults = transactionResult.taskResults.filter((result) => result.actualChangedFields.length > 0)
+    const deferredIds = transactionResult.deferredIds
+    if (deferredIds.length) {
+      enqueueNotification(() => emitDeferredInspectionCheckinConflictAlerts({ taskIds: deferredIds, actorUserId: actorUserId || null }))
+    }
+    for (const result of changedResults) {
+      try {
+        const notice = buildCleaningTaskUpdateNoticeDetails(result.before, result.after)
+        const propertyId = String(result.after?.property_id || '').trim()
+        if (!notice.changes.length || !propertyId) continue
+        enqueueNotification(() => emitNotificationEvent({
+          type: 'CLEANING_TASK_UPDATED',
+          policyKey: 'task_requirements_changed',
+          entity: 'cleaning_task',
+          entityId: result.id,
+          propertyId,
+          updatedAt: new Date().toISOString(),
+          changes: notice.changes,
+          title: notice.lines.length ? '任务信息更新' : null,
+          body: notice.lines.length ? notice.lines.join('\n') : null,
+          data: notice.lines.length
+            ? { entity: 'cleaning_task', entityId: result.id, action: 'open_task', kind: 'cleaning_task_manager_fields_updated' }
+            : { entity: 'cleaning_task', entityId: result.id, action: 'open_task' },
+          actorUserId,
+        }, { operationId: `${operationId}:${result.id}` }))
+      } catch {}
+    }
+    return res.json(transactionResult.responseBody)
+  } catch (error: any) {
+    if (error instanceof IdempotentStepReceiptsNotReady) return res.status(503).json({ code: 'idempotent_step_receipts_not_ready' })
+    if (error instanceof TurnoverLinkTopologyConflict) return res.status(error.status).json({ code: error.code, message: error.message })
+    if (sendTurnoverInspectionScopeConflict(res, error)) return
+    const conflict = inspectionAssignmentConflictPayload(error)
+    if (conflict) return res.status(409).json(conflict)
+    return res.status(Number(error?.status || 500)).json({ message: error?.message || 'atomic_patch_failed' })
   }
 })
 

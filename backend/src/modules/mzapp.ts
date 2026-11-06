@@ -91,6 +91,7 @@ import { buildWorkTaskActionPayload, type WorkTaskActionId, type WorkTaskPartici
 import { dailyTaskAllViewScopes, dailyTaskWorkRecordProjection, evidenceBackedWorkRecordState, isDailyTaskManagerRoleNames, mergeRoleRecordEvidenceWithCancellation, projectDailyTaskListItems, selfCompleteKeyHandoverRecordEvidence } from '../lib/dailyTaskExecutionVisibility'
 import { cleaningCompletionAuditWhereSql, inspectionSubmissionAuditWhereSql } from '../lib/cleaningCompletionEvidence'
 import {
+  buildCanonicalIdempotencyPayloadHmac,
   buildIdempotencyPayloadHash,
   assertIdempotentStepReceiptsReady,
   IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH,
@@ -4980,9 +4981,18 @@ router.post('/cleaning-tasks/order-keys-required', requireR5TaskRuntimeSchema, a
   }
 })
 
+const managerFieldItemSchema = z.object({
+  id: z.string().trim().min(1),
+  checkout_time: z.string().trim().max(32).optional().nullable(),
+  checkin_time: z.string().trim().max(32).optional().nullable(),
+  guest_special_request: z.string().trim().max(1500).optional().nullable(),
+}).strict()
+
 const managerFieldsSchema = z
   .object({
+    operation_id: z.string().trim().min(8).max(IDEMPOTENCY_SUBMIT_ID_MAX_LENGTH).optional(),
     task_ids: z.array(z.string().trim().min(1)).min(1).max(50),
+    items: z.array(managerFieldItemSchema).min(1).max(50).optional(),
     password_task_ids: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
     checkout_time: z.string().trim().max(32).optional().nullable(),
     checkin_time: z.string().trim().max(32).optional().nullable(),
@@ -5099,7 +5109,49 @@ async function handleManagerFields(req: any, res: any) {
   const pool = pgPool
   try {
     assertR5TaskRuntimeSchemaReady()
+    const operationId = String(parsed.data.operation_id || '').trim()
+    const actorUserId = String(user?.sub || '').trim() || 'unknown-actor'
+    const normalizedIdempotencyPayload = {
+      ...parsed.data,
+      task_ids: Array.from(new Set(parsed.data.task_ids)).sort(),
+      ...(parsed.data.items
+        ? { items: [...parsed.data.items].sort((a, b) => a.id.localeCompare(b.id)) }
+        : {}),
+      ...(parsed.data.password_task_ids
+        ? { password_task_ids: Array.from(new Set(parsed.data.password_task_ids)).sort() }
+        : {}),
+      ...(parsed.data.password_verification
+        ? {
+            password_verification: {
+              ...parsed.data.password_verification,
+              fields: Array.from(new Set(parsed.data.password_verification.fields)).sort(),
+            },
+          }
+        : {}),
+    }
+    const idempotencyPayloadHash = operationId ? buildCanonicalIdempotencyPayloadHmac(normalizedIdempotencyPayload) : ''
+    const idempotencyScope = {
+      scopeType: 'cleaning_task_manager_fields',
+      scopeId: actorUserId,
+      submitId: operationId,
+      stepKey: 'save',
+    }
     const repId = String(parsed.data.task_ids[0] || '').trim()
+    const generalTaskIdSet = new Set(parsed.data.task_ids.map((id) => String(id || '').trim()).filter(Boolean))
+    const managerItems = [...(parsed.data.items || [])].sort((a, b) => a.id.localeCompare(b.id))
+    if (new Set(managerItems.map((item) => item.id)).size !== managerItems.length) {
+      return res.status(400).json({ message: 'duplicate_manager_field_item' })
+    }
+    if (managerItems.some((item) => !generalTaskIdSet.has(item.id))) {
+      return res.status(400).json({ message: 'manager_field_item_not_in_task_ids' })
+    }
+    if (managerItems.length && (
+      parsed.data.checkout_time !== undefined
+      || parsed.data.checkin_time !== undefined
+      || parsed.data.guest_special_request !== undefined
+    )) {
+      return res.status(400).json({ message: 'manager_field_items_conflict_with_legacy_fields' })
+    }
     let propertyCode = ''
     let propertyId = ''
     let prevRow: any = null
@@ -5137,6 +5189,7 @@ async function handleManagerFields(req: any, res: any) {
     let prevKeysRequiredMax: number | null = null
     let keysOrderIds: string[] = []
     let keysNullIds: string[] = []
+    let keysTargetTaskIds: string[] = []
     if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) push('checkout_time', parsed.data.checkout_time)
     if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) push('checkin_time', parsed.data.checkin_time)
     if (parsed.data.old_code !== undefined) push('old_code', parsed.data.old_code)
@@ -5194,6 +5247,12 @@ async function handleManagerFields(req: any, res: any) {
               incomingRows = nextCheckins?.rows || []
             }
           }
+          if (!incomingRows.length) {
+            const rows = (rrIds?.rows || []) as any[]
+            const checkoutRows = rows.filter((x: any) => String(x?.task_type || '').trim().toLowerCase() === 'checkout_clean')
+            if (checkoutRows.length === rows.length) incomingRows = checkoutRows
+          }
+          keysTargetTaskIds = Array.from(new Set(incomingRows.map((x: any) => String(x.id || '').trim()).filter(Boolean))).sort()
           keysOrderIds = Array.from(new Set(incomingRows.map((x: any) => String(x.order_id || '').trim()).filter(Boolean)))
           keysNullIds = Array.from(new Set(incomingRows.filter((x: any) => !String(x.order_id || '').trim()).map((x: any) => String(x.id || '').trim()).filter(Boolean)))
           if (!keysOrderIds.length && !keysNullIds.length) {
@@ -5218,7 +5277,7 @@ async function handleManagerFields(req: any, res: any) {
             const diffCount = rrk?.rows?.[0]?.diff_count == null ? 0 : Number(rrk.rows[0].diff_count)
             prevKeysRequiredMin = Number.isFinite(minK) ? Math.max(1, Math.min(2, Math.trunc(minK))) : 1
             prevKeysRequiredMax = Number.isFinite(maxK) ? Math.max(1, Math.min(2, Math.trunc(maxK))) : 1
-            if (Number.isFinite(diffCount) && diffCount > 0) nextKeysRequired = nextK2
+            if (Number.isFinite(diffCount)) nextKeysRequired = nextK2
           }
         } catch {
           const fallback = prevRow?.keys_required == null ? 1 : Number(prevRow.keys_required)
@@ -5228,19 +5287,134 @@ async function handleManagerFields(req: any, res: any) {
         }
       }
     }
+    if (parsed.data.keys_required !== undefined && !keysTargetTaskIds.length) {
+      return res.status(409).json({ message: 'manager_fields_keys_target_missing' })
+    }
     const verificationFields = Array.from(new Set([
       ...(parsed.data.old_code !== undefined ? ['old_code' as const] : []),
       ...(parsed.data.new_code !== undefined ? ['new_code' as const] : []),
       ...((parsed.data.password_verification?.fields || []) as Array<'old_code' | 'new_code'>),
     ]))
-    if (!fields.length && nextKeysRequired == null && !verificationFields.length) return res.json({ ok: true, skipped: 'no_change' })
+    const hasItemMutation = managerItems.some((item) => (
+      item.checkout_time !== undefined
+      || item.checkin_time !== undefined
+      || item.guest_special_request !== undefined
+    ))
+    const hasManagerFieldsMutation = fields.length > 0 || hasItemMutation || nextKeysRequired != null || verificationFields.length > 0
+    if (!hasManagerFieldsMutation && !operationId) {
+      return res.json({
+        ok: true,
+        skipped: 'no_change',
+        manager_fields_receipt_version: 1,
+        authoritative_updates: [],
+        projection_refresh_required: false,
+      })
+    }
 
     const passwordRequestId = parsed.data.password_verification?.request_id || crypto.randomUUID()
-    const affectedTaskIds = (await pgRunInTransaction(async (client) => {
+    const transactionResult = await pgRunInTransaction(async (client) => {
+      const loadAuthoritativeUpdates = async (taskIds0: string[]) => {
+        const taskIds = Array.from(new Set(taskIds0.map((id) => String(id || '').trim()).filter(Boolean))).sort()
+        if (!taskIds.length) return []
+        const result = await client.query(
+          `SELECT t.id::text AS task_id,
+                  lower(COALESCE(t.task_type, t.type, '')) AS task_type,
+                  COALESCE(t.task_date, t.date)::date::text AS scheduled_date,
+                  t.checkout_time, t.checkin_time, t.old_code, t.new_code, t.guest_special_request,
+                  CASE
+                    WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1)
+                    ELSE COALESCE(o.keys_required, t.keys_required, 1)
+                  END AS keys_required,
+                  t.old_code_authority_status, t.new_code_authority_status,
+                  t.old_code_source_task_id::text AS old_code_source_task_id,
+                  t.old_code_source_order_id::text AS old_code_source_order_id,
+                  t.old_code_source_field,
+                  t.updated_at,
+                  COALESCE(v.last_version, 0)::bigint AS current_task_version,
+                  COALESCE(latest_event.sequence_no, 0)::bigint AS current_sequence_no
+           FROM cleaning_tasks t
+           LEFT JOIN orders o ON o.id::text = t.order_id::text
+           LEFT JOIN work_task_event_versions v ON v.task_id = ('cleaning_task:' || t.id::text)
+           LEFT JOIN LATERAL (
+             SELECT e.sequence_no
+             FROM work_task_events e
+             WHERE e.task_id = ('cleaning_task:' || t.id::text)
+             ORDER BY e.sequence_no DESC
+             LIMIT 1
+           ) latest_event ON true
+           WHERE t.id::text = ANY($1::text[])
+             AND ${activeCleaningTaskWhereSql('t')}
+             AND lower(COALESCE(t.status, '')) NOT IN ('ready', 'completed', 'done')
+           ORDER BY t.id`,
+          [taskIds],
+        )
+        return (result?.rows || []).map((row: any) => {
+          const { current_task_version, current_sequence_no, ...authoritative } = row
+          return {
+            ...authoritative,
+            keys_required: Math.max(1, Math.min(2, Number(row?.keys_required || 1))),
+            task_version: Number(current_task_version || 0),
+            sequence_no: Number(current_sequence_no || 0),
+          }
+        })
+      }
+      if (operationId) {
+        await assertIdempotentStepReceiptsReady(client)
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+          ['cleaning-task-manager-fields', `${actorUserId}:${operationId}`],
+        )
+        const existing = await loadIdempotentStepReceipt(client, idempotencyScope)
+        if (existing) {
+          if (String(existing.payload_hash || '') !== idempotencyPayloadHash) {
+            const error: any = new Error('idempotency_conflict')
+            error.status = 409
+            throw error
+          }
+          const storedResponse = existing.response_json || { ok: true, operation_id: operationId }
+          const storedTaskIds = Array.isArray(storedResponse?.authoritative_task_ids)
+            ? storedResponse.authoritative_task_ids.map((id: any) => String(id || '').trim()).filter(Boolean)
+            : []
+          const {
+            authoritative_task_ids: _storedTaskIds,
+            authoritative_event_receipts: _storedEventReceipts,
+            ...publicStoredResponse
+          } = storedResponse
+          const currentUpdates = storedTaskIds.length
+            ? await loadAuthoritativeUpdates(storedTaskIds)
+            : []
+          const replayTargetsRemainActive = currentUpdates.length === storedTaskIds.length
+          return {
+            replayed: true,
+            responseBody: {
+              ...publicStoredResponse,
+              ...(storedTaskIds.length ? { authoritative_updates: replayTargetsRemainActive ? currentUpdates : [] } : {}),
+              projection_refresh_required: publicStoredResponse?.projection_refresh_required === true || !replayTargetsRemainActive,
+            },
+            affectedTaskIds: new Set<string>(),
+          }
+        }
+      }
+      if (!hasManagerFieldsMutation) {
+        const responseBody = {
+          ok: true,
+          skipped: 'no_change',
+          manager_fields_receipt_version: 1,
+          authoritative_updates: [],
+          projection_refresh_required: false,
+          ...(operationId ? { operation_id: operationId } : {}),
+        }
+        if (operationId) await saveIdempotentStepReceipt(client, idempotencyScope, idempotencyPayloadHash, responseBody)
+        return { replayed: false, responseBody, affectedTaskIds: new Set<string>() }
+      }
       const generalTaskIds = Array.from(new Set(parsed.data.task_ids.map((x) => String(x || '').trim()).filter(Boolean))).sort()
       const passwordTaskIds = Array.from(new Set((parsed.data.password_task_ids || parsed.data.task_ids).map((x) => String(x || '').trim()).filter(Boolean))).sort()
       const targetTaskIds = Array.from(new Set([...generalTaskIds, ...passwordTaskIds])).sort()
       const affected = new Set<string>()
+      const eventPatchByTask = new Map<string, Record<string, any>>()
+      const markEventPatch = (taskId: string, patch: Record<string, any>) => {
+        eventPatchByTask.set(taskId, { ...(eventPatchByTask.get(taskId) || {}), ...patch })
+      }
       const snapshotResult = await client.query(
         `SELECT t.id::text AS id,
                 COALESCE(p_id.id::text, p_code.id::text, t.property_id::text) AS property_id
@@ -5264,7 +5438,7 @@ async function handleManagerFields(req: any, res: any) {
         for (const propertyId of lockedPasswordPropertyIds) await lockCleaningPasswordChainKey(client, propertyId)
       }
       const lockedResult = await client.query(
-        `SELECT id::text AS id, order_id::text AS order_id,
+        `SELECT id::text AS id, order_id::text AS order_id, status,
                 lower(COALESCE(task_type, type, '')) AS task_type,
                 property_id::text AS property_id
          FROM cleaning_tasks
@@ -5275,10 +5449,83 @@ async function handleManagerFields(req: any, res: any) {
         [targetTaskIds],
       )
       const lockedTasks = lockedResult?.rows || []
-      if (lockedTasks.length !== targetTaskIds.length) {
+      if (lockedTasks.length !== targetTaskIds.length || lockedTasks.some((row: any) => isTerminalCleaningStatus(row?.status))) {
         const error: any = new Error('manager_fields_task_inactive')
         error.status = 409
         throw error
+      }
+      if (nextKeysRequired != null) {
+        const lockedKeyTargetsResult = await client.query(
+          `SELECT id::text AS id, order_id::text AS order_id, status
+           FROM cleaning_tasks
+           WHERE id::text = ANY($1::text[])
+             AND ${activeCleaningTaskWhereSql('')}
+           ORDER BY id
+           FOR UPDATE`,
+          [keysTargetTaskIds],
+        )
+        const lockedKeyTargets = lockedKeyTargetsResult?.rows || []
+        if (lockedKeyTargets.length !== keysTargetTaskIds.length
+          || lockedKeyTargets.some((row: any) => isTerminalCleaningStatus(row?.status))) {
+          const error: any = new Error('manager_fields_keys_target_changed')
+          error.status = 409
+          throw error
+        }
+        keysOrderIds = Array.from(new Set<string>(lockedKeyTargets.map((row: any) => String(row?.order_id || '').trim()).filter(Boolean))).sort()
+        keysNullIds = lockedKeyTargets
+          .filter((row: any) => !String(row?.order_id || '').trim())
+          .map((row: any) => String(row?.id || '').trim())
+          .filter(Boolean)
+          .sort()
+        if (!keysOrderIds.length && !keysNullIds.length) {
+          const error: any = new Error('manager_fields_keys_target_changed')
+          error.status = 409
+          throw error
+        }
+        if (keysOrderIds.length) {
+          const lockedOrdersResult = await client.query(
+            'SELECT id::text AS id FROM orders WHERE id::text = ANY($1::text[]) ORDER BY id FOR UPDATE',
+            [keysOrderIds],
+          )
+          if ((lockedOrdersResult?.rows || []).length !== keysOrderIds.length) {
+            const error: any = new Error('manager_fields_keys_target_changed')
+            error.status = 409
+            throw error
+          }
+        }
+        const lockedKeyValuesResult = await client.query(
+          `SELECT
+             MIN(CASE WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1) ELSE COALESCE(o.keys_required, t.keys_required, 1) END) AS min_k,
+             MAX(CASE WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1) ELSE COALESCE(o.keys_required, t.keys_required, 1) END) AS max_k,
+             SUM(CASE WHEN (CASE WHEN t.order_id IS NULL THEN COALESCE(t.keys_required, 1) ELSE COALESCE(o.keys_required, t.keys_required, 1) END) <> $2 THEN 1 ELSE 0 END) AS diff_count
+           FROM cleaning_tasks t
+           LEFT JOIN orders o ON o.id::text = t.order_id::text
+           WHERE t.id::text = ANY($1::text[])`,
+          [keysTargetTaskIds, nextKeysRequired],
+        )
+        const lockedKeyValues = lockedKeyValuesResult?.rows?.[0] || {}
+        const lockedMin = lockedKeyValues.min_k == null ? 1 : Number(lockedKeyValues.min_k)
+        const lockedMax = lockedKeyValues.max_k == null ? 1 : Number(lockedKeyValues.max_k)
+        const lockedDiffCount = lockedKeyValues.diff_count == null ? 0 : Number(lockedKeyValues.diff_count)
+        prevKeysRequiredMin = Number.isFinite(lockedMin) ? Math.max(1, Math.min(2, Math.trunc(lockedMin))) : 1
+        prevKeysRequiredMax = Number.isFinite(lockedMax) ? Math.max(1, Math.min(2, Math.trunc(lockedMax))) : 1
+        if (!Number.isFinite(lockedDiffCount) || lockedDiffCount <= 0) nextKeysRequired = null
+      }
+      if (generalTaskIds.length > 1 && managerItems.length) {
+        const lockedTypeById = new Map(lockedTasks.map((row: any) => [String(row.id), String(row.task_type || '').trim().toLowerCase()]))
+        for (const item of managerItems) {
+          const taskType = lockedTypeById.get(item.id) || ''
+          if (item.checkout_time !== undefined && taskType !== 'checkout_clean') {
+            const error: any = new Error('checkout_time_target_not_checkout')
+            error.status = 400
+            throw error
+          }
+          if (item.checkin_time !== undefined && taskType !== 'checkin_clean') {
+            const error: any = new Error('checkin_time_target_not_checkin')
+            error.status = 400
+            throw error
+          }
+        }
       }
       const passwordTaskIdSet = new Set(passwordTaskIds)
       const lockedPasswordTasks = lockedTasks.filter((row: any) => passwordTaskIdSet.has(String(row.id)))
@@ -5331,7 +5578,25 @@ async function handleManagerFields(req: any, res: any) {
         const transactionValues = [...nonPasswordEntries.map((entry) => entry.value), generalTaskIds]
         const sql = `UPDATE cleaning_tasks SET ${assignments.join(', ')}, updated_at = now() WHERE id::text = ANY($${transactionValues.length}::text[])`
         await client.query(sql, transactionValues)
-        for (const taskId of generalTaskIds) affected.add(taskId)
+        for (const taskId of generalTaskIds) {
+          affected.add(taskId)
+          markEventPatch(taskId, Object.fromEntries(nonPasswordEntries.map((entry) => [entry.field, entry.value])))
+        }
+      }
+      for (const item of managerItems) {
+        const entries = [
+          ...(item.checkout_time !== undefined ? [{ field: 'checkout_time', value: item.checkout_time }] : []),
+          ...(item.checkin_time !== undefined ? [{ field: 'checkin_time', value: item.checkin_time }] : []),
+          ...(item.guest_special_request !== undefined ? [{ field: 'guest_special_request', value: item.guest_special_request }] : []),
+        ]
+        if (!entries.length) continue
+        const assignments = entries.map((entry, index) => `${entry.field} = $${index + 1}`)
+        await client.query(
+          `UPDATE cleaning_tasks SET ${assignments.join(', ')}, updated_at = now() WHERE id::text = $${entries.length + 1}::text`,
+          [...entries.map((entry) => entry.value), item.id],
+        )
+        affected.add(item.id)
+        markEventPatch(item.id, Object.fromEntries(entries.map((entry) => [entry.field, entry.value])))
       }
 
       const passwordEntryByField = new Map(fieldNames.map((field, index) => [field, vals[index]]))
@@ -5357,6 +5622,9 @@ async function handleManagerFields(req: any, res: any) {
             audit: passwordAudit,
           })
           if (confirmed.updatedFields.length) affected.add(taskId)
+          if (confirmed.updatedFields.length) {
+            markEventPatch(taskId, Object.fromEntries(confirmed.updatedFields.map((field) => [field, passwordEntryByField.get(field)])))
+          }
           if (String(row?.task_type || '') === 'checkin_clean' && confirmed.updatedFields.includes('new_code')) {
             const orderId = String(row?.order_id || '').trim()
             if (orderId) linkedOrders.add(orderId)
@@ -5365,9 +5633,15 @@ async function handleManagerFields(req: any, res: any) {
       }
       for (const orderId of Array.from(linkedOrders).sort()) {
         const checkoutResult = await syncCheckoutOldCodeFromCheckinNewCode({ orderId, client, audit: passwordAudit })
-        if (checkoutResult.targetTaskId) affected.add(String(checkoutResult.targetTaskId))
+        if (checkoutResult.targetTaskId) {
+          affected.add(String(checkoutResult.targetTaskId))
+          markEventPatch(String(checkoutResult.targetTaskId), { old_code: '[updated]' })
+        }
         const nextResult = await syncNextCheckinOldCodeFromSourceOrder({ sourceOrderId: orderId, client, audit: passwordAudit })
-        if (nextResult.targetTaskId) affected.add(String(nextResult.targetTaskId))
+        if (nextResult.targetTaskId) {
+          affected.add(String(nextResult.targetTaskId))
+          markEventPatch(String(nextResult.targetTaskId), { old_code: '[updated]' })
+        }
       }
 
       if (nextKeysRequired != null) {
@@ -5385,6 +5659,7 @@ async function handleManagerFields(req: any, res: any) {
              SET keys_required = $1, updated_at = now()
              WHERE order_id::text = ANY($2::text[])
                AND ${activeCleaningTaskWhereSql('')}
+               AND lower(COALESCE(status, '')) NOT IN ('ready','completed','done')
                AND COALESCE(keys_required, 1) <> $1`,
             [nextKeysRequired, keysOrderIds],
           )
@@ -5392,12 +5667,16 @@ async function handleManagerFields(req: any, res: any) {
             `SELECT id::text AS id
              FROM cleaning_tasks
              WHERE order_id::text = ANY($1::text[])
-               AND ${activeCleaningTaskWhereSql('')}`,
+               AND ${activeCleaningTaskWhereSql('')}
+               AND lower(COALESCE(status, '')) NOT IN ('ready','completed','done')`,
             [keysOrderIds],
           )
           for (const x of rIds?.rows || []) {
             const id2 = String(x?.id || '').trim()
-            if (id2) affected.add(id2)
+            if (id2) {
+              affected.add(id2)
+              markEventPatch(id2, { keys_required: nextKeysRequired })
+            }
           }
         }
         const doUpdateNull = async () => {
@@ -5408,16 +5687,143 @@ async function handleManagerFields(req: any, res: any) {
              WHERE order_id IS NULL
                AND id::text = ANY($2::text[])
                AND ${activeCleaningTaskWhereSql('')}
+               AND lower(COALESCE(status, '')) NOT IN ('ready','completed','done')
                AND COALESCE(keys_required, 1) <> $1`,
             [nextKeysRequired, keysNullIds],
           )
-          for (const id2 of keysNullIds) affected.add(String(id2))
+          for (const id2 of keysNullIds) {
+            affected.add(String(id2))
+            markEventPatch(String(id2), { keys_required: nextKeysRequired })
+          }
         }
         await doUpdateOrder()
         await doUpdateNull()
       }
-      return affected
-    })) || new Set<string>()
+      if (affected.size) {
+        const affectedIds = Array.from(affected)
+        const vis = await client.query(
+          `SELECT t.id::text AS id, t.assignee_id, t.cleaner_id, t.inspector_id,
+                  lower(COALESCE(t.task_type, '')) AS task_type,
+                  t.property_id::text AS property_id,
+                  COALESCE(t.task_date, t.date)::text AS task_date,
+                  t.checkout_time, t.checkin_time, t.guest_special_request,
+                  COALESCE(t.keys_required, 1) AS keys_required,
+                  t.order_id::text AS order_id,
+                  t.linked_checkout_task_id::text AS linked_checkout_task_id,
+                  t.status, t.execution_state,
+                  o.checkin::text AS order_checkin,
+                  o.checkout::text AS order_checkout
+           FROM cleaning_tasks t
+           LEFT JOIN orders o ON o.id::text=t.order_id::text
+           WHERE EXISTS (
+             SELECT 1
+             FROM cleaning_tasks affected
+             WHERE affected.id::text = ANY($1::text[])
+               AND affected.property_id::text=t.property_id::text
+               AND COALESCE(affected.task_date, affected.date)::date=COALESCE(t.task_date, t.date)::date
+           )
+           ORDER BY t.id`,
+          [affectedIds],
+        )
+        const canonicalTurnoverSourceIds = new Set(
+          canonicalCleaningTurnoverPairs(vis?.rows || []).flatMap((pair) => pair.source_ids),
+        )
+        for (const row of vis?.rows || []) {
+          const taskId = String(row?.id || '').trim()
+          if (!affected.has(taskId)) continue
+          const directPatch = eventPatchByTask.get(taskId) || {}
+          const eventPatch: Record<string, any> = { ...directPatch }
+          const changedFields = new Set(Object.keys(directPatch))
+          if (Object.prototype.hasOwnProperty.call(directPatch, 'checkout_time')) {
+            eventPatch.start_time = directPatch.checkout_time ?? null
+            eventPatch.summary = summaryFromCleaningTimes(row?.checkout_time, row?.checkin_time)
+            changedFields.add('start_time')
+            changedFields.add('summary')
+            changedFields.add('stayed_nights')
+            changedFields.add('remaining_nights')
+          }
+          if (Object.prototype.hasOwnProperty.call(directPatch, 'checkin_time')) {
+            const isCheckinTask = String(row?.task_type || '') === 'checkin_clean'
+            const isCheckoutTask = String(row?.task_type || '') === 'checkout_clean'
+            const hasActualCheckinTask = isCheckinTask || (isCheckoutTask && canonicalTurnoverSourceIds.has(taskId))
+            eventPatch.end_time = hasActualCheckinTask ? (directPatch.checkin_time ?? null) : null
+            eventPatch.has_checkin_task = hasActualCheckinTask
+            eventPatch.checkin_time_note = hasActualCheckinTask ? null : (directPatch.checkin_time ?? null)
+            eventPatch.summary = summaryFromCleaningTimes(row?.checkout_time, hasActualCheckinTask ? row?.checkin_time : null)
+            changedFields.add('end_time')
+            changedFields.add('has_checkin_task')
+            changedFields.add('checkin_time_note')
+            changedFields.add('summary')
+            changedFields.add('stayed_nights')
+            changedFields.add('remaining_nights')
+          }
+          if (Object.prototype.hasOwnProperty.call(directPatch, 'keys_required')) {
+            const taskType = String(row?.task_type || '')
+            const keyCount = Number(row?.keys_required || 1)
+            eventPatch.keys_required_checkout = taskType === 'checkout_clean' ? keyCount : null
+            eventPatch.keys_required_checkin = taskType === 'checkin_clean' ? keyCount : null
+            eventPatch.key_tags = {
+              checkout_sets: taskType === 'checkout_clean' ? keyCount : null,
+              checkin_sets: taskType === 'checkin_clean' ? keyCount : null,
+              show_checkout: taskType === 'checkout_clean' && keyCount >= 2,
+              show_checkin: taskType === 'checkin_clean' && keyCount >= 2,
+            }
+            changedFields.add('keys_required_checkout')
+            changedFields.add('keys_required_checkin')
+            changedFields.add('key_tags')
+          }
+          if (!changedFields.size) continue
+          const listFields = ['checkout_time', 'checkin_time', 'keys_required']
+          await emitWorkTaskEvent({
+            taskId: `cleaning_task:${taskId}`,
+            sourceType: 'cleaning_tasks',
+            sourceRefIds: [taskId],
+            eventType: 'TASK_UPDATED',
+            changeScope: Array.from(changedFields).some((field) => listFields.includes(field)) ? 'list' : 'detail',
+            changedFields: Array.from(changedFields),
+            patch: eventPatch,
+            payload: operationId ? { manager_fields: { operation_id: operationId } } : undefined,
+            causedByUserId: String(user?.sub || '').trim() || null,
+            visibilityHints: buildCleaningTaskVisibilityHints(row),
+          }, client)
+        }
+      }
+      const authoritativeTaskIds = Array.from(affected).sort()
+      const authoritativeUpdates = await loadAuthoritativeUpdates(authoritativeTaskIds)
+      const responseBody = {
+        ok: true,
+        manager_fields_receipt_version: 1,
+        authoritative_updates: authoritativeUpdates,
+        projection_refresh_required: managerItems.some((item) => item.checkin_time !== undefined)
+          || parsed.data.checkin_time !== undefined,
+        ...(operationId ? { operation_id: operationId } : {}),
+      }
+      if (operationId) {
+        await saveIdempotentStepReceipt(client, idempotencyScope, idempotencyPayloadHash, {
+          ...responseBody,
+          authoritative_updates: [],
+          authoritative_task_ids: authoritativeTaskIds,
+        })
+      }
+      return { replayed: false, responseBody, affectedTaskIds: affected }
+    })
+    if (!transactionResult) throw new Error('pg not available')
+    if (transactionResult.replayed) {
+      return res.status(transactionResult.responseBody?.skipped ? 200 : 201).json({
+        ...transactionResult.responseBody,
+        replayed: true,
+      })
+    }
+    const affectedTaskIds = transactionResult.affectedTaskIds
+    const checkoutTimeInput = parsed.data.checkout_time !== undefined
+      ? parsed.data.checkout_time
+      : managerItems.find((item) => item.checkout_time !== undefined)?.checkout_time
+    const checkinTimeInput = parsed.data.checkin_time !== undefined
+      ? parsed.data.checkin_time
+      : managerItems.find((item) => item.checkin_time !== undefined)?.checkin_time
+    const guestRequestInput = parsed.data.guest_special_request !== undefined
+      ? parsed.data.guest_special_request
+      : managerItems.find((item) => item.guest_special_request !== undefined)?.guest_special_request
 
     setImmediate(() => {
       ;(async () => {
@@ -5425,135 +5831,18 @@ async function handleManagerFields(req: any, res: any) {
           const { broadcastCleaningEvent } = require('./events')
           for (const id of Array.from(affectedTaskIds)) broadcastCleaningEvent({ event: 'cleaning_task_manager_fields_updated', task_id: String(id) })
         } catch {}
-        if (affectedTaskIds.size) {
-          try {
-            const affectedIds = Array.from(affectedTaskIds)
-            const vis = await pool.query(
-              `SELECT t.id::text AS id, t.assignee_id, t.cleaner_id, t.inspector_id,
-                      lower(COALESCE(t.task_type, '')) AS task_type,
-                      t.property_id::text AS property_id,
-                      COALESCE(t.task_date, t.date)::text AS task_date,
-                      COALESCE(t.keys_required, 1) AS keys_required,
-                      t.order_id::text AS order_id,
-                      t.linked_checkout_task_id::text AS linked_checkout_task_id,
-                      t.status,
-                      t.execution_state,
-                      o.checkin::text AS order_checkin,
-                      o.checkout::text AS order_checkout
-               FROM cleaning_tasks t
-               LEFT JOIN orders o ON o.id::text=t.order_id::text
-               WHERE EXISTS (
-                 SELECT 1
-                 FROM cleaning_tasks affected
-                 WHERE affected.id::text = ANY($1::text[])
-                   AND affected.property_id::text=t.property_id::text
-                   AND COALESCE(affected.task_date, affected.date)::date=COALESCE(t.task_date, t.date)::date
-               )`,
-              [affectedIds],
-            )
-            const byId = new Map<string, any>((vis?.rows || []).map((row: any) => [String(row.id || ''), row]))
-            const canonicalTurnoverSourceIds = new Set(
-              canonicalCleaningTurnoverPairs(vis?.rows || []).flatMap((pair) => pair.source_ids),
-            )
-            const keyTagsByGroup = new Map<string, { checkout_sets: number; checkin_sets: number }>()
-            for (const row of vis?.rows || []) {
-              const groupKey = `${String(row?.property_id || '').trim()}|${String(row?.task_date || '').slice(0, 10)}`
-              const prev = keyTagsByGroup.get(groupKey) || { checkout_sets: 0, checkin_sets: 0 }
-              const k0 = Number(row?.keys_required == null ? 1 : row.keys_required)
-              const k = Number.isFinite(k0) ? Math.max(1, Math.min(2, Math.trunc(k0))) : 1
-              const taskType = String(row?.task_type || '').trim()
-              if (taskType === 'checkout_clean') prev.checkout_sets = Math.max(prev.checkout_sets, k)
-              if (taskType === 'checkin_clean') prev.checkin_sets = Math.max(prev.checkin_sets, k)
-              keyTagsByGroup.set(groupKey, prev)
-            }
-            const scope = parsed.data.checkout_time !== undefined
-              || parsed.data.checkin_time !== undefined
-              || parsed.data.keys_required !== undefined
-              ? 'list'
-              : 'detail'
-            for (const id of affectedIds) {
-              const row = byId.get(String(id)) || { id }
-              const taskType = String(row?.task_type || '').trim()
-              const isCheckoutTask = taskType === 'checkout_clean'
-              const isCheckinTask = taskType === 'checkin_clean'
-              const hasActualCheckinTask = isCheckinTask || (isCheckoutTask && canonicalTurnoverSourceIds.has(String(id)))
-              const groupKey = `${String(row?.property_id || '').trim()}|${String(row?.task_date || '').slice(0, 10)}`
-              const groupKeys = keyTagsByGroup.get(groupKey) || { checkout_sets: 0, checkin_sets: 0 }
-              const checkoutSets = groupKeys.checkout_sets >= 2 ? groupKeys.checkout_sets : (isCheckoutTask && nextKeysRequired != null ? nextKeysRequired : 0)
-              const checkinSets = groupKeys.checkin_sets >= 2 ? groupKeys.checkin_sets : (isCheckinTask && nextKeysRequired != null ? nextKeysRequired : 0)
-              const mergedKeysRequired = Math.max(1, checkoutSets || 0, checkinSets || 0, nextKeysRequired || 0)
-              const changedFieldsForTask = [
-                ...(parsed.data.checkout_time !== undefined ? ['checkout_time', 'start_time', 'summary'] : []),
-                ...(parsed.data.checkin_time !== undefined ? ['checkin_time', 'end_time', 'summary', 'has_checkin_task', 'checkin_time_note'] : []),
-                ...(parsed.data.checkout_time !== undefined || parsed.data.checkin_time !== undefined ? ['stayed_nights', 'remaining_nights'] : []),
-                ...(parsed.data.old_code !== undefined ? ['old_code'] : []),
-                ...(parsed.data.new_code !== undefined ? ['new_code'] : []),
-                ...(parsed.data.guest_special_request !== undefined ? ['guest_special_request'] : []),
-                ...(parsed.data.keys_required !== undefined ? ['keys_required'] : []),
-                ...(parsed.data.keys_required !== undefined ? ['keys_required_checkout'] : []),
-                ...(parsed.data.keys_required !== undefined ? ['keys_required_checkin'] : []),
-                ...(parsed.data.keys_required !== undefined ? ['key_tags'] : []),
-              ]
-              await emitWorkTaskEvent({
-                taskId: `cleaning_task:${String(id)}`,
-                sourceType: 'cleaning_tasks',
-                sourceRefIds: [String(id)],
-                eventType: 'TASK_UPDATED',
-                changeScope: scope,
-                changedFields: changedFieldsForTask,
-                patch: {
-                  ...(parsed.data.checkout_time !== undefined ? { checkout_time: parsed.data.checkout_time ?? null } : {}),
-                  ...(parsed.data.checkout_time !== undefined ? { start_time: parsed.data.checkout_time ?? null } : {}),
-                  ...(parsed.data.checkin_time !== undefined ? { checkin_time: parsed.data.checkin_time ?? null } : {}),
-                  ...(parsed.data.checkin_time !== undefined
-                    ? {
-                        end_time: hasActualCheckinTask ? (parsed.data.checkin_time ?? null) : null,
-                        has_checkin_task: hasActualCheckinTask,
-                        checkin_time_note: hasActualCheckinTask ? null : (parsed.data.checkin_time ?? null),
-                      }
-                    : {}),
-                  ...(parsed.data.checkout_time !== undefined || parsed.data.checkin_time !== undefined
-                    ? {
-                        summary: summaryFromCleaningTimes(
-                          parsed.data.checkout_time !== undefined ? parsed.data.checkout_time : prevRow?.checkout_time,
-                          hasActualCheckinTask
-                            ? (parsed.data.checkin_time !== undefined ? parsed.data.checkin_time : prevRow?.checkin_time)
-                            : null,
-                        ),
-                      }
-                    : {}),
-                  ...(parsed.data.old_code !== undefined ? { old_code: parsed.data.old_code ?? null } : {}),
-                  ...(parsed.data.new_code !== undefined ? { new_code: parsed.data.new_code ?? null } : {}),
-                  ...(parsed.data.guest_special_request !== undefined ? { guest_special_request: parsed.data.guest_special_request ?? null } : {}),
-                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null ? { keys_required: mergedKeysRequired } : {}),
-                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null ? { keys_required_checkout: checkoutSets || null } : {}),
-                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null ? { keys_required_checkin: checkinSets || null } : {}),
-                  ...(parsed.data.keys_required !== undefined && nextKeysRequired != null
-                    ? {
-                        key_tags: {
-                          checkout_sets: checkoutSets || null,
-                          checkin_sets: checkinSets || null,
-                          show_checkout: checkoutSets >= 2,
-                          show_checkin: checkinSets >= 2,
-                        },
-                      }
-                    : {}),
-                },
-                causedByUserId: String(user?.sub || '').trim() || null,
-                visibilityHints: buildCleaningTaskVisibilityHints(row),
-              })
-            }
-          } catch {}
-        }
+        // Durable work-task events are emitted inside the mutation transaction before
+        // the operation receipt. This block intentionally retains only broadcasts and
+        // external notifications, which are best-effort post-commit side effects.
         try {
           const { listCleaningTaskUserIdsBulk, listManagerUserIds } = require('./notifications')
           const fmt = (label: string, next: any, prev: any) => `${label}：${norm(next) || '-'}（原：${norm(prev) || '-'}）`
           const lines: string[] = []
-          if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) lines.push(fmt('退房时间', parsed.data.checkout_time, prevRow?.checkout_time))
-          if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) lines.push(fmt('入住时间', parsed.data.checkin_time, prevRow?.checkin_time))
+          if (checkoutTimeInput !== undefined && !eqNorm(checkoutTimeInput, prevRow?.checkout_time)) lines.push(fmt('退房时间', checkoutTimeInput, prevRow?.checkout_time))
+          if (checkinTimeInput !== undefined && !eqNorm(checkinTimeInput, prevRow?.checkin_time)) lines.push(fmt('入住时间', checkinTimeInput, prevRow?.checkin_time))
           if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) lines.push('旧密码：已更新（值已隐藏）')
           if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) lines.push('新密码：已更新（值已隐藏）')
-          if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) lines.push(fmt('客人需求', parsed.data.guest_special_request, prevRow?.guest_special_request))
+          if (guestRequestInput !== undefined && !eqNorm(guestRequestInput, prevRow?.guest_special_request)) lines.push(fmt('客人需求', guestRequestInput, prevRow?.guest_special_request))
           if (parsed.data.keys_required !== undefined) {
             const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
             if (Number.isFinite(nextK) && nextKeysRequired != null) {
@@ -5602,11 +5891,11 @@ async function handleManagerFields(req: any, res: any) {
           const fieldsKey = hashText(JSON.stringify(keyObj))
           const to = Array.from(new Set([...(await listCleaningTaskUserIdsBulk(Array.from(affectedTaskIds))), ...(await listManagerUserIds())]))
           const changes: string[] = []
-          if (parsed.data.checkout_time !== undefined && !eqNorm(parsed.data.checkout_time, prevRow?.checkout_time)) changes.push('time')
-          if (parsed.data.checkin_time !== undefined && !eqNorm(parsed.data.checkin_time, prevRow?.checkin_time)) changes.push('time')
+          if (checkoutTimeInput !== undefined && !eqNorm(checkoutTimeInput, prevRow?.checkout_time)) changes.push('time')
+          if (checkinTimeInput !== undefined && !eqNorm(checkinTimeInput, prevRow?.checkin_time)) changes.push('time')
           if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) changes.push('password')
           if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) changes.push('password')
-          if (parsed.data.guest_special_request !== undefined && !eqNorm(parsed.data.guest_special_request, prevRow?.guest_special_request)) changes.push('note')
+          if (guestRequestInput !== undefined && !eqNorm(guestRequestInput, prevRow?.guest_special_request)) changes.push('note')
           if (parsed.data.keys_required !== undefined && nextKeysRequired != null) changes.push('keys')
           const title = propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新'
           const body = lines.join('\n')
@@ -5646,8 +5935,9 @@ async function handleManagerFields(req: any, res: any) {
         } catch {}
       })().catch(() => {})
     })
-    return res.status(201).json({ ok: true })
+    return res.status(transactionResult.responseBody?.skipped ? 200 : 201).json(transactionResult.responseBody)
   } catch (e: any) {
+    if (e instanceof IdempotentStepReceiptsNotReady) return res.status(503).json({ code: e.message })
     return res.status(Number(e?.status || 500)).json({ message: e?.message || 'manager_fields_failed' })
   }
 }
@@ -9843,6 +10133,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             || completedSameDayTurnover?.keysHung === true
 
           const base = {
+            id: String(row.id),
             __raw_id: String(row.id),
             __date: taskDate,
             __prop_id: propId,
