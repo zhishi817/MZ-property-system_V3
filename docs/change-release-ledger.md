@@ -82,15 +82,15 @@
 - Branch: `codex/mz109-turnover-lock-release`
 - Base: `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`; fetched at `2026-11-06T09:12:26Z`
 - Candidate patch SHA-256: `7bcc469425dca0e74fb438e714619196a3a0da61a58e9050b5079b8d3d1ced25`
-- Commit SHA: not committed; the post-commit release report will emit the exact audit head
+- Commit SHA: `0977217412c56fe1fac0d85105d91ee54d56c964`; exact reviewed MZ-109 candidate content commit
 - Dependencies: none
 - Required validation: `PASS`; fresh isolated PostgreSQL 16.15 production-router HTTP PATCH/readback/rollback and two-connection row-lock regression, fresh Express Web-save matrix, cleaning rules, root ledger/registry/diff hygiene, and full Root/Web/Mobile `npm run check:full` all passed. Fixed shared Preview browser walkthrough was not run because that environment contains unrelated dirty work and is recorded as a residual limitation rather than a passing result.
 - Shared-hunk review: `PASS`; candidate is based on current `origin/Dev`; exact diff contains only MZ-109 SQL lock scope, its dedicated tests/command, FR-039 mappings and this CRL. No MZ-091, MZ-110, `mzapp.ts`, schema, migration or permission hunk is staged.
 - Generated-file review: `PASS`; four build-generated tracked `backend/dist/*` differences were restored. No build output, dependency directory, environment file, database artifact, browser artifact, credential, customer payload or production data is staged.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: the user instructed “先把109提交吧”. Push, PR, merge and deployment were not authorized.
 - Independent review: `GO`; exact staged latest-Dev candidate reviewed independently with P0/P1/P2/P3 = 0/0/0/0 and candidate SHA-256 `7bcc469425dca0e74fb438e714619196a3a0da61a58e9050b5079b8d3d1ced25`. Browser walkthrough limitation was assessed and retained without being reported as passed.
-- Action conclusion: `GO`; blockers: none. This authorizes only the selected local commit; push, PR, merge, deployment and production writes remain unauthorized.
+- Action conclusion: `GO`; blockers: none. Local content commit `0977217412c56fe1fac0d85105d91ee54d56c964` completed; push, PR, merge, deployment and production writes remain unauthorized.
 
 ### Risks / Release Notes
 
