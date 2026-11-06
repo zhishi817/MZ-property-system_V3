@@ -1,5 +1,124 @@
 # Change Release Ledger
 
+## CRL-20261105-002 — MZ-109 网页任务编辑外连接行锁修复
+
+- **Repository:** `root`
+- **Status:** verified and selected for local commit; fresh isolated PG/API/Web-save validation, complete aggregate and exact staged independent review passed; not pushed, merged, deployed or production-verified
+- **Board item:** `MZ-109`（P1 / 后台 / 处理中）
+- **Updated:** 2026-11-06 09:12 UTC
+- **Request:** 修复网页编辑客人需求时 PostgreSQL 报 `FOR UPDATE cannot be applied to nullable side of outer join`，并验证不同清洁任务和常用字段可按既有业务规则正常保存；不得写生产数据、放宽关联/权限规则或混入 App 独立问题。
+- **Outcome:** 入住、退房显式周转的两条拓扑查询现在只锁 `cleaning_tasks` 行，不再尝试锁 `LEFT JOIN properties` 的可空侧。网页沿用现有 payload 保存客需、日期/状态、人员、入住/退房时间与钥匙信息；独立入住、独立退房和入住中清洁继续按各自规则保存。关联任务改房/改日、订单任务直接改钥匙、错误方向密码和 `stayover_clean` 密码仍按原规则拒绝。
+
+### Implementation
+
+- Previous behavior: `assertPgExplicitTurnoverLinkTopology()` 的入住与退房分支在两个 `LEFT JOIN properties` 后使用未限定 `FOR UPDATE`。网页即使只改客需也固定提交 `task_date` 和通常的 `status`，因此在真正 `UPDATE cleaning_tasks` 前触发 PostgreSQL `0A000`，整笔事务不提交。
+- New behavior: 两条查询都使用 `FOR UPDATE OF task`，继续锁定准确的关联 `cleaning_tasks` 行，但不锁可空 property join。拓扑判断、当前任务行锁、关联任务行锁、字段 schema、权限和拒绝规则保持不变。
+- Key decisions: 仅修正 SQL 锁定范围；没有修改 Web/App payload、API shape、角色权限、任务状态机、关联算法、数据库 schema 或生产数据。隔离 PG 回归同时直接验证生产拓扑守卫及挂载真实生产 router 的 HTTP PATCH，旧 SQL 只用于证明故障前对照；仅将事务外通知发送替换为测试桩，权限、守卫、密码权威、事件和 UPDATE 均走生产实现。
+
+### Files / Areas
+
+- `backend/src/modules/cleaning.ts` — modified: 两条显式周转拓扑查询限定 `FOR UPDATE OF task`，并导出同一生产守卫供隔离 PG 集成回归直接调用。
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — modified: 通过本机 Express 路由覆盖独立/关联入住、独立/关联退房、`stayover_clean` 的网页保存矩阵及既有拒绝边界。
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — added: 专用 loopback PostgreSQL 16 故障前后、缺失 property、双向拓扑回滚、两连接行锁及真实 Express HTTP PATCH/读回测试。
+- `backend/package.json` — modified: 增加显式隔离 PG 回归命令。
+- `docs/feature-regression-registry.md` — modified: FR-039 增加 MZ-109 保存与锁定范围保护映射。
+- `docs/change-release-ledger.md` — modified: 登记本地候选、验证、风险和发布边界。
+
+### Impact / Dependencies
+
+- API: no request/response shape change.
+- Database / migration: none; no schema change, migration, backfill, replay or production write.
+- Config / environment: none. PG 回归要求 numeric loopback、随机非 5432 端口、专用 `mz109_test_*` 数据库、显式双重写确认及匹配 `/tmp/mz109-pg.*/data` 的服务端 data directory；应用 Pool 另外断言唯一 query parameter 为测试拥有的 schema options，并仅对该已验证本机目标关闭 SSL。
+- Dependencies: none; test uses existing `pg` dependency. Local Homebrew PostgreSQL 16 was used only as an ephemeral test server and is not a repository dependency or running service.
+- Related units: `root/CRL-20261104-006`（显式手工周转关联基础）；并行 MZ-091 App 密码目标问题保持独立。
+
+### Validation
+
+- `npm run test:cleaning-inspection-merge --prefix backend` — PASS（2026-11-06 fresh）；真实本机 Express + 内存 store，覆盖网页提交同样的 `task_date/status` 载荷，以及入住/退房/入住中任务的客需、人员、时间、钥匙和既有拒绝边界；未连接数据库。
+- `MZ109_TEST_DATABASE_URL=postgresql://127.0.0.1:<random>/mz109_test_commit MZ109_TEST_DATA_DIR=/tmp/mz109-pg.<random>/data MZ109_TEST_DATABASE_WRITE=yes MZ109_TEST_CONFIRM_EPHEMERAL=yes npm run test:cleaning-turnover-topology-lock:pg --prefix backend` — PASS（2026-11-06 fresh；PostgreSQL 16.15）。旧 SQL 两分支均复现 `0A000`；修后直接生产守卫兼容缺失 property 并保留两连接事务行锁。真实生产 Express PATCH + PG 覆盖未认证 401、关联入住/退房、独立入住和 `stayover_clean`，以网页组合载荷保存并从 PG 读回客需、日期/状态、人员、时间、钥匙及合成新旧密码；密码事件不含原值。关联移日与 `stayover_clean` 错误密码字段均拒绝，任务字段、密码 receipt 和 event 数量证明无部分提交。临时数据库、服务、端口、schema 和目录均已停止并清理。
+- `npm run test:cleaning-rules --prefix backend` — PASS（2026-11-06 fresh）。
+- `npm run check:full` — PASS（2026-11-06 fresh；exit 0）。Root ledger 6/6、Feature Registry 40 FRs / 323 mappings、完整 backend aggregate、Web lint（0 errors，既有 warnings）、Web 60 files / 327 tests、Web production build 96 routes、paired Mobile ledger/typecheck/lint（0 errors，既有 warnings）及 85 suites / 844 tests 全部通过。临时 Mobile 仓库为干净 `origin/Dev@51e3c051f50f9a264f0c08a4c2616e4caf8729a1`；构建生成的 4 个 tracked `backend/dist/*` 差异已精确恢复且不在候选中。
+- Fixed MZ-Dev-Preview browser walkthrough — NOT RUN；指定 Preview Root/Mobile 已包含大量其他未提交业务改动（包括共享 `cleaning.ts`、任务中心与 Mobile），不能覆盖或混入本候选。网页保存仍由本轮 fresh Next 全量测试/构建、真实 Express Web payload 矩阵及真实 Express PATCH + 隔离 PG 读回/回滚验证；未声称浏览器到共享 Preview 数据库的端到端验收。
+- `git diff --check` — PASS。
+- Independent staged review — GO for local commit，P0/P1/P2/P3 = 0/0/0/0；reviewer inspected the exact latest-Dev staged diff（6 files / 21 non-ledger hunks），independently recomputed candidate SHA-256 `7bcc469425dca0e74fb438e714619196a3a0da61a58e9050b5079b8d3d1ced25`，confirmed the SQL lock scope, production-router/permission/PG coverage, rollback/no-partial-write assertions, isolated database guards, CRL/FR scope and absence of MZ-091/MZ-110/generated/sensitive content. Fixed shared Preview browser walkthrough remains an explicit residual limitation and does not block this backend-only local commit.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none；新隔离 PG 回归已精确暂存。忽略的依赖/构建缓存和临时 paired-Mobile checkout 不属于候选；tracked `backend/dist/*` 已恢复。
+- `backend/package.json` — SHA-256: `a57c141167e2b2b8aa8bb0c763a2983a992581ad49603f3912a1e7933fdfe3c2`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `243311ecc46a72dabfec9dc35229f520044c8897c490387c4065aa3a1cd4d38c`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `32ccd1f8bf6812301bbb5ae3434390cf62a4cfe42c42edb086dc4aad9f95337d`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `3c0d077100679dd03b67860c8e0c30983572ce1fa6ac9602edafdcc1b2a26dfd`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `3dc49137e05cfa15eade0f0cab9086a991cded16264c2974d3b801cf5af36352`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `42e19d2e4c8f48834e50e9d777b694aa27122406c110fab2add6e515d16c1a20`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `5b11122a127237a43056f1e17e7fb8177ba2b82d0c0ee10d84eb199e61d87db3`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `5fe61137ade379d2cbdb433343bbf740ce9f93fc8d752cb622c11125684ac750`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `71cd057ab72844a4d21dea80c0fadd0a6dd1a2975800e0d7f5cfcbf899fb2c36`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `ad7eec7535a92f15b6ed90e9cdbe3ce513fe8190870afb2a0ed1166844ee6625`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `becefe92545e0209fbe3b3b021e7eeaf8f402404835e785fa527151291ac2b7f`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `9f06c5ea1930b11aa7f87b79c607065c6ea8a24ba53b6b3d97fc336955d01df5`
+- `backend/src/modules/cleaning.ts` — SHA-256: `087151ec9a0c33e6412955c8d4935b2295a0157050b750af6a422e8d7e8cc491`
+- `backend/src/modules/cleaning.ts` — SHA-256: `1d9f47caf282fd6abb5392c0e9648e4cbd8f9df7cfca00b7b44686c64323671e`
+- `backend/src/modules/cleaning.ts` — SHA-256: `641be27277beb46b794717022c676e0b4d646e41b02c83c7b8dc5b8963897503`
+- `docs/feature-regression-registry.md` — SHA-256: `18a5eb3a2a6e09a4aae8c994e3b20741e9fe3183cb52b8c80d1e6d6fcc603e39`
+- `docs/feature-regression-registry.md` — SHA-256: `5112cb0cf6b824e970b76560e14bc04bdf206c911eafdec6568f492b4e635672`
+- `docs/feature-regression-registry.md` — SHA-256: `419e958142017f900fe2e61a0a8acbb5de88e7e091c74d0338ad78c419dfa57e`
+- `docs/feature-regression-registry.md` — SHA-256: `a512d70bc1103f23e63ad75d7d383be581164cab5a6b76a0118691ef7915fc37`
+- `docs/feature-regression-registry.md` — SHA-256: `d88c4e915eef4312bdd5b66fc4301f53d9eaa024141704668a01733caf9aee8e`
+- `docs/feature-regression-registry.md` — SHA-256: `d251f855f522099012a5f2023820abef57496c25f2ed783ddc35829f3cc060f8`
+
+### Release Attempts
+
+- Local commit was authorized on 2026-11-06 by the user's instruction “先把109提交吧”. Push, PR, merge, deployment and production writes remain unauthorized.
+
+#### RA-20261106-001
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261105-002`
+- Selected CRL identities: `root/CRL-20261105-002`
+- Intended action: `commit`
+- Branch: `codex/mz109-turnover-lock-release`
+- Base: `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`; fetched at `2026-11-06T09:12:26Z`
+- Candidate patch SHA-256: `7bcc469425dca0e74fb438e714619196a3a0da61a58e9050b5079b8d3d1ced25`
+- Commit SHA: `0977217412c56fe1fac0d85105d91ee54d56c964`; exact reviewed MZ-109 candidate content commit
+- Dependencies: none
+- Required validation: `PASS`; fresh isolated PostgreSQL 16.15 production-router HTTP PATCH/readback/rollback and two-connection row-lock regression, fresh Express Web-save matrix, cleaning rules, root ledger/registry/diff hygiene, and full Root/Web/Mobile `npm run check:full` all passed. Fixed shared Preview browser walkthrough was not run because that environment contains unrelated dirty work and is recorded as a residual limitation rather than a passing result.
+- Shared-hunk review: `PASS`; candidate is based on current `origin/Dev`; exact diff contains only MZ-109 SQL lock scope, its dedicated tests/command, FR-039 mappings and this CRL. No MZ-091, MZ-110, `mzapp.ts`, schema, migration or permission hunk is staged.
+- Generated-file review: `PASS`; four build-generated tracked `backend/dist/*` differences were restored. No build output, dependency directory, environment file, database artifact, browser artifact, credential, customer payload or production data is staged.
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: the user instructed “先把109提交吧”. Push, PR, merge and deployment were not authorized.
+- Independent review: `GO`; exact staged latest-Dev candidate reviewed independently with P0/P1/P2/P3 = 0/0/0/0 and candidate SHA-256 `7bcc469425dca0e74fb438e714619196a3a0da61a58e9050b5079b8d3d1ced25`. Browser walkthrough limitation was assessed and retained without being reported as passed.
+- Action conclusion: `GO`; blockers: none. Local content commit `0977217412c56fe1fac0d85105d91ee54d56c964` completed; push, PR, merge, deployment and production writes remain unauthorized.
+
+#### RA-20261106-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261105-002`
+- Selected CRL identities: `root/CRL-20261105-002`
+- Intended action: `push`
+- Branch: `codex/mz109-turnover-lock-release`
+- Base: `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`; fetched at `2026-11-06T09:24:48Z` and remotely reverified unchanged
+- Candidate patch SHA-256: `7bcc469425dca0e74fb438e714619196a3a0da61a58e9050b5079b8d3d1ced25`
+- Commit SHA: `0977217412c56fe1fac0d85105d91ee54d56c964`; candidate content commit; approved source audit head before this authorization receipt was `af46d162f523e413762975ff8fef45bf450d42ff`
+- Dependencies: none
+- Required validation: `PASS`; exact `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb...af46d162f523e413762975ff8fef45bf450d42ff` release report returned GO with 6 selected files / 21 non-ledger hunks and matching candidate fingerprint. Fresh isolated PostgreSQL/API/Web-save validation and full Root/Web/Mobile `npm run check:full` passed before the unchanged content commit. Remote Dev remains unchanged and the target feature ref was absent at preflight.
+- Shared-hunk review: `PASS`; this receipt changes only this MZ-109 Release Attempt metadata. The reviewed business tree, selected CRL, base, candidate content commit, branch and fingerprint are unchanged; MZ-091, MZ-110 and other release units remain excluded.
+- Generated-file review: `PASS`; ledger-only authorization receipt. No generated output, dependency directory, environment file, credential, production payload or database artifact is added.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after being told MZ-109 was locally committed, fully checked and not pushed or deployed, the user instructed “推送”. Authorization is limited to one ordinary non-force push of the unchanged candidate content commit on `codex/mz109-turnover-lock-release`; it excludes PR, merge, deployment and production writes.
+- Independent review: `GO for push`; P0/P1/P2/P3 = 0/0/0/0. Independent read-only review verified this exact ledger-only RA-002 receipt, unchanged base/branch/content commit/candidate fingerprint, 6-file / 21-non-ledger-hunk source range, authorization, generated/sensitive boundaries and feature-push CI/deployment scope. Fixed Preview browser walkthrough remains unrun and push is not production recovery evidence.
+- Action conclusion: `GO`; blockers: none for committing this reviewed ledger-only receipt. One ordinary non-force push of the exact post-receipt HEAD may proceed only after the worktree is clean, `origin/Dev` remains `0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`, the target remote ref remains absent, the exact post-receipt release report returns GO and the candidate fingerprint remains `7bcc469425dca0e74fb438e714619196a3a0da61a58e9050b5079b8d3d1ced25`. No PR, merge, deployment or production write is authorized.
+
+### Risks / Release Notes
+
+- Local source and regression evidence do not prove production recovery. Production business acceptance remains pending, and the board item must remain open.
+- Rollback: restore the two `FOR UPDATE OF task` clauses and remove the MZ-109 tests; doing so intentionally restores the PostgreSQL failure and is not recommended.
+- Sensitive-information review: synthetic IDs, dates, guest requirements and passwords only; no real customer data, lock passwords, credentials, URLs or database secrets recorded.
+- App refresh and the independently tracked MZ-091 password-target issue are out of scope and unchanged.
+- Git state: uncommitted on `codex/mz109-turnover-lock-release` at fresh `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`; not pushed.
+
 ## CRL-20261104-007 — MZ-065/091/106/107 Root 统一特性分支发布单元
 
 - **Repository:** `root`

@@ -575,7 +575,7 @@ function assertExplicitTurnoverLinkTopology(current0: any, patch: any, rows0: an
   }
 }
 
-async function assertPgExplicitTurnoverLinkTopology(client: any, taskId: string, current: any, patch: any = {}) {
+export async function assertPgExplicitTurnoverLinkTopology(client: any, taskId: string, current: any, patch: any = {}) {
   if (patch?.property_id === undefined && patch?.task_date === undefined && patch?.date === undefined && patch?.status === undefined) return
   const taskType = String(current?.task_type ?? current?.type ?? '').trim().toLowerCase()
   if (taskType !== 'checkout_clean' && taskType !== 'checkin_clean') return
@@ -587,7 +587,7 @@ async function assertPgExplicitTurnoverLinkTopology(client: any, taskId: string,
            LEFT JOIN properties property_id_row ON property_id_row.id::text=task.property_id::text
            LEFT JOIN properties property_code_row ON upper(property_code_row.code)=upper(task.property_id::text)
           WHERE task.id::text=$1
-          FOR UPDATE`,
+          FOR UPDATE OF task`,
         [String(current?.linked_checkout_task_id || '').trim() || '__none__'],
       )
     : await client.query(
@@ -598,7 +598,7 @@ async function assertPgExplicitTurnoverLinkTopology(client: any, taskId: string,
            LEFT JOIN properties property_code_row ON upper(property_code_row.code)=upper(task.property_id::text)
           WHERE task.linked_checkout_task_id::text=$1
             AND lower(COALESCE(task.task_type, task.type, ''))='checkin_clean'
-          FOR UPDATE`,
+          FOR UPDATE OF task`,
         [String(taskId)],
       )
   const currentPropertyKeys = await normalizeCleaningTurnoverTargetKeys(client, [{
