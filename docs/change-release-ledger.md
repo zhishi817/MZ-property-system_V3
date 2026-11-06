@@ -158,15 +158,15 @@
 - Base: `github/Dev@710a5adec511ff6ca3e87e9041f98c4a2817a7b5`; fetched at `2026-11-06T12:38:38Z`
 - Candidate patch SHA-256: `27bfa4da5d95b0615d7cf8be30fbcf72173318b9db95fbe4df894d9db05068a8`; excludes `docs/change-release-ledger.md`
 - Source-equivalence evidence: the exact initial extraction had non-ledger fingerprint `487908b4af85dfb47956644fd7c3c6f234f4cb5b5476b858df634dcbe41016ce`. The final candidate intentionally differs only by (a) restoring two latest-Dev MZ-109 registry metadata lines and (b) the independently required P1 security fix in the receipt hash helper, two server endpoints, Web operation coordinator and their focused tests. No task/password/topology/permission business rule changed.
-- Commit SHA: not committed
-- Dependencies: paired exact Mobile candidate from `github/Dev@51e3c051f50f9a264f0c08a4c2616e4caf8729a1`; MZ-109 is already in Root Dev via PR #445 and is excluded except as baseline context
-- Required validation: `PASS` for final focused, disposable PG/API and complete release gates plus exact pre-commit audit (11 staged files / 100 non-ledger hunks); bound independent re-review is pending
+- Commit SHA: `a58130b93f4a37624cee41f1f8489b3cf96bb660`; candidate content commit
+- Dependencies: `mobile/CRL-20261106-001@50ad66a8d26d75671d03354b24490c9b3373b9ad`; `mobile/CRL-20261106-002@50ad66a8d26d75671d03354b24490c9b3373b9ad`
+- Required validation: `PASS`; final focused, disposable PG/API and complete release gates, exact pre-commit audit (11 staged files / 100 non-ledger hunks), independent re-review and clean content commit all passed
 - Shared-hunk review: `PASS`; independent reviewer matched all 11 staged files / 100 non-ledger hunks to the selected 091/110 unit and confirmed MZ-109 is baseline-only
 - Generated-file review: `PASS`; tracked `backend/dist/*` was reversed, the temporary paired-Mobile symlink was removed, and the final staged range has no untracked or unselected path
-- Technical state: `candidate`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; evidence: user instructed “提交091/110”. Push, PR, merge, deployment and production writes were not authorized.
 - Independent review: `GO for local commit`; P0/P1/P2/P3 = 0/0/0/0. Reviewer independently matched base, branch, fingerprint `27bfa4da5d95b0615d7cf8be30fbcf72173318b9db95fbe4df894d9db05068a8`, 11 files / 100 hunks, final HMAC/random operation-ID remediation, isolated PostgreSQL evidence, generated/sensitive boundaries and Root-first dependency.
-- Action conclusion: `GO` for the user-authorized local commit only; push, PR, merge, deployment, OTA and production writes remain unauthorized
+- Action conclusion: `GO`; blockers: none. Local content commit `a58130b93f4a37624cee41f1f8489b3cf96bb660` completed; push, PR, merge, deployment, OTA and production writes remain unauthorized
 
 ### Risks / Release Notes
 
