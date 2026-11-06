@@ -1114,6 +1114,20 @@ function testWorkTaskPayloadUsesExactAuditWithoutExposingMediaUrl() {
   assert.match(turnoverLinkRoute, /lockCleaningPasswordChainKey[\s\S]*?lockCleaningTurnoverKey[\s\S]*?FOR UPDATE OF t[\s\S]*?linked_checkout_task_id=\$1/, 'existing task linking must lock and revalidate before the atomic relation write')
   assert.match(turnoverLinkRoute, /COALESCE\(property_id_row\.id::text, property_code_row\.id::text, task\.property_id::text\) AS property_id[\s\S]*?COALESCE\(task_property_id\.id::text, task_property_code\.id::text, t\.property_id::text\)=\$1/, 'existing link validation must canonicalize both initially selected rows and the locked same-day set')
   assert.match(turnoverLinkRoute, /sourceRefIds: \[checkoutTaskId, checkinTaskId\][\s\S]*?buildCleaningPairVisibilityHints\(updated, validation\.checkout\)/, 'existing task linking must refresh both exact task participants without widening role access')
+  const explicitTopologyGuard = cleaningSource.slice(
+    cleaningSource.indexOf('async function assertPgExplicitTurnoverLinkTopology'),
+    cleaningSource.indexOf('function sendTurnoverInspectionScopeConflict'),
+  )
+  assert.equal(
+    Array.from(explicitTopologyGuard.matchAll(/FOR UPDATE OF task/g)).length,
+    2,
+    'both explicit-turnover topology branches must lock only cleaning_tasks and never nullable property joins',
+  )
+  assert.doesNotMatch(
+    explicitTopologyGuard,
+    /\n\s+FOR UPDATE`/,
+    'an unqualified row lock after LEFT JOIN would make ordinary Web saves fail in PostgreSQL',
+  )
   assert.match(cleaningAppSource, /changedFields: \['status', 'lockbox_video_uploaded_at', 'lockbox_video_url', 'key_handover'\]/)
   assert.match(cleaningAppSource, /lockbox_video_uploaded_at: null, lockbox_video_url: null, key_handover: null/)
   assert.doesNotMatch(source, /lockboxVideoConfirmsCurrentTaskState\([\s\S]{0,240}\) \|\| !!keyHandover/)
@@ -1560,9 +1574,11 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
   const aliasCheckoutId = 'test-alias-code-checkout'
   const aliasCheckinId = 'test-alias-uuid-checkin'
   const aliasCreateCheckinId = 'test-alias-code-create-checkin'
+  const stayoverTaskId = 'test-web-save-stayover'
   const deferredMergeCheckoutId = 'test-deferred-merge-checkout'
   const deferredMergeCheckinId = 'test-deferred-merge-checkin'
   const deferredMergeAssigneeId = 'test-deferred-merge-assignee'
+  const webSaveStaffId = 'test-web-save-staff'
   const deferredMergePropertyId = 'property-deferred-save-refresh'
   const testPropertyId = 'property-manual-turnover'
   const task: any = {
@@ -1618,6 +1634,7 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     { id: aliasCheckoutId, property_id: 'TEST-TURNOVER', task_date: '2026-10-15', date: '2026-10-15', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang' },
     { id: aliasCheckinId, property_id: testPropertyId, task_date: '2026-10-15', date: '2026-10-15', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang' },
     { id: aliasCreateCheckinId, property_id: 'TEST-TURNOVER', task_date: '2026-10-16', date: '2026-10-16', task_type: 'checkin_clean', type: 'checkin_clean', status: 'assigned', execution_state: 'active', inspection_scope: 'inspect_and_hang' },
+    { id: stayoverTaskId, property_id: testPropertyId, task_date: '2026-10-17', date: '2026-10-17', task_type: 'stayover_clean', type: 'stayover_clean', status: 'pending', execution_state: 'active' },
     { id: deferredMergeCheckoutId, property_id: deferredMergePropertyId, task_date: '2026-09-18', date: '2026-09-18', task_type: 'checkout_clean', type: 'checkout_clean', status: 'assigned', execution_state: 'active', cleaner_id: 'test-original-cleaner', inspector_id: 'test-deferred-plan-inspector', inspection_mode: 'deferred', inspection_due_date: '2026-09-19', inspection_scope: 'inspect_and_hang', guest_special_request: '延期任务旧要求' },
     { id: deferredMergeCheckinId, property_id: deferredMergePropertyId, task_date: '2026-09-19', date: '2026-09-19', task_type: 'checkin_clean', type: 'checkin_clean', status: 'pending', execution_state: 'active', assignee_id: null, inspector_id: null, linked_checkout_task_id: deferredMergeCheckoutId, inspection_mode: 'same_day', inspection_scope: 'inspect_and_hang', guest_special_request: '入住任务优先要求', checkin_time: '3pm' },
   )
@@ -1641,6 +1658,12 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     email: 'test-deferred-merge-assignee@example.invalid',
     username: 'Test Deferred Merge Assignee',
     role: 'cleaning_inspector',
+  })
+  ;((db as any).users ||= []).push({
+    id: webSaveStaffId,
+    email: 'test-web-save-staff@example.invalid',
+    username: 'Test Web Save Staff',
+    role: 'cleaner_inspector',
   })
   const app = express()
   app.use(express.json())
@@ -1756,6 +1779,62 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     })
     assert.equal(supportedCheckoutOld.status, 200)
     assert.equal((db.cleaningTasks as any[]).find((item) => item.id === turnoverCheckoutId)?.old_code, 'synthetic-checkout-old')
+    const independentCheckinSave = await postJson(`/cleaning/tasks/${pureCheckinId}`, {
+      task_date: '2026-09-16',
+      status: 'assigned',
+      assignee_id: webSaveStaffId,
+      cleaner_id: null,
+      inspector_id: null,
+      inspection_scope: 'password_only',
+      keys_required: 2,
+      checkin_time: '4pm',
+      guest_special_request: '独立入住客需',
+    }, 'PATCH')
+    assert.equal(independentCheckinSave.status, 200, JSON.stringify(independentCheckinSave.body))
+    assert.equal(independentCheckinSave.body.assignee_id, webSaveStaffId)
+    assert.equal(independentCheckinSave.body.cleaner_id, null)
+    assert.equal(independentCheckinSave.body.keys_required, 2)
+    assert.equal(independentCheckinSave.body.checkin_time, '4pm')
+    assert.equal(independentCheckinSave.body.guest_special_request, '独立入住客需')
+    const independentCheckoutSave = await postJson(`/cleaning/tasks/${dateMoveCheckoutId}`, {
+      task_date: '2026-09-17',
+      status: 'assigned',
+      cleaner_id: webSaveStaffId,
+      inspector_id: webSaveStaffId,
+      keys_required: 2,
+      checkout_time: '11am',
+      guest_special_request: '独立退房客需',
+    }, 'PATCH')
+    assert.equal(independentCheckoutSave.status, 200, JSON.stringify(independentCheckoutSave.body))
+    assert.equal(independentCheckoutSave.body.cleaner_id, webSaveStaffId)
+    assert.equal(independentCheckoutSave.body.inspector_id, webSaveStaffId)
+    assert.equal(independentCheckoutSave.body.keys_required, 2)
+    assert.equal(independentCheckoutSave.body.checkout_time, '11am')
+    assert.equal(independentCheckoutSave.body.guest_special_request, '独立退房客需')
+    const stayoverSave = await postJson(`/cleaning/tasks/${stayoverTaskId}`, {
+      task_date: '2026-10-18',
+      status: 'assigned',
+      cleaner_id: webSaveStaffId,
+      inspector_id: webSaveStaffId,
+      checkin_time: '1pm',
+      guest_special_request: '入住中清洁客需',
+    }, 'PATCH')
+    assert.equal(stayoverSave.status, 200, JSON.stringify(stayoverSave.body))
+    assert.equal(stayoverSave.body.task_date, '2026-10-18')
+    assert.equal(stayoverSave.body.status, 'assigned')
+    assert.equal(stayoverSave.body.cleaner_id, webSaveStaffId)
+    assert.equal(stayoverSave.body.checkin_time, '1pm')
+    assert.equal(stayoverSave.body.guest_special_request, '入住中清洁客需')
+    const stayoverPasswordRejected = await postJson(`/cleaning/tasks/${stayoverTaskId}`, {
+      new_code: 'synthetic-stayover-password',
+    }, 'PATCH')
+    assert.equal(stayoverPasswordRejected.status, 400)
+    assert.equal(stayoverPasswordRejected.body.message, 'password_field_not_applicable')
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === stayoverTaskId)?.new_code, undefined)
+    const orderKeysRejected = await postJson(`/cleaning/tasks/${validOrderedCandidateId}`, { keys_required: 2 }, 'PATCH')
+    assert.equal(orderKeysRejected.status, 400)
+    assert.match(String(orderKeysRejected.body.message || ''), /关联订单/)
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === validOrderedCandidateId)?.keys_required, undefined)
     const unsupportedCreateCheckinOld = await postJson('/cleaning/tasks', {
       create_mode: 'checkin',
       task_date: '2026-09-26',
@@ -2019,6 +2098,37 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     })
     assert.equal(existingLinkReplay.status, 200)
     assert.equal(existingLinkReplay.body.idempotent, true)
+    const checkinGuestRequirementSave = await postJson(`/cleaning/tasks/${existingLinkCheckinId}`, {
+      guest_special_request: '请准备婴儿床',
+      task_date: '2026-10-04',
+      status: 'assigned',
+      cleaner_id: webSaveStaffId,
+      inspector_id: webSaveStaffId,
+      checkin_time: '2pm',
+    }, 'PATCH')
+    assert.equal(checkinGuestRequirementSave.status, 200, JSON.stringify(checkinGuestRequirementSave.body))
+    assert.equal(checkinGuestRequirementSave.body.guest_special_request, '请准备婴儿床')
+    assert.equal(checkinGuestRequirementSave.body.linked_checkout_task_id, existingLinkCheckoutId)
+    assert.equal(checkinGuestRequirementSave.body.checkin_time, '2pm')
+    assert.equal(checkinGuestRequirementSave.body.inspector_id, webSaveStaffId)
+    const checkoutGuestRequirementSave = await postJson(`/cleaning/tasks/${existingLinkCheckoutId}`, {
+      guest_special_request: '延迟退房已确认',
+      task_date: '2026-10-04',
+      status: 'assigned',
+      cleaner_id: webSaveStaffId,
+      inspector_id: webSaveStaffId,
+      checkout_time: '12pm',
+    }, 'PATCH')
+    assert.equal(checkoutGuestRequirementSave.status, 200, JSON.stringify(checkoutGuestRequirementSave.body))
+    assert.equal(checkoutGuestRequirementSave.body.guest_special_request, '延迟退房已确认')
+    assert.equal(checkoutGuestRequirementSave.body.checkout_time, '12pm')
+    assert.equal(checkoutGuestRequirementSave.body.cleaner_id, webSaveStaffId)
+    const linkedCheckinKeysSave = await postJson(`/cleaning/tasks/${existingLinkCheckinId}`, { keys_required: 2 }, 'PATCH')
+    assert.equal(linkedCheckinKeysSave.status, 200, JSON.stringify(linkedCheckinKeysSave.body))
+    assert.equal(linkedCheckinKeysSave.body.keys_required, 2)
+    const linkedCheckoutKeysSave = await postJson(`/cleaning/tasks/${existingLinkCheckoutId}`, { keys_required: 2 }, 'PATCH')
+    assert.equal(linkedCheckoutKeysSave.status, 200, JSON.stringify(linkedCheckoutKeysSave.body))
+    assert.equal(linkedCheckoutKeysSave.body.keys_required, 2)
     const ambiguousCanonicalLink = await postJson('/cleaning/tasks/turnover-links', {
       checkout_task_id: canonicalOccupiedCheckoutId,
       checkin_task_id: canonicalOccupiedCheckinId,
@@ -2029,6 +2139,10 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     assert.equal(linkedDateMove.status, 409)
     assert.equal(linkedDateMove.body.code, 'turnover_link_topology_conflict')
     assert.equal((db.cleaningTasks as any[]).find((item) => item.id === existingLinkCheckinId)?.task_date, '2026-10-04')
+    const linkedCheckoutDateMove = await postJson(`/cleaning/tasks/${existingLinkCheckoutId}`, { task_date: '2026-10-07' }, 'PATCH')
+    assert.equal(linkedCheckoutDateMove.status, 409)
+    assert.equal(linkedCheckoutDateMove.body.code, 'turnover_link_topology_conflict')
+    assert.equal((db.cleaningTasks as any[]).find((item) => item.id === existingLinkCheckoutId)?.task_date, '2026-10-04')
 
     const rebuildCandidates = await getJson(`/cleaning/tasks/checkout-link-candidates?property_id=${testPropertyId}&task_date=2026-10-05`)
     assert.deepEqual(rebuildCandidates.body.items.map((item: any) => item.id), [rebuildCheckinId], 'a cancelled prior checkout does not occupy the active check-in')
@@ -2288,7 +2402,7 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     const index = db.cleaningTasks.findIndex((item) => item.id === taskId)
     if (index >= 0) db.cleaningTasks.splice(index, 1)
-    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId, decisionCheckoutUniqueId, decisionCheckoutIndependentId, decisionCheckoutAmbiguousAId, decisionCheckoutAmbiguousBId, completedCandidateId, keysHungCandidateId, inspectedCandidateId, cleanedCandidateId, invalidOrderCandidateId, cancelledOrderCandidateId, wrongPropertyOrderCandidateId, wrongBoundaryOrderCandidateId, missingOrderCandidateId, canonicalOccupiedCheckoutId, canonicalOccupiedCheckinId, canonicalAmbiguousCheckinId, explicitlyOccupiedCheckoutId, explicitlyOccupiedCheckinId, validOrderedCandidateId, concurrencyCandidateId, aliasCheckoutId, aliasCheckinId, aliasCreateCheckinId, 'test-manual-link-candidate-cancelled', 'test-manual-link-candidate-superseded', 'test-manual-link-candidate-lifecycle-deleted', deferredMergeCheckoutId, deferredMergeCheckinId]) {
+    for (const id of [turnoverCheckoutId, turnoverCheckinId, pureCheckinId, dateMoveCheckoutId, linkedCheckoutId, decisionCheckoutUniqueId, decisionCheckoutIndependentId, decisionCheckoutAmbiguousAId, decisionCheckoutAmbiguousBId, completedCandidateId, keysHungCandidateId, inspectedCandidateId, cleanedCandidateId, invalidOrderCandidateId, cancelledOrderCandidateId, wrongPropertyOrderCandidateId, wrongBoundaryOrderCandidateId, missingOrderCandidateId, canonicalOccupiedCheckoutId, canonicalOccupiedCheckinId, canonicalAmbiguousCheckinId, explicitlyOccupiedCheckoutId, explicitlyOccupiedCheckinId, validOrderedCandidateId, concurrencyCandidateId, aliasCheckoutId, aliasCheckinId, aliasCreateCheckinId, stayoverTaskId, 'test-manual-link-candidate-cancelled', 'test-manual-link-candidate-superseded', 'test-manual-link-candidate-lifecycle-deleted', deferredMergeCheckoutId, deferredMergeCheckinId]) {
       const fixtureIndex = db.cleaningTasks.findIndex((item) => item.id === id)
       if (fixtureIndex >= 0) db.cleaningTasks.splice(fixtureIndex, 1)
     }
@@ -2301,6 +2415,8 @@ async function testTaskCenterSaveBoardDoesNotEraseDeferredDate() {
     }
     const userIndex = ((db as any).users || []).findIndex((item: any) => item.id === deferredMergeAssigneeId)
     if (userIndex >= 0) (db as any).users.splice(userIndex, 1)
+    const webSaveUserIndex = ((db as any).users || []).findIndex((item: any) => item.id === webSaveStaffId)
+    if (webSaveUserIndex >= 0) (db as any).users.splice(webSaveUserIndex, 1)
     const testOrderIds = new Set(['test-order-invalid', 'test-order-cancelled', 'test-order-wrong-property', 'test-order-wrong-boundary', 'test-order-canonical-outgoing', 'test-order-canonical-incoming', 'test-order-canonical-incoming-2', 'test-order-valid', 'test-reverse-order-in'])
     ;(db as any).orders = ((db as any).orders || []).filter((item: any) => !testOrderIds.has(String(item?.id || '')))
   }

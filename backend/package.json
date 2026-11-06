@@ -85,6 +85,7 @@
     "test:personnel-profile-documents-admin": "ts-node-dev --transpile-only scripts/tests/test_personnel_profile_documents_admin_contract.ts",
     "test:guest-luggage-media-contract": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_media_contract.ts",
     "test:cleaning-inspection-merge": "ts-node-dev --transpile-only scripts/tests/test_cleaning_inspection_merge.ts",
+    "test:cleaning-turnover-topology-lock:pg": "node -r ts-node/register/transpile-only scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts",
     "test:guest-luggage-rules": "ts-node-dev --transpile-only scripts/tests/test_guest_luggage_rules.ts",
     "test:guest-site-contact-messages": "ts-node-dev --transpile-only scripts/tests/test_guest_site_contact_messages.ts",
     "test:guest-site-property-merchandising": "ts-node-dev --transpile-only scripts/tests/test_guest_site_property_merchandising.ts",

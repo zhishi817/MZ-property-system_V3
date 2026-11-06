@@ -253,7 +253,7 @@
 ## FR-039：延期检查在入住变更后的唯一安排、实时归位与结算责任
 
 - **维护责任范围：** backend Task Center / MZ App work tasks / personnel settlement / paired mobile
-- **最后审查日期：** 2026-11-04
+- **最后审查日期：** 2026-11-06
 - **状态：** active
 
 ### 业务保护规则
@@ -283,6 +283,8 @@
 | 手工入住候选、关联决策与并发重验 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | 只读最小 DTO 与无写副作用源码契约；显式 SELECT 列必须存在于真实 schema/migration；完成/挂钥匙/检查/清洁状态保留；无效/取消/缺失/跨房源/错边界订单、取消/替代/删除、显式及单/多 incoming 边界占用排除；唯一候选缺决策拒绝后可准确关联；多候选要求选择；显式独立不被同日退房冒充 turnover；矛盾决策拒绝；无候选旧客户端兼容；并发双提交仅一方成功 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
 | Web Root 候选权威与加载失败保护 | `frontend/src/lib/cleaningDailyMerge.test.ts` | Web 不再从 calendar projection 推导候选；Root DTO 保留 completed/keys_hung 且丢弃非契约字段；畸形/错房源/错日期响应 fail-closed；加载中与失败禁止保存并可重试；0/1/多候选三态；同 scope 重试保留人工独立，切房源/日期立即清旧选择；乱序响应不得覆盖当前 scope；关系并发占用仅清旧选择并重载候选；顶层新增和已有卡新增另一侧遇 replay conflict/inactive 时冻结表单、刷新权威列表并要求关闭核对，不换 request ID | sufficient | `npm run test:cleaning-daily-merge --prefix frontend` |
 | 退房反向关联、成对创建、存量补关联与创建回执 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | 反向候选最小 DTO、手工/订单入住、0/1/多候选、`password_only` 拒绝、取消旧退房后重建、既有两卡原子补关联与真幂等、三候选拒绝、两 source/两侧参与人实时刷新、人员/媒体保留、人工单边移日拒绝、成对创建内部 link、actor/完整 payload 回执、取消后重放拒绝、并发重放、create_mode/task_type 矛盾拒绝与一致旧客户端兼容；PostgreSQL 分支以源码锁序/事务契约覆盖，尚无独立真实 PG 双连接执行 | partial | `npm run test:cleaning-inspection-merge --prefix backend` |
+| 网页多类型编辑保存 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | 本机 Express 覆盖独立/显式关联入住、独立/显式关联退房和 `stayover_clean` 的网页 payload：客需、日期/状态、人员、入住/退房时间、钥匙与合成密码边界；订单钥匙、错误密码方向和双向关联移日继续拒绝 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
+| 显式周转 PostgreSQL 锁定范围 | `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` | 隔离 PG16 复现旧 SQL 两分支 `0A000`，直接验证生产守卫的缺失 property 与关联任务事务行锁；真实生产 Express PATCH + PG 覆盖关联入住/退房、独立入住、`stayover_clean`、权限 401、组合字段/合成密码读回、冲突回滚、receipt/event 不部分写入及密码事件脱敏 | sufficient | 显式隔离 PG 环境运行 `npm run test:cleaning-turnover-topology-lock:pg --prefix backend` |
 | 订单改房/改日及取消后的关系与生命周期一致性 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | 可自动同步的活动入住和退房两个移动方向均跟随订单并解除失效旧 link；历史任务使用房源 code、订单使用同房源 UUID 时先规范到同一身份，全目标 canonical 锁键全局排序，表示变化不解绑、不清人员排期、不重复提醒，真实改房才解绑；同订单两侧一起移动到同一最终拓扑时保留仍有效 link；非拓扑订单更新保留关系；原手工源任务、人员与证据保留；新位置有候选也不自动重连；锁定/终态任务在改房改日时保持原位置和执行证据并跳过全部后处理旁路，关系失效时仅准确解绑；取消/删除时普通与停止自动同步的活动订单入住/退房均软取消，独立手工对侧和完成历史保留；检查提醒按实际 `cleaning.schedule.manage` 持久投递，同一事故 direct/backfill/跨路径重试幂等；解绑后人工重建同一 pair 再发生相同目标事故时依据精确 link 事件版本生成一次新提醒；真实 PG 双连接/回滚/事件与通知原子性待隔离环境 | partial | `env -u DATABASE_URL -u TEST_DATABASE_URL npm run test:cleaning-sync-v2 --prefix backend` |
 | 取消任务退出活动投影 | `backend/scripts/tests/test_daily_task_execution_visibility.ts` | 普通及停止自动同步的活动入住/退房软取消后不再进入待执行活动投影；已完成/终态历史仍可审计且不被改写 | partial | `env -u DATABASE_URL -u TEST_DATABASE_URL npm run test:daily-task-execution-visibility --prefix backend` |
 | 手工显式周转媒体读取 SQL 边界 | `backend/scripts/tests/test_mzapp_form_photo_read.ts` | SQL 加载显式 link；准确关联可按既有参与人边界读取配对证据；独立关系继续隔离 | partial | `npm exec --prefix backend -- ts-node --transpile-only backend/scripts/tests/test_mzapp_form_photo_read.ts` |
@@ -299,20 +301,21 @@
 
 ### 验证策略
 
-- 使用合成内存/fixture 数据执行 Root 聚焦契约、后端编译、Mobile 类型检查与 Jest，再运行两个仓的完整质量门和独立只读复核。
+- 使用合成内存/fixture 数据执行 Root 聚焦契约、后端编译、Mobile 类型检查与 Jest；涉及 PostgreSQL 锁语义时使用显式确认的 loopback 随机端口专用临时库，再运行两个仓的完整质量门和独立只读复核。
 - 不连接生产数据库，不回放订单，不运行 migration，不调用生产写接口；真实账号跨周/月和弱网设备流程需另行验收。
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261104-006
+- **CRL：** root/CRL-20261105-002
 - **Commit：** not committed
-- **日期：** 2026-11-04；Root 后端内存/本机 HTTP 定向回归、媒体授权回归、后端构建、Web 58 files / 321 tests、lint 和 production build通过；paired Mobile `check:ci` 85 suites / 837 tests通过。Root 组合式 `check:fast` 因隔离 clone 缺内嵌 Mobile 目录中断，缺失的组合契约随后以最新 Dev Mobile 临时只读映射单独通过；真实 PostgreSQL 双连接、真实浏览器经真实 Express/PostgreSQL、真机和生产验收尚未完成。
+- **日期：** 2026-11-06；MZ-109 两处锁范围最小修复、网页 Express 多任务/多字段保存矩阵、PostgreSQL 16.15 旧错复现/生产守卫/缺失 property/两连接行锁及真实 Express HTTP PATCH + PG 保存/读回/回滚、Root/Web/Mobile 完整 `check:full` 通过；固定共享 Preview 因含其他未提交业务改动未做浏览器 walkthrough，未连接或写入生产数据库，未提交、推送、部署或做生产账号验收。
 
 ### 相关 CRL
 
 - root/CRL-20261011-007、root/CRL-20261014-004：检查安排、历史快照与结算日费率基础。
 - root/CRL-20261018-002 / mobile/CRL-20261018-001：MZ-049 延期检查入住衔接、source 隔离、实时归位和结算责任闭环。
 - root/CRL-20261104-006 / mobile/CRL-20261104-001：新增退房反向显式关联、成对创建、存量补关联与创建回执候选。
+- root/CRL-20261105-002：MZ-109 网页任务编辑时显式周转查询限定只锁任务表，并补充多任务/多字段与真实隔离 PostgreSQL 回归。
 
 ### 非保护范围
 
