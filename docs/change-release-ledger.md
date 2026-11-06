@@ -92,6 +92,25 @@
 - Independent review: `GO`; exact staged latest-Dev candidate reviewed independently with P0/P1/P2/P3 = 0/0/0/0 and candidate SHA-256 `7bcc469425dca0e74fb438e714619196a3a0da61a58e9050b5079b8d3d1ced25`. Browser walkthrough limitation was assessed and retained without being reported as passed.
 - Action conclusion: `GO`; blockers: none. Local content commit `0977217412c56fe1fac0d85105d91ee54d56c964` completed; push, PR, merge, deployment and production writes remain unauthorized.
 
+#### RA-20261106-002
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261105-002`
+- Selected CRL identities: `root/CRL-20261105-002`
+- Intended action: `push`
+- Branch: `codex/mz109-turnover-lock-release`
+- Base: `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`; fetched at `2026-11-06T09:24:48Z` and remotely reverified unchanged
+- Candidate patch SHA-256: `7bcc469425dca0e74fb438e714619196a3a0da61a58e9050b5079b8d3d1ced25`
+- Commit SHA: `0977217412c56fe1fac0d85105d91ee54d56c964`; candidate content commit; approved source audit head before this authorization receipt was `af46d162f523e413762975ff8fef45bf450d42ff`
+- Dependencies: none
+- Required validation: `PASS`; exact `origin/Dev@0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb...af46d162f523e413762975ff8fef45bf450d42ff` release report returned GO with 6 selected files / 21 non-ledger hunks and matching candidate fingerprint. Fresh isolated PostgreSQL/API/Web-save validation and full Root/Web/Mobile `npm run check:full` passed before the unchanged content commit. Remote Dev remains unchanged and the target feature ref was absent at preflight.
+- Shared-hunk review: `PASS`; this receipt changes only this MZ-109 Release Attempt metadata. The reviewed business tree, selected CRL, base, candidate content commit, branch and fingerprint are unchanged; MZ-091, MZ-110 and other release units remain excluded.
+- Generated-file review: `PASS`; ledger-only authorization receipt. No generated output, dependency directory, environment file, credential, production payload or database artifact is added.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after being told MZ-109 was locally committed, fully checked and not pushed or deployed, the user instructed “推送”. Authorization is limited to one ordinary non-force push of the unchanged candidate content commit on `codex/mz109-turnover-lock-release`; it excludes PR, merge, deployment and production writes.
+- Independent review: `GO for push`; P0/P1/P2/P3 = 0/0/0/0. Independent read-only review verified this exact ledger-only RA-002 receipt, unchanged base/branch/content commit/candidate fingerprint, 6-file / 21-non-ledger-hunk source range, authorization, generated/sensitive boundaries and feature-push CI/deployment scope. Fixed Preview browser walkthrough remains unrun and push is not production recovery evidence.
+- Action conclusion: `GO`; blockers: none for committing this reviewed ledger-only receipt. One ordinary non-force push of the exact post-receipt HEAD may proceed only after the worktree is clean, `origin/Dev` remains `0d4bde4c13e7e43e0573f1cccb6c0e952860b8fb`, the target remote ref remains absent, the exact post-receipt release report returns GO and the candidate fingerprint remains `7bcc469425dca0e74fb438e714619196a3a0da61a58e9050b5079b8d3d1ced25`. No PR, merge, deployment or production write is authorized.
+
 ### Risks / Release Notes
 
 - Local source and regression evidence do not prove production recovery. Production business acceptance remains pending, and the board item must remain open.
