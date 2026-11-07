@@ -1,5 +1,263 @@
 # Change Release Ledger
 
+## CRL-20261106-001 — MZ-110 管理任务保存局部权威回执
+
+- **Repository:** `root`
+- **Status:** verified latest-Dev local commit candidate; final focused, disposable-PG/API, complete release validation, exact staged audit and independent re-review passed; not pushed, merged, deployed or production-verified
+- **Board item:** `MZ-110`
+- **Updated:** 2026-11-06 UTC
+- **Request:** manager-fields 已差量写字段；保存成功后只更新服务端确认的当前/关联任务，不再等待前后七天的任务列表查询，同时保留密码来源、人工确认、终态、拓扑、权限、重放及失败保护。
+- **Outcome:** manager-fields 在原事务内返回版本化局部权威回执，包含实际受影响 source task 的最终字段和 durable event 序号，并只为 check-in 时间标记必要的角色投影协调。Mobile 可直接落盘已确认结果，并用 operation ID/sequence 去重本次事件回声。
+
+### Implementation
+
+- Transaction receipt: mutation/event 写入后只读取本次 `affectedTaskIds`；响应包含 `manager_fields_receipt_version=1`、`authoritative_updates[]`、每 source durable sequence 和 `projection_refresh_required`。重放读取当前权威值，不新增事件。
+- Sensitive boundary: HTTP 回执只返回调用者本来获权读取的任务字段；`app_submit_receipts.response_json` 只保存 affected task IDs/event receipts，不持久化原始密码。包含低熵密码的 payload 只以服务端 `JWT_SECRET` 域隔离 HMAC 参与重放比较，不再把无密钥摘要写入回执表；Web operation ID 是与密码内容无派生关系的随机不透明值。事件和通知脱敏不变。
+- Compatibility: 老 Mobile 忽略新增字段；新 Mobile 遇到旧/缺失回执继续后台权威刷新。无 API 删除、schema、migration、角色或权限变化。
+- Latest-Dev extraction: 以已实时获取的 `github/Dev@710a5adec511ff6ca3e87e9041f98c4a2817a7b5` 为基线。该基线已含 PR #445 的 MZ-109；本候选未重复修改 `backend/package.json`、`test_cleaning_inspection_merge.ts` 或 MZ-109 的锁范围/专属 FR，仅在共享 PG 测试文件追加 091/110 场景。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — versioned manager-fields receipt、operation-tagged event、replay rehydration 和 projection marker；与 MZ-091 幂等入口共享。
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — 在 Dev 已有 MZ-109 隔离 PG 测试上追加回执、重放、脱敏和准确 affected updates；与 MZ-091 共享。
+- `docs/feature-regression-registry.md` — FR-002/FR-003 的局部回执、刷新和敏感回执保护；与 MZ-091 共享。
+- `docs/change-release-ledger.md` — 本 CRL 与共享 Release Attempt。
+
+### Impact / Dependencies
+
+- API: additive manager-fields response only；旧请求和旧客户端继续兼容。
+- Database / migration / config / dependency: none；复用已部署的 `app_submit_receipts`。
+- Roles / status / topology / password propagation: unchanged。
+- Dependencies: paired `mobile/CRL-20261106-001` and `mobile/CRL-20261106-002` must use the exact reviewed Mobile commit before any later delivery；Root Dev already contains MZ-109 PR #445 and this candidate deliberately excludes its duplicate hunks。
+- Related unit: `root/CRL-20261106-002`。
+
+### Validation
+
+- Automation: PASS on final code — focused Web cleaning edit plan passed 11 tests and backend TypeScript build passed. `CI=true DATABASE_URL='' DATABASE_DIRECT_URL='' npm run check:release` then exited 0 with Root ledger/FR audit, complete backend aggregate, Web lint, Web 60 files / 332 tests with coverage, Web production build (96 routes), and paired Mobile ledger/typecheck/lint/button plus 8 fast suites / 155 tests and 87 full suites / 883 tests.
+- Real API / isolated database: PASS on final security code — the topology/atomic-patch/manager-receipt suite passed against disposable local PostgreSQL `127.0.0.1:55871`; it now asserts the complete stored receipt row contains neither synthetic password and that `payload_hash` differs from the enumerable canonical SHA-256, while replay/conflict/rollback behavior still passes. The server, port and `/tmp/mz109-pg.1MonXr` directory were stopped/removed. Earlier `55791` topology and `56189` password-chain results remain retained context. No production endpoint or data was accessed.
+- Web real interaction: NOT RUN on the final P1 security candidate. Retained pre-fix context: `/tmp/mz-ui-final.reverify.lpM7JE/evidence/FINAL-FIX-REVERIFICATION.md`, SHA-256 `8dabb40fa662b09f6c0e563189e06c233a8804044eb98716751c5e387fe2dfa7`.
+- App physical device: NOT RUN on the final P1 security candidate. Retained pre-fix context: `/tmp/mz110-final.iphone.fa4WOj/evidence/FINAL-PHYSICAL-IPHONE-VERIFICATION.md`, SHA-256 `50d9d6743842653a907dcc7cd32396a8d8275b2ea9de2a8ebf3b614e2671a2b7`. Android physical device and real weak-network were also not run.
+- Critical validation conclusion: PASS for the authorized local commit; final focused, disposable-PG/API, complete release validation, exact staged audit and independent re-review passed. Final post-security-fix browser/device and production verification remain explicitly out of scope.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; temporary paired-Mobile symlink was removed and generated `backend/dist/*` output was reversed before staging.
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `7b2669cfb37c4e74322df710cbff7d283676a80732d7db68c75ec47cc7f674f1`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `1798bd92f49275dc0a0eeb511069953e56d9ae1c41fa4b353c99d0b9213d4e77`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `2a9d0e3664963e8872e8bc9c589dc7e40e1d95631cff317c3c5a0814febe9096`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `36b9ee0a48c1d3e230d242658a623a604a285b15ca8f315393d8632bdef7cdc7`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `4a6ce8bb3fd418b5e2e36a76de91a7ab295eb78eb25eee04c4aedb312bd43ee8`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `58b13d9604ac57440dc8ab37bdd405c75f1fc17d23bd1ba262d2a8f9e3392288`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `6ae3afcfdfec88b9bbb0865282cabd6432374344326c1e05d902fb248f53f861`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `746e47940fe2370596ed155d641d561c224087ceb4a85150222183938aa6ed5e`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `76c95ad4e65c3fce72c3f11947b7785aea23f0142b4d08b855df7591cf0c8008`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `79b4663c6cc1dba64d482ffb65d9d9b56d3fceaa8f96eabdbafa80acf3591fb1`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `7b485c7a2dcce58dd748b6c34811d0eb17de615e53f992abf41e5082929d81ab`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `862ac98072f94777ae3064f321470a885fc87ab0b0cd3cb68b62650688666d54`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `8c54a0bdfc9089eaf1a2e5c6c0f4cb5ccdcd224ba264e417549f5a7ad3086a24`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `9fa62fd3ff104c494807bc0f301f2349b2a6e1a5617f5af67fb081f6604ba014`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `b4404cc794ea7db3696cef2f651acb8c3dfcf13ea8e5d43a5f6fb001974ca430`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `cc854f4c62baa200e6af50ead91963e32812f8e89930cda201bf8b64921f8d43`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `d9d1ea38c575e3191a141fa7171470e0f8077ac4cef2e55602921fa1c67e3067`
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — SHA-256: `f992acdf51afed2019b2323ddf19385a6cae93cf743516dca36e8a9c6bcf7223`
+- `backend/src/modules/mzapp.ts` — SHA-256: `05f92279ad79cb57762564237a5f7fba8463471b65af54c4eeadb75aa0cb06bd`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0971d95eb156d386e68daa1ed051b2d4e68db58733f9910137b07faa7e9cf197`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0c914654a2b9d88637c0f54244e0591a6615fa8c81cad1e5016cdf1a4736659a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0e43e7c70f03dfc8131f091200ec7610a08c26881814adf3887125c277ba0f4f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `181bc6e4d446c545f26db219c9857d06416cbe091c632adff4fd9e31e1c7cfc3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `187271306fa46966a9309d58fb0783b2c1633870938ccc1127a42dc9892a5687`
+- `backend/src/modules/mzapp.ts` — SHA-256: `25d7ceae26162275edb2a7b0e6e61a8e1b2c5c100210e8f44256b6f131f6da0d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `28ea69e46eaa21f140098b6a3515289996caedf916e93a5a1633a9fcd615d651`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2c76a3eca18d19f914246c484808019e1bb6dfd9acea8c66dcef797367072223`
+- `backend/src/modules/mzapp.ts` — SHA-256: `33d9031a033eaa14e150c79eeffe16692c34219728254766d796b5aa79a3ab3b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5be933ab00156d1ba8b7f5abec46ee577122023272809efa9b9a78bd3dfdf162`
+- `backend/src/modules/mzapp.ts` — SHA-256: `610036abbfebcdcee61f6c69507fb2ab4f0effa9e885d0bd63e23824582a68b8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `68d5ad0d80ee23250a10f7cb557d868f65ffde4662df2c2010c4d61fc1d76703`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6ab6eb8622f13de4a94340f06884c5cdb405dde6dc0dc94ac22ea948705fb522`
+- `backend/src/modules/mzapp.ts` — SHA-256: `76386fe696f85acddb499ff66747c6b712036bcde5dea9bb0b9ca700535d3b3a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7b3fc7ef9cb9ab061ad7e9ba4e0b1b7ba7ae144f7978c6d03878aa2ed08a323b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7bfa9f387ccb68bb81787ba5adaa0b5f8dfa90bfff4780de392ad1a31b0f9214`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7f0cab015ba8ecf506de0c9966109e62198bccd6f8b7088e9354d1e096feae91`
+- `backend/src/modules/mzapp.ts` — SHA-256: `83d8df99a5b2dfe5bbd338dca48bfcd99c57c55d1711cb1146565114f860b7e1`
+- `backend/src/modules/mzapp.ts` — SHA-256: `910696cb78a5c125f70f69e8d271cb2dcfd1a3b675677efdfa9b0c911f934848`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a8f0bae02632462b5c6d51d57756e79af9e64b53948ea69f5babda6a48784a3e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `aceb1adaad60f82f18c2b5142b638872c77fcc624acb6eea0796027d10f5e499`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b86902802be524fa2274edc3d65a16554ce3180be5d8f6beee05ee1ee2b86702`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b9445c47e122f4fb050941cb5dce0a0eccca92de91c5a49eb9237d4f762c5ff8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bb436913d1ad86ed9de84746b0ac266308dd030b3f85a044ce863ba51383ffc3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bf1aa1e15445d716f0f0797b87de534b13dcea60588bc48e1a8f5596d6ac61a6`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c3e861d6fef89bce589d4229227e747c16a47eabd9689a7a2e1915d1ca5af7b0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cd3d9028414cf90255a0cfed644e167c635e60ffcfdaa2ad5944299ec5ce3644`
+- `backend/src/modules/mzapp.ts` — SHA-256: `da2c56a90bcb3aeb96c89f91e3c7b6a967d655a74b3d4943fc4593651fe4ec96`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ddc84a06ae437e60084f01240fb2043deaf18c468f7432798369e52462e17f09`
+- `backend/src/modules/mzapp.ts` — SHA-256: `dfc8ef4839be6c8c346a124715dac172fe0240b8ad378c3f048c7129cdc0507b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e412d5a94eb319d825bcaa321de6256cff2a60bd53b73ca4fcb1f8ad44a69615`
+- `docs/feature-regression-registry.md` — SHA-256: `04aa8e350d9c66b13d61143bc824710870adf301a26164def127c7f83454601b`
+- `docs/feature-regression-registry.md` — SHA-256: `162da199395d2c497587253e2c5e17490c9e5d9f44bed6b1249ea9cf14f53d01`
+- `docs/feature-regression-registry.md` — SHA-256: `68066c555adda6a521e63d55c95e4c479a9622e043d2890d43259e08b8e162bc`
+- `docs/feature-regression-registry.md` — SHA-256: `693ea6c8091a52a6b0e491824fe3a19df6502660dc54c315e209f7baa25417e5`
+- `docs/feature-regression-registry.md` — SHA-256: `6f1a768ca6be643d2599509b104ef8d3756c5585ae343e19c35dba094bd08fbd`
+- `docs/feature-regression-registry.md` — SHA-256: `84bdbaf5407cbf8b81d5171bb0d542317fbe953011abea04d93f99693c79d815`
+- `docs/feature-regression-registry.md` — SHA-256: `c6fe285bdf004a8fee39b28450b1a77ea729a6dd266fa8c084ddb0c3a81cc7ac`
+- `docs/feature-regression-registry.md` — SHA-256: `d128d158ca0981b8d1a9ff99eb6c5a3a9675a6d118e040be21132e73fd050ce3`
+- `docs/feature-regression-registry.md` — SHA-256: `eaf05e37f17f282f831be46ab503ff389158df13badbbf52a2bdefa0a7e2e1c1`
+- `frontend/src/lib/cleaningTurnoverEditPlan.ts` — SHA-256: `fd1ac51b40b76685fe601a3f638cee9c3b6cdb3599866f8813b6ebee437a4cae`
+
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `023e1b506714cade271fac2ec3ae9107ac41a2a88a8747d626d3105ceef3ea6b`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `1b93c56985229dd128d2bb0d6229c5c979647f33088c4fe0fe83d1277144d96f`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `3ccd0bb7d8ade06b6e8e3f2b272e15cbf3def6a5ee2ff7c3517a700dac4a56fa`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `441a53f4b84278af6375334ef2b2845659fe749605bf4e7b3bfdf670ca865fd0`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `5b8512e064fd824d4b51f15fe68de41c4609c1e1a229e5347f1d7a3a2157c045`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `6c9bc25dd36f7071d1e805acb61ebe64534bd5722b0e9aa78a93c79e73956818`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `7242e951c05cd313002b77244822e6256da0f69930df6a0bbcf21d967e97a71d`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `8968877057b281eff93e8da2c87c23396774f41791297edf0de07e8c6f15e420`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `8c4f2db227d81a8145a1ac225ce1ab1be3d01a33a29c62920382cc43f15dc1cb`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `a568d8ab17b8e1ec17b8102c82d3113cbb4dded76f5d7151667dbb0f63feb14b`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `c1a39babf170ad65402fd35235a0872bb96abfee498ebb5a2c1be2f47320c990`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `c5d4bdafa79aaf06475c0f200061f444221e1bbd46c6ffe11bda0524d94da521`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `e7738f511349fb328d1908686e5bafcf912d8905a942b01d200b9cb165d245d4`
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — SHA-256: `ebe8023daff6c12587d2a47529757a3fbc4f49bec53230cf39ae072659058775`
+- `backend/src/lib/idempotentStepReceipts.ts` — SHA-256: `a32f61a77b0762f1d2a039e4eada39c65fdd23add0f890c9d28f768ccd0792f7`
+- `backend/src/modules/cleaning.ts` — SHA-256: `9dc6203b0282cdd81f180e93e7b51c32f5fd91ef36566726f5069bed54ea5ee6`
+- `backend/src/modules/cleaning.ts` — SHA-256: `db825e53b3e8c58a44ecb151f48933f9c4dd553d3c97aa1e62707bb14a44f6a2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4d77b7946a89279dbb5a5e156e79279ae7a3f8c9e5bbe9b0c826a6a239748eb3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ad252a839aef0b9d070742a975bc3e08677d592379b78c0e8688ead71234c400`
+- `docs/feature-regression-registry.md` — SHA-256: `4b84fc08222f5a19da8bbcfcc8af6ecd9dd6b90f6d832e3bc4c46f4f46b5853b`
+- `docs/feature-regression-registry.md` — SHA-256: `d6a62b9fb21be345a691c5f875389e1094b489464fa77ded31b107999b2b2e5a`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `1a2e3e1889e349ed0879778640f8d269b567d3500049e9b50b97b1d395c864d7`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `1eab0ac62b65a2132293bebd88d4587c2046673086a3aef76e8368bce0426dcb`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `30872f64bc2c92bd84412a458c5a7ae91cb17c14f0f816dbd180c2b45697d62e`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `3a0e1c11b766b42ca26d22ac0e222e2353b91d14729b82223db5e7cf944570cb`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `42d1b7d57c1297f3e4b889a6f258a8d216280bded694cfa6f848cfb6767bde3c`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `571e261af31c50e81c1c7cf8d43ee2b479b172eead074374f09430fedba318c9`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `5f087b80e823202eb231129b44b9c1f83bb30bb9fb09d7a972930748030f2827`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `6f53a3fce893fba618d41c4883fc9b2936d519cab43cabb9baa9003f4c69f978`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `77adb1e28af81efaee100c53cddd9a701bb3163fa3ef3041a4fac5acf257e206`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `817e4e51d8f06d5c3818110dc74a968004a9e4c43177fdd435e3ac99954aca34`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `849ec6828000bd7fb9d7e25a02fb202c37bb3273b8aca3ec8ab80d9a2c477117`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `9965807ba01a27823383b5eb05e23e6dc12ac31aa6418b0ba78c32e121aa9cbe`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `b892f030edf868d2af668bdce0f143a98ae270af46a98adb7a4f4dd0b87c7e4e`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `c92b2f94f9b28b18f0493fce3ed1f311685c73c7ad438fea6188550d3f0877b8`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `d4f3f79aed75e93bd6b5d8dafb9154bc40b7faed4af395d95ee1109588410cd1`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `eeec64a64040b0368425cd5aa5ff27e9db0b4c33f411774685be631fe4bed6aa`
+- `frontend/src/lib/cleaningTurnoverEditPlan.test.ts` — SHA-256: `0b859bb47bca17f33e5aab3d2dbdc7fbe68dc379eaa6254cc63e7996444fbe52`
+- `frontend/src/lib/cleaningTurnoverEditPlan.test.ts` — SHA-256: `efc446c410cbe8e09f43e70f8c44ea636efc6a41da1715e093fc46c32221397c`
+- `frontend/src/lib/cleaningTurnoverEditPlan.ts` — SHA-256: `ca082983c31aa69bb6bbd7c38b4e979d780ba50cf32da47740b9b4d3dc6c5bee`
+
+### Release Attempts
+
+#### RA-20261106-003
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261106-001`, `CRL-20261106-002`
+- Selected CRL identities: `root/CRL-20261106-001`, `root/CRL-20261106-002`
+- Intended action: `commit`
+- Branch: `codex/mz091-mz110-release-local`
+- Base: `github/Dev@710a5adec511ff6ca3e87e9041f98c4a2817a7b5`; fetched at `2026-11-06T12:38:38Z`
+- Candidate patch SHA-256: `27bfa4da5d95b0615d7cf8be30fbcf72173318b9db95fbe4df894d9db05068a8`; excludes `docs/change-release-ledger.md`
+- Source-equivalence evidence: the exact initial extraction had non-ledger fingerprint `487908b4af85dfb47956644fd7c3c6f234f4cb5b5476b858df634dcbe41016ce`. The final candidate intentionally differs only by (a) restoring two latest-Dev MZ-109 registry metadata lines and (b) the independently required P1 security fix in the receipt hash helper, two server endpoints, Web operation coordinator and their focused tests. No task/password/topology/permission business rule changed.
+- Commit SHA: `a58130b93f4a37624cee41f1f8489b3cf96bb660`; candidate content commit
+- Dependencies: `mobile/CRL-20261106-001@50ad66a8d26d75671d03354b24490c9b3373b9ad`; `mobile/CRL-20261106-002@50ad66a8d26d75671d03354b24490c9b3373b9ad`
+- Required validation: `PASS`; final focused, disposable PG/API and complete release gates, exact pre-commit audit (11 staged files / 100 non-ledger hunks), independent re-review and clean content commit all passed
+- Shared-hunk review: `PASS`; independent reviewer matched all 11 staged files / 100 non-ledger hunks to the selected 091/110 unit and confirmed MZ-109 is baseline-only
+- Generated-file review: `PASS`; tracked `backend/dist/*` was reversed, the temporary paired-Mobile symlink was removed, and the final staged range has no untracked or unselected path
+- Technical state: `committed`
+- User authorization: `selected-for-commit`; evidence: user instructed “提交091/110”. Push, PR, merge, deployment and production writes were not authorized.
+- Independent review: `GO for local commit`; P0/P1/P2/P3 = 0/0/0/0. Reviewer independently matched base, branch, fingerprint `27bfa4da5d95b0615d7cf8be30fbcf72173318b9db95fbe4df894d9db05068a8`, 11 files / 100 hunks, final HMAC/random operation-ID remediation, isolated PostgreSQL evidence, generated/sensitive boundaries and Root-first dependency.
+- Action conclusion: `GO`; blockers: none. Local content commit `a58130b93f4a37624cee41f1f8489b3cf96bb660` completed; push, PR, merge, deployment, OTA and production writes remain unauthorized
+
+#### RA-20261106-004
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261106-001`, `CRL-20261106-002`
+- Selected CRL identities: `root/CRL-20261106-001`, `root/CRL-20261106-002`
+- Intended action: `push`
+- Branch: `codex/mz091-mz110-release-local`
+- Remote target: `https://github.com/zhishi817/MZ-property-system_V3.git`; the release worktree's `origin` is a local chain repository and must not be used as evidence of a GitHub push
+- Base: `origin/Dev@710a5adec511ff6ca3e87e9041f98c4a2817a7b5`; fetched at `2026-11-06T14:01:10Z`; live-ref verified unchanged at `2026-11-06T14:01:10Z`
+- Target branch preflight: live `ls-remote` confirmed `refs/heads/codex/mz091-mz110-release-local` absent at `2026-11-06T14:01:10Z`; the push must create only this branch and must not update `Dev`, `main` or another ref
+- Candidate patch SHA-256: `27bfa4da5d95b0615d7cf8be30fbcf72173318b9db95fbe4df894d9db05068a8`; exact non-ledger range unchanged
+- Commit SHA: `a58130b93f4a37624cee41f1f8489b3cf96bb660`; candidate content commit. Exact committed audit head before this push receipt is `f444efff7a78a9eac0ec336a424f71d03aa238b7`
+- Dependencies: `mobile/CRL-20261106-001@50ad66a8d26d75671d03354b24490c9b3373b9ad`; `mobile/CRL-20261106-002@50ad66a8d26d75671d03354b24490c9b3373b9ad`
+- Cross-repository dependency verification: `PASS`; paired Mobile `origin/Dev@51e3c051f50f9a264f0c08a4c2616e4caf8729a1...ff61c0a02f3be3d182c1d0cd9b196336b984f623` contains content commit `50ad66a8d26d75671d03354b24490c9b3373b9ad` with non-ledger fingerprint `301cf834435a96761dca6c1e751a928f7e2143e3b7061890543a5a33016a901f`; exact paired report and independent paired push review are required because the single-repository auditor intentionally reports cross-repository references as `NOT VERIFIED`
+- Required validation: `PASS`; latest live Dev equals the reviewed base, exact content fingerprint/hunks and prior Root/Web/Mobile gates plus isolated PostgreSQL evidence passed. Root feature publication is expected to trigger a frontend-only Vercel Preview using dependency installation, cache cleanup and `next build`; the build scripts contain no migration, seed or production-write lifecycle step, Preview resolves to the distinct preview/dev API fallback rather than the production API fallback, and repository Actions, Render Dev/Production, OTA and production data actions are not triggered by this feature ref.
+- Shared-hunk review: `PASS`; exact 11-file / 100-non-ledger-hunk content range is unchanged from the independent commit review and excludes MZ-109-specific hunks
+- Generated-file review: `PASS`; this staged push authorization is ledger-only and the committed range contains no generated or unselected path
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: after being told 091/110 were locally committed, tested, independently reviewed and not pushed, the user instructed “推送”. This permits the ordinary automatic non-production Vercel Preview side effect of the requested feature publication, but no active deployment API/CLI call. Authorization is limited to one ordinary non-force creation of `codex/mz091-mz110-release-local` in this Root repository and its exact paired Mobile branch; PR, merge, Render Dev/Production deployment, OTA and production access/writes remain excluded.
+- Independent review: `GO for exact paired push workflow`; P0/P1/P2 = 0/0/0 and P3 = 1. The final paired read-only review matched both repositories' bases, content commits, non-ledger fingerprints and selected ranges. Root's automatic frontend-only Vercel Preview is within the clarified push boundary: `prebuild` only clears `.next`, `build` runs `next build`, no migration/seed/postinstall/build-time API call was found, and the changed client page calls APIs only from browser effects or user events. Non-blocking P3 is Mobile numeric receipt normalization while paired Root emits numbers.
+- Action conclusion: `GO`; blockers: none. One ordinary non-force Root-first push using the explicit GitHub URL and exact post-receipt SHA may proceed after clean paired exact-range reports and immediate live-ref preflight. Automatic non-production Vercel Preview creation is permitted; do not call Vercel CLI/API, open or smoke-test the Preview, call Render, create a PR, merge, deploy Render Dev/Production, publish OTA or access/write production.
+
+### Risks / Release Notes
+
+- This local commit candidate is not a deployment or production recovery claim. Root must precede any later paired Mobile delivery.
+- Rollback removes additive receipt enrichment; no schema/data rollback is required.
+- Sensitive-information review: `PASS`; exact staged diff contains no user-mentioned password values, credential/private-key/database-URL pattern or production endpoint, and candidate tests/reports use synthetic or sanitized values only.
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed.
+
+## CRL-20261106-002 — MZ-091 任务保存原子重放与响应丢失保护
+
+- **Repository:** `root`
+- **Status:** verified latest-Dev local commit candidate; final focused, disposable-PG/API, complete release validation, shared exact staged audit and independent re-review passed; not pushed, merged or deployed
+- **Board item:** `MZ-091`
+- **Updated:** 2026-11-06 UTC
+- **Request:** 网页合卡和 Mobile manager-fields 在响应丢失后必须安全重试；同一次保存不得生成部分写入或重复 receipt/event，真正的新编辑不得被内容去重吞掉，并保留精确入住/退房字段、钥匙、密码来源、终态及权限保护。
+- **Outcome:** Web 合卡使用一个 atomic-patch 事务保存按 source 区分的字段和钥匙；Mobile manager-fields 使用 actor + operation ID + 递归规范化 payload 摘要实现同值重放、变更冲突和后续新操作。任何守卫失败整笔回滚。
+
+### Implementation
+
+- Web: `POST /cleaning/tasks/atomic-patch` 接收稳定 operation ID、逐任务 patch 和 order key updates；编辑弹窗只采用当前卡的准确 entity IDs，checkout/check-in 字段写入各自 source。operation ID 为随机不透明值，本地语义快照只决定失败重试复用或真实新编辑轮换，密码内容不参与 ID 派生。
+- Mobile server contract: manager-fields 接受 operation ID 和 per-task items；同 ID/同 payload 重放，同 ID/不同 payload 返回 409，成功后的真实新编辑使用新 ID。含密码的 canonical payload 使用服务端密钥 HMAC 比较，不保存可枚举的无密钥摘要。任务、密码 receipt、durable events 和 operation receipt 位于同一事务。
+- Failure boundaries: Web/Mobile 都在行锁后重验终态、订单、拓扑、错误方向密码和钥匙目标；任一失败零部分写入。纯退房且无未来入住时，钥匙只允许回落本次精确 checkout source，否则 409。
+- Existing schema: 只复用已经部署的 operation receipt 表，不执行 DDL、migration、backfill、replay 或生产数据动作。
+
+### Files / Areas
+
+- `backend/src/lib/idempotentStepReceipts.ts` — 递归稳定 payload 与域隔离服务端 HMAC，保留 legacy 无敏感值 receipt hash 兼容。
+- `backend/src/modules/cleaning.ts` — Web atomic-patch 事务入口；保留 Dev 已合入的 MZ-109 `FOR UPDATE OF task`。
+- `backend/src/modules/mzapp.ts` — manager-fields operation/replay/items、事务和准确 target 保护；与 MZ-110 回执共享。
+- `backend/scripts/tests/test_cleaning_turnover_topology_lock_pg_integration.ts` — Web/Mobile HTTP+PG 保存、重放、权限、终态、锁后重验和回滚；与 MZ-110 共享。
+- `backend/scripts/tests/test_mz091_password_chain_pg_integration.ts` — 密码链、纯退房钥匙和权威读回。
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — durable event 写入后的 canonical 可见性契约。
+- `frontend/src/app/cleaning/page.tsx` — 合卡保存改为单 atomic request。
+- `frontend/src/lib/cleaningTurnoverEditPlan.ts`、`frontend/src/lib/cleaningTurnoverEditPlan.test.ts` — 不透明随机 operation ID、本地语义复用/轮换、低熵密码不派生 ID、字段隔离和重放身份。
+- `docs/feature-regression-registry.md` — FR-002/FR-039 原子与幂等保护；与 MZ-110 共享。
+- `docs/change-release-ledger.md` — 本 CRL；共享 Release Attempt 记录在 `root/CRL-20261106-001`。
+
+### Impact / Dependencies
+
+- Roles / permissions: Web 沿用 `cleaning.task.assign`；Mobile 仍只允许 customer_service/admin/offline_manager。无角色扩大。
+- Task/status/topology/password rules: unchanged；保留终态、错误方向、跨订单、显式关联、`active_source_ids`、`auto_sync_enabled=false` 和人工确认保护。
+- Database / migration / config / dependency: none。
+- Dependencies: paired `mobile/CRL-20261106-002` and `mobile/CRL-20261106-001`；Root Dev MZ-109 PR #445 is baseline-only, not selected again。
+
+### Validation
+
+- Automation: PASS — final P1 code passed focused Web 11-test/backend build and the complete release gate recorded under `root/CRL-20261106-001` (Web 60 files / 332 tests; paired Mobile 87 suites / 883 tests).
+- Real API / isolated database: PASS — fresh disposable loopback PostgreSQL/Express HMAC, atomic save, replay, conflict and rollback evidence passed on the final P1 code as recorded in `root/CRL-20261106-001`; all data was synthetic and all test services/data directories were removed.
+- Web real interaction: NOT RUN on the final P1 candidate; retained pre-fix report SHA-256 `8dabb40fa662b09f6c0e563189e06c233a8804044eb98716751c5e387fe2dfa7` is context only.
+- App physical device: NOT RUN on the final P1 candidate; retained pre-fix iPhone report SHA-256 `50d9d6743842653a907dcc7cd32396a8d8275b2ea9de2a8ebf3b614e2671a2b7` is context only. Android physical and real weak-network remain not run.
+- Critical validation conclusion: PASS for the authorized local commit; shared final validation, exact audit and independent re-review in `root/CRL-20261106-001` passed.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared; exact shared hunk scope is recorded under `root/CRL-20261106-001`
+- **Untracked review:** none
+
+### Release Attempts
+
+- Shared commit attempt: `root/CRL-20261106-001` / `RA-20261106-003` selects both exact CRLs.
+
+### Risks / Release Notes
+
+- A commit does not authorize push, PR, merge, deployment or production writes.
+- Rollback reverts atomic-patch and operation-id consumption together; no data migration rollback.
+- Sensitive-information review: `PASS`; no real passwords, customer payloads, tokens, database URLs, private keys or user-mentioned password values enter the staged commit.
+- Git state: uncommitted, not pushed, no PR, not merged, not deployed.
+
 ## CRL-20261105-002 — MZ-109 网页任务编辑外连接行锁修复
 
 - **Repository:** `root`

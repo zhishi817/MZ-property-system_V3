@@ -10,7 +10,7 @@ import { cleaningColorKind } from '../../lib/cleaningColor'
 import { clearManualCheckinLinkSelection, clearManualCheckinLinkSelectionForScopeChange, clearManualCheckoutLinkSelection, clearManualCheckoutLinkSelectionForScopeChange, isOrderLinkedAutoCheckinNightsAuthoritative, manualCheckinLinkErrorNeedsCandidateRefresh, manualCleaningCreateReplayNeedsReview, normalizeManualCheckinCheckoutCandidates, normalizeManualCheckoutCheckinCandidates, reconcileManualCheckinLinkSelection, reconcileManualCheckoutLinkSelection, sameManualCheckinCandidateScope, splitTurnoverMerge, type ManualCheckinCandidateLoadState, type ManualCheckinCandidateScope, type ManualCheckinCheckoutCandidate, type ManualCheckoutCheckinCandidate } from '../../lib/cleaningDailyMerge'
 import { checkinTimingLabel, checkoutTimingLabel, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, selfCompleteDailyStatusMeta, visibleDailyDisplayBadges } from '../../lib/cleaningDailyTaskStatus'
 import { manualCreatePasswordPayload } from '../../lib/cleaningManualCreate'
-import { turnoverEditPersistedSignature, validateTurnoverEditMutationIsolation, validateTurnoverEditPlan } from '../../lib/cleaningTurnoverEditPlan'
+import { buildTurnoverAtomicEditItems, exactCleaningCardEditSourceIds, normalizeAtomicOrderKeyUpdates, resolveTurnoverEditOperation, turnoverEditPersistedSignature, validateTurnoverEditMutationIsolation, validateTurnoverEditPlan } from '../../lib/cleaningTurnoverEditPlan'
 import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
 
@@ -205,6 +205,8 @@ function statusForCleaningMutation(status: string | null | undefined) {
 
 type EditTaskForm = {
   create_request_id: string
+  edit_operation_id: string | null
+  edit_operation_signature: string | null
   mode: 'default' | 'stayover'
   ids: string[]
   task_date: Dayjs
@@ -1244,11 +1246,13 @@ export default function CleaningPage() {
     const notCancelled = (r: CleaningTaskRow) => String(r?.status || '').toLowerCase() !== 'cancelled'
     const checkoutIdsAll = rowsForProp.filter((r) => notCancelled(r) && isCheckoutRow(r as any)).map((r) => String(r.id))
     const checkinIdsAll = rowsForProp.filter((r) => notCancelled(r) && isCheckinRow(r as any)).map((r) => String(r.id))
-    const stayoverIdsAll = rowsForProp.filter((r) => notCancelled(r) && isStayoverRow(r as any)).map((r) => String(r.id))
     const stayoverMode =
       String(it.task_type || '').toLowerCase() === 'stayover_clean' ||
       (!!clickedRow && isStayoverRow(clickedRow))
-    const ids = Array.from(new Set(stayoverMode ? [...clickedIds, ...stayoverIdsAll] : [...clickedIds, ...checkoutIdsAll, ...checkinIdsAll]))
+    // The calendar item already carries the exact canonical source IDs for that card.
+    // Same-property/day rows can include an independent turnover and must never be
+    // pulled into this edit merely because they share a display scope.
+    const ids = exactCleaningCardEditSourceIds(clickedIds)
     const selectedRows = ids.map((id) => (Array.isArray(rows) ? rows : []).find((r) => String(r.id) === String(id)) || null)
     const baseRow = selectedRows.find((r) => r && String(r.id) === String(clickedIds[0])) || selectedRows[0]
     const checkoutAllExists = checkoutIdsAll.length > 0
@@ -1365,6 +1369,8 @@ export default function CleaningPage() {
     }
     const nextEditForm: EditTaskForm = {
       create_request_id: manualTaskCreateRequestId(),
+      edit_operation_id: null,
+      edit_operation_signature: null,
       mode: stayoverMode ? 'stayover' : 'default',
       ids,
       task_date: dayjs(date),
@@ -1386,8 +1392,8 @@ export default function CleaningPage() {
       checkin_nights_authoritative: stayoverMode ? false : checkinNightsAuthoritative,
       guest_special_request: guestSpecialRequest,
       nights_override: stayoverMode ? null : resolvedNightsOverride,
-      checkout_ids: stayoverMode ? [] : checkoutIdsAll,
-      checkin_ids: stayoverMode ? [] : checkinIdsAll,
+      checkout_ids: stayoverMode ? [] : checkoutRows.map((row) => String(row?.id || '')).filter(Boolean),
+      checkin_ids: stayoverMode ? [] : checkinRows.map((row) => String(row?.id || '')).filter(Boolean),
       checkout_password: stayoverMode ? '' : checkoutPwd,
       checkin_password: stayoverMode ? '' : checkinPwd,
       initial_checkout_password: stayoverMode ? '' : checkoutPwd,
@@ -1473,13 +1479,33 @@ export default function CleaningPage() {
         if (editForm.ids.length === 1 || editForm.inspector_id !== null) base.inspector_id = editForm.inspector_id
       }
       base.guest_special_request = editForm.guest_special_request || null
+      const persistedSignature = editTaskPersistedSignature(editForm)
+      const editOperation = resolveTurnoverEditOperation({
+        previous: editForm.edit_operation_id && editForm.edit_operation_signature != null
+          ? { operationId: editForm.edit_operation_id, persistedSignature: editForm.edit_operation_signature }
+          : null,
+        persistedSignature,
+        createOperationId: () => `${manualTaskCreateRequestId()}:edit`,
+      })
+      const operationId = editOperation.operationId
+      if (editForm.edit_operation_id !== editOperation.operationId
+        || editForm.edit_operation_signature !== editOperation.persistedSignature) {
+        setEditForm((current) => current ? {
+          ...current,
+          edit_operation_id: editOperation.operationId,
+          edit_operation_signature: editOperation.persistedSignature,
+        } : current)
+      }
 
       if (editForm.mode === 'stayover') {
-        const patches = editForm.ids.map((id) => {
-          const p: any = { ...base, checkin_time: toNull(editForm.checkin_time) }
-          return patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, p)
+        const items = buildTurnoverAtomicEditItems({
+          ids: editForm.ids,
+          checkoutIds: [],
+          checkinIds: editForm.ids,
+          basePatch: base,
+          checkinPatch: { checkin_time: toNull(editForm.checkin_time) },
         })
-        await Promise.all(patches)
+        await postJSON('/cleaning/tasks/atomic-patch', { operation_id: operationId, items })
         setEditOpen(false)
         setEditForm(null)
         message.success('已更新')
@@ -1538,43 +1564,47 @@ export default function CleaningPage() {
         return
       }
 
-      const keyUpdates: Promise<any>[] = []
+      const orderKeyUpdates: Array<{ order_id: string; keys_required: 1 | 2 }> = []
+      const manualKeysByTaskId: Record<string, 1 | 2> = {}
       if (editForm.checkin_order_id) {
-        keyUpdates.push(postJSON('/mzapp/cleaning-tasks/order-keys-required', { order_id: editForm.checkin_order_id, keys_required: editForm.keys_required_checkin }))
+        orderKeyUpdates.push({ order_id: editForm.checkin_order_id, keys_required: editForm.keys_required_checkin })
       } else if (editForm.checkin_manual_ids.length) {
-        for (const id of editForm.checkin_manual_ids) {
-          keyUpdates.push(patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, { keys_required: editForm.keys_required_checkin }))
-        }
+        for (const id of editForm.checkin_manual_ids) manualKeysByTaskId[String(id)] = editForm.keys_required_checkin
       }
       if (editForm.checkout_order_id) {
-        keyUpdates.push(postJSON('/mzapp/cleaning-tasks/order-keys-required', { order_id: editForm.checkout_order_id, keys_required: editForm.keys_required_checkout }))
+        orderKeyUpdates.push({ order_id: editForm.checkout_order_id, keys_required: editForm.keys_required_checkout })
       } else if (editForm.checkout_manual_ids.length) {
-        for (const id of editForm.checkout_manual_ids) {
-          keyUpdates.push(patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, { keys_required: editForm.keys_required_checkout }))
-        }
+        for (const id of editForm.checkout_manual_ids) manualKeysByTaskId[String(id)] = editForm.keys_required_checkout
       }
 
-      const patches = editForm.ids.map((id) => {
-        const p: any = { ...base }
-        if (editForm.checkout_ids.some((x) => String(x) === String(id))) {
-          p.checkout_time = toNull(editForm.checkout_time)
-          if (toNull(editForm.checkout_password) !== toNull(editForm.initial_checkout_password)) {
-            p.old_code = toNull(editForm.checkout_password)
-            p.password_verification = { fields: ['old_code'], request_id: passwordAuthorityRequestId(), client: 'web' }
-          }
-        }
-        if (editForm.checkin_ids.some((x) => String(x) === String(id))) {
-          p.task_date = editForm.checkin_task_date.format('YYYY-MM-DD')
-          if (toNull(editForm.checkin_password) !== toNull(editForm.initial_checkin_password)) {
-            p.new_code = toNull(editForm.checkin_password)
-            p.password_verification = { fields: ['new_code'], request_id: passwordAuthorityRequestId(), client: 'web' }
-          }
-          if (!editForm.checkin_nights_authoritative) p.nights_override = editForm.nights_override ?? null
-          p.checkin_time = toNull(editForm.checkin_time)
-        }
-        return patchJSON(`/cleaning/tasks/${encodeURIComponent(id)}`, p)
+      const checkoutPatch: any = { checkout_time: toNull(editForm.checkout_time) }
+      if (toNull(editForm.checkout_password) !== toNull(editForm.initial_checkout_password)) {
+        checkoutPatch.old_code = toNull(editForm.checkout_password)
+        checkoutPatch.password_verification = { fields: ['old_code'], request_id: operationId, client: 'web' }
+      }
+      const checkinPatch: any = {
+        task_date: editForm.checkin_task_date.format('YYYY-MM-DD'),
+        checkin_time: toNull(editForm.checkin_time),
+      }
+      if (toNull(editForm.checkin_password) !== toNull(editForm.initial_checkin_password)) {
+        checkinPatch.new_code = toNull(editForm.checkin_password)
+        checkinPatch.password_verification = { fields: ['new_code'], request_id: operationId, client: 'web' }
+      }
+      if (!editForm.checkin_nights_authoritative) checkinPatch.nights_override = editForm.nights_override ?? null
+      const items = buildTurnoverAtomicEditItems({
+        ids: editForm.ids,
+        checkoutIds: editForm.checkout_ids,
+        checkinIds: editForm.checkin_ids,
+        basePatch: base,
+        checkoutPatch,
+        checkinPatch,
+        manualKeysByTaskId,
       })
-      await Promise.all([...patches, ...keyUpdates])
+      await postJSON('/cleaning/tasks/atomic-patch', {
+        operation_id: operationId,
+        items,
+        order_key_updates: normalizeAtomicOrderKeyUpdates(orderKeyUpdates),
+      })
       setEditOpen(false)
       setEditForm(null)
       message.success('已更新')
