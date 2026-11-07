@@ -3,6 +3,10 @@ export type TurnoverEditPlanIssue = {
   message: string
 }
 
+export function exactCleaningCardEditSourceIds(sourceIds: unknown[]) {
+  return Array.from(new Set(sourceIds.map((value) => String(value || '').trim()).filter(Boolean)))
+}
+
 export function validateTurnoverEditPlan(params: {
   pendingAddCheckout?: boolean
   pendingAddCheckin?: boolean
@@ -89,4 +93,66 @@ export function validateTurnoverEditMutationIsolation(params: {
     code: 'existing_date_unsaved',
     message: '现有任务还有未保存修改；请先保存并重新打开，再新增关联任务。',
   }
+}
+
+export type TurnoverEditOperation = {
+  operationId: string
+  persistedSignature: string
+}
+
+export function resolveTurnoverEditOperation(params: {
+  previous?: TurnoverEditOperation | null
+  persistedSignature: string
+  createOperationId: () => string
+}) {
+  const previousId = String(params.previous?.operationId || '').trim()
+  if (previousId && params.previous?.persistedSignature === params.persistedSignature) {
+    return { operationId: previousId, persistedSignature: params.persistedSignature }
+  }
+  const operationId = String(params.createOperationId() || '').trim()
+  if (!operationId) throw new Error('无法创建安全的保存重试标识，请重试')
+  return { operationId, persistedSignature: params.persistedSignature }
+}
+
+type AtomicCleaningPatch = Record<string, unknown>
+
+export function buildTurnoverAtomicEditItems(params: {
+  ids: string[]
+  checkoutIds: string[]
+  checkinIds: string[]
+  basePatch: AtomicCleaningPatch
+  checkoutPatch?: AtomicCleaningPatch
+  checkinPatch?: AtomicCleaningPatch
+  manualKeysByTaskId?: Record<string, 1 | 2>
+}) {
+  const checkoutIds = new Set(params.checkoutIds.map((id) => String(id || '').trim()).filter(Boolean))
+  const checkinIds = new Set(params.checkinIds.map((id) => String(id || '').trim()).filter(Boolean))
+  const manualKeysByTaskId = params.manualKeysByTaskId || {}
+  return Array.from(new Set(params.ids.map((id) => String(id || '').trim()).filter(Boolean)))
+    .sort()
+    .map((id) => ({
+      id,
+      patch: {
+        ...params.basePatch,
+        ...(checkoutIds.has(id) ? (params.checkoutPatch || {}) : {}),
+        ...(checkinIds.has(id) ? (params.checkinPatch || {}) : {}),
+        ...(manualKeysByTaskId[id] == null ? {} : { keys_required: manualKeysByTaskId[id] }),
+      },
+    }))
+}
+
+export function normalizeAtomicOrderKeyUpdates(updates: Array<{ order_id: string; keys_required: 1 | 2 }>) {
+  const byOrderId = new Map<string, 1 | 2>()
+  for (const update of updates) {
+    const orderId = String(update.order_id || '').trim()
+    if (!orderId) continue
+    const existing = byOrderId.get(orderId)
+    if (existing != null && existing !== update.keys_required) {
+      throw new Error('同一订单不能在一次保存中设置不同的钥匙套数')
+    }
+    byOrderId.set(orderId, update.keys_required)
+  }
+  return Array.from(byOrderId.entries())
+    .map(([order_id, keys_required]) => ({ order_id, keys_required }))
+    .sort((a, b) => a.order_id.localeCompare(b.order_id))
 }
