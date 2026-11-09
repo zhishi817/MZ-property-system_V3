@@ -239,13 +239,17 @@
 - Required validation: PASS; final post-review check:release and check:fast exited 0, no-emit/focused PASS, Web 60/333 plus build, paired final Mobile 87/894 and fast 8/156, both isolated PG suites and exact scope passed.
 - Shared-hunk review: PASS; only five selected source candidates integrated; latest-Dev Web import retained; additive script union retained every current-Dev check; combined mzapp/visibility/registry/package hunks explicitly selected together.
 - Generated-file review: PASS; staged diff contains no dist, node_modules, environment files, preview/cache or evidence logs; temporary generated output restored and paired-Mobile symlink removed before final gate.
-- Technical state: committed
+- Technical state: pushed
 - User authorization: approved-for-push; exact selected five tasks in this single repository branch, authorized by the latest user instructions to commit, push and create PR; no merge/deployment/production writes.
 - Independent review: GO; independent paired push/PR review directly verified Root base a9c64f5b5a48ba28679734a2f924e2c16722bd6b/content 3811fd1a1936f20671435661db3d36518f088ab9/head b614bb23ca0b292cf980b9d9925a847cece5b7cd and Mobile base d438a6177b403825ec65d82fc8b4d054c346c5a1/content d3b3b597a4fc8e5a8caa6764685075d5a6f69bb9/head fa60db622b731b6074b0b25f2e391ad75b9ed2d7, canonical CRLs, exact hashes, ancestry and clean trees; no unresolved P0/P1/P2.
 - Action conclusion: GO; blockers: none; ordinary non-force push and Draft PR to Dev only. Final metadata-only receipt is re-audited before push.
 
 - Cross-repository dependency verification: PASS by actual paired-repository inspection and matching complete regression evidence. Both single-repository range tools report NOT VERIFIED solely because they do not inspect the other repository; no blocker or missing local evidence. This records the separate paired review, not a claim that the individual tools returned GO.
 - Publication order: ensure the matching Mobile remote branch exists before creating Root PR so CI selects the reviewed pair. No Dev/main merge, backend deployment, OTA or production data action.
+
+- Remote publication evidence (2026-11-09 UTC): ordinary push succeeded to `origin/codex/mz-077-084-099-100-111-20261109`; independent `git ls-remote` returned `7da0c5d919463711f06c93b36d5ba50a19ea0c9c`, matching the local publication head. Paired Mobile branch was independently confirmed present at `8f2bdc17ed63d0b2c1f4c8a3fab8823f9c735b14` before Root PR creation.
+- PR evidence: `https://github.com/zhishi817/MZ-property-system_V3/pull/449`, verified OPEN and Draft with base `Dev` and the exact selected head branch. Initial GitHub/Vercel checks pending; no ready-to-merge or remote-CI-pass claim.
+- Delivery boundary: not merged; no backend production deployment, OTA publication, production write, migration or backfill performed. Device/production acceptance remains not run. This metadata-only delivery receipt preserves the reviewed content fingerprint.
 
 ### Risks / Release Notes
 
