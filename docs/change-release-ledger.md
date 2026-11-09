@@ -225,6 +225,28 @@
 
 - Content receipt: Root content committed cleanly with the reviewed fingerprint; paired Mobile content is `d3b3b597a4fc8e5a8caa6764685075d5a6f69bb9`, replacing the unpublished ledger-only-amended `653590daa8a4c55a8abb7421575f8e6d81036d21`. Mobile runtime fingerprint remains `9a595f77bdf9ba89a6078b9265e2266f8d943ba1f9cd7c73818cb858dae8d4ad`; exact paired range verification follows these content receipts. No push, PR, merge, deployment, OTA or production writes performed yet.
 
+#### RA-20261109-FIVE-ROOT-PUSH
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261109-001`, `CRL-20261107-001`, `CRL-20261103-005`, `CRL-20261109-002`, `CRL-20261108-001`
+- Selected CRL identities: `root/CRL-20261109-001`, `root/CRL-20261107-001`, `root/CRL-20261103-005`, `root/CRL-20261109-002`, `root/CRL-20261108-001`
+- Intended action: `push`
+- Branch: `codex/mz-077-084-099-100-111-20261109`
+- Base: `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`; fetched at `2026-11-09T07:16:13Z`
+- Candidate patch SHA-256: `e8835a5138c61aa8de422e1f3417230e573995dd30b3a9e4ad0307df44f9da62`
+- Commit SHA: `3811fd1a1936f20671435661db3d36518f088ab9`; reviewed candidate content commit
+- Dependencies: `mobile/CRL-20261109-001@d3b3b597a4fc8e5a8caa6764685075d5a6f69bb9`; `mobile/CRL-20261109-002@d3b3b597a4fc8e5a8caa6764685075d5a6f69bb9`; `mobile/CRL-20261109-003@d3b3b597a4fc8e5a8caa6764685075d5a6f69bb9`
+- Required validation: PASS; final post-review check:release and check:fast exited 0, no-emit/focused PASS, Web 60/333 plus build, paired final Mobile 87/894 and fast 8/156, both isolated PG suites and exact scope passed.
+- Shared-hunk review: PASS; only five selected source candidates integrated; latest-Dev Web import retained; additive script union retained every current-Dev check; combined mzapp/visibility/registry/package hunks explicitly selected together.
+- Generated-file review: PASS; staged diff contains no dist, node_modules, environment files, preview/cache or evidence logs; temporary generated output restored and paired-Mobile symlink removed before final gate.
+- Technical state: committed
+- User authorization: approved-for-push; exact selected five tasks in this single repository branch, authorized by the latest user instructions to commit, push and create PR; no merge/deployment/production writes.
+- Independent review: GO; independent paired push/PR review directly verified Root base a9c64f5b5a48ba28679734a2f924e2c16722bd6b/content 3811fd1a1936f20671435661db3d36518f088ab9/head b614bb23ca0b292cf980b9d9925a847cece5b7cd and Mobile base d438a6177b403825ec65d82fc8b4d054c346c5a1/content d3b3b597a4fc8e5a8caa6764685075d5a6f69bb9/head fa60db622b731b6074b0b25f2e391ad75b9ed2d7, canonical CRLs, exact hashes, ancestry and clean trees; no unresolved P0/P1/P2.
+- Action conclusion: GO; blockers: none; ordinary non-force push and Draft PR to Dev only. Final metadata-only receipt is re-audited before push.
+
+- Cross-repository dependency verification: PASS by actual paired-repository inspection and matching complete regression evidence. Both single-repository range tools report NOT VERIFIED solely because they do not inspect the other repository; no blocker or missing local evidence. This records the separate paired review, not a claim that the individual tools returned GO.
+- Publication order: ensure the matching Mobile remote branch exists before creating Root PR so CI selects the reviewed pair. No Dev/main merge, backend deployment, OTA or production data action.
+
 ### Risks / Release Notes
 
 - Worktree is isolated at freshly fetched `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`; original mixed/frozen worktrees untouched. Mobile validation uses clean `origin/Dev@d438a6177b403825ec65d82fc8b4d054c346c5a1` with no source modifications. Both bases were fetched and reconfirmed unchanged at `2026-11-09T04:34:05Z`.
