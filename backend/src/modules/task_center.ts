@@ -2678,7 +2678,9 @@ export async function buildTaskCenterDay(
     loadBoardRows(date, 'board'),
     loadBoardItems(date, 'board'),
   ])
-  const visibleCleaningTasks = projectVisibleDailyTasks(cleaningTasks)
+  const visibleCleaningTasks = projectVisibleDailyTasks(cleaningTasks, {
+    includeManagerUnassignedStayoverCleaning: true,
+  })
   const guestReadyStatesByOrder = canManageGuestReadyNotification && hasPg && pgPool
     ? await loadGuestReadyNotificationOrderStates(pgPool, visibleCleaningTasks.map((task) => task.order_id_checkin))
     : new Map<string, any>()
@@ -2775,7 +2777,7 @@ export async function buildTaskCenterDay(
     )
     return {
       ...task,
-      ...projectDailyTaskStats(task),
+      ...projectDailyTaskStats(task, { includeManagerUnassignedStayoverCleaning: true }),
       ...(guestReadyNotification ? { guest_ready_notification: guestReadyNotification } : {}),
       ...(guestReadyOutsideKey ? { guest_ready_outside_key: guestReadyOutsideKey } : {}),
       ...(guestReadyActions.length ? { available_actions: guestReadyActions } : {}),

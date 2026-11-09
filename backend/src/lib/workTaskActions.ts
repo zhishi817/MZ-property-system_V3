@@ -554,7 +554,7 @@ export function buildWorkTaskActionPayload(task: any, context: WorkTaskActionCon
     const siteReason = disabledReason({
       hasPermission: canFinish && canMediaUpload,
       isParticipant: participantSummary.can('upload_access_video'),
-      completed: isCompleted,
+      completed: isCompleted || sourceKeyHandoverCompleted,
     })
     addWorkerAction({
       id: 'upload_access_video',

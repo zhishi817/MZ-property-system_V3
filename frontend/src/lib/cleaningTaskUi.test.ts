@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   formatTaskTime,
+  hasTaskKeyUploadAssignee,
   inspectionScopeLabel,
   isCompletedTaskStatus,
   isInspectionModeAllowedForTask,
@@ -33,6 +34,27 @@ describe('cleaningTaskUi', () => {
     expect(isTaskLocked(true)).toBe(false)
     expect(isTaskLocked(undefined)).toBe(false)
     expect(isTaskLocked(null)).toBe(false)
+  })
+
+  it('shows the missing-key badge only after a real execution participant is assigned', () => {
+    expect(hasTaskKeyUploadAssignee({
+      isKeyHandover: false,
+      isCheckinOnly: false,
+      assigneeId: null,
+      inspectorId: null,
+      cleanerId: null,
+    })).toBe(false)
+    expect(hasTaskKeyUploadAssignee({
+      isKeyHandover: false,
+      isCheckinOnly: false,
+      cleanerId: 'cleaner-1',
+    })).toBe(true)
+    expect(hasTaskKeyUploadAssignee({
+      isKeyHandover: true,
+      isCheckinOnly: true,
+      assigneeId: undefined,
+      inspectorId: 'inspector-1',
+    })).toBe(true)
   })
 
   it('repairs the legacy check-in keys-hung mode without changing valid inspection plans', () => {

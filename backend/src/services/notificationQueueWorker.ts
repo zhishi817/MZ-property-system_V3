@@ -1,3 +1,4 @@
+import { notificationPushContent } from '../lib/notificationChannelContent'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import { notifyExpoUsers } from '../modules/notifications'
 import { ensureNotificationStorage } from './notificationEvents'
@@ -51,8 +52,7 @@ async function takePendingBatch(limit: number): Promise<QueueRow[]> {
       user_id: String(x.user_id || ''),
       event_id: String(x.event_id || ''),
       title: String(x.title || ''),
-      body: String(x.body || ''),
-      data: x.data,
+      ...notificationPushContent(x.body, x.data),
       priority: String(x.priority || 'low'),
     }))
     const ids = list.map((x) => x.id).filter(Boolean)

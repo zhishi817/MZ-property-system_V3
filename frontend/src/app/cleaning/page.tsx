@@ -11,7 +11,7 @@ import { clearManualCheckinLinkSelection, clearManualCheckinLinkSelectionForScop
 import { checkinTimingLabel, checkoutTimingLabel, mergeDailyCapabilityGate, mergedDailyDisplayBadges, mergedDailyDisplayStatus, mergedDailyTaskStatus, selfCompleteDailyStatusMeta, visibleDailyDisplayBadges } from '../../lib/cleaningDailyTaskStatus'
 import { manualCreatePasswordPayload } from '../../lib/cleaningManualCreate'
 import { buildTurnoverAtomicEditItems, exactCleaningCardEditSourceIds, normalizeAtomicOrderKeyUpdates, resolveTurnoverEditOperation, turnoverEditPersistedSignature, validateTurnoverEditMutationIsolation, validateTurnoverEditPlan } from '../../lib/cleaningTurnoverEditPlan'
-import { type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
+import { hasTaskKeyUploadAssignee, type TaskSemanticTone, taskStatusMeta, taskTimingTone } from '../../lib/cleaningTaskUi'
 import styles from './cleaningSchedule.module.scss'
 
 type Staff = { id: string; name: string; capacity_per_day: number; kind?: 'cleaner' | 'inspector'; is_active?: boolean; color_hex?: string | null }
@@ -2734,11 +2734,13 @@ export default function CleaningPage() {
               const primaryPassword = isCheckinOnly ? checkinPwd : checkoutPwd
               const isKeyHandover = isCheckinKeyHandoverItem(it)
               const isCheckinSiteExecution = isCheckinOnly
-	              const hasKeyUploadAssignee = !!String(isKeyHandover
-	                ? (it.assignee_id || it.inspector_id)
-	                : isCheckinOnly
-	                ? (it.assignee_id || it.inspector_id)
-	                : (it.inspector_id || it.cleaner_id || it.assignee_id)).trim()
+	              const hasKeyUploadAssignee = hasTaskKeyUploadAssignee({
+	                isKeyHandover,
+	                isCheckinOnly,
+	                assigneeId: it.assignee_id,
+	                inspectorId: it.inspector_id,
+	                cleanerId: it.cleaner_id,
+	              })
 	              const isKeyUploaded = !!(it.has_key_photo || it.key_photo_uploaded_at)
 	              const showKeyMissing = it.source === 'cleaning_tasks' && hasKeyUploadAssignee && !isKeyUploaded && String(it.status || '').toLowerCase() !== 'cancelled'
 	              const syncTag = checkinSyncTag(it)

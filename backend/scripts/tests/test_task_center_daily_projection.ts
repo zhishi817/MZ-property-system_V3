@@ -35,11 +35,18 @@ async function main() {
         status: 'assigned',
       },
       {
-        id: 'unassigned-non-turnover',
-        property_id: 'unassigned-property',
+        id: 'unassigned-stayover',
+        property_id: 'unassigned-stayover-property',
         task_type: 'stayover_clean',
         task_date: '2026-10-10',
-        status: 'assigned',
+        status: 'pending',
+      },
+      {
+        id: 'unassigned-other-cleaning',
+        property_id: 'unassigned-other-cleaning-property',
+        task_type: 'other',
+        task_date: '2026-10-10',
+        status: 'pending',
       },
       {
         id: 'deferred-merged-assigned',
@@ -181,10 +188,20 @@ async function main() {
       ['turnover:2026-10-10:cleaning_task:turnover-checkin'],
       'the merged checkout/checkin card uses its stable cleaning source identity instead of property/date',
     )
+    const unassignedStayover = boardTasks.filter((task: any) => task.property_id === 'unassigned-stayover-property')
+    assert.equal(unassignedStayover.length, 1, 'scheduled unassigned stayover cleaning remains visible in the Web assignment board')
+    assert.equal(unassignedStayover[0]?.execution_list_visible, true)
+    assert.equal(unassignedStayover[0]?.daily_stats_group, 'offline', 'Web counts use the same stayover management visibility as the board')
+    assert.equal(unassignedStayover[0]?.participant_summary?.cleaner_id, null)
     assert.equal(
-      boardTasks.some((task: any) => task.property_id === 'unassigned-property'),
+      unassignedStayover[0]?.management_actions?.some((action: any) => action.id === 'assign_cleaner' && action.enabled),
+      true,
+      'the visible unassigned stayover keeps the existing cleaner assignment action',
+    )
+    assert.equal(
+      boardTasks.some((task: any) => task.property_id === 'unassigned-other-cleaning-property'),
       false,
-      'non-turnover cleaning without an executor is filtered from the Web execution board',
+      'the stayover exception does not expose another non-turnover cleaning task without an executor',
     )
     const mergedAssigned = boardTasks.filter((task: any) => task.property_id === 'deferred-merged-property')
     assert.equal(mergedAssigned.length, 1, 'a reliably linked deferred inspection and same-day check-in occupy one Web card')

@@ -79,6 +79,29 @@ async function main() {
   }, managerContext)
   assert.equal(assignedWithoutCheckout.display_state.status_label, '已分配')
 
+  const unassignedStayoverSelfComplete = buildWebTaskCapabilityPayload({
+    source: 'cleaning_tasks',
+    task_type: 'stayover_clean',
+    task_kind: 'cleaning',
+    status: 'pending',
+    inspection_mode: 'self_complete',
+    cleaner_id: null,
+    assignee_id: null,
+  }, managerContext)
+  assert.equal(unassignedStayoverSelfComplete.display_state.task_semantics.is_self_complete, true)
+  assert.equal(unassignedStayoverSelfComplete.participant_summary.cleaner_id, null)
+  assert.equal(badgeIds(unassignedStayoverSelfComplete).includes('self_complete'), false, 'unassigned stayover keeps its workflow mode without presenting it as an assigned self-complete action')
+
+  const assignedStayoverSelfComplete = buildWebTaskCapabilityPayload({
+    source: 'cleaning_tasks',
+    task_type: 'stayover_clean',
+    task_kind: 'cleaning',
+    status: 'assigned',
+    inspection_mode: 'self_complete',
+    cleaner_id: 'cleaner-1',
+  }, managerContext)
+  assert.ok(badgeIds(assignedStayoverSelfComplete).includes('self_complete'))
+
   const keysHung = buildWebTaskCapabilityPayload({
     task_source: 'cleaning',
     task_kind: 'checkin_clean',
@@ -112,6 +135,7 @@ async function main() {
     task_kind: 'checkout_clean',
     status: 'assigned',
     inspection_mode: 'self_complete',
+    cleaner_id: 'cleaner-locked',
     auto_sync_enabled: false,
   }, managerContext)
   assert.equal(selfCompleteLocked.display_state.task_semantics.is_self_complete, true)

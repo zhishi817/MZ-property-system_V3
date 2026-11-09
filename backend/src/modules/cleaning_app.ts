@@ -32,7 +32,7 @@ import {
 } from '../lib/workTaskActionAudit'
 import type { WorkTaskActionId } from '../lib/workTaskActions'
 import { resolvePropertyPublicGuideLinks } from './property_guide_link_sync'
-import { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, canViewMzappScopedRecordedCleaningMedia } from './mzapp'
+import { canViewMzappGuestLuggageNoticeMedia, canViewMzappHistoricalWorkRecordMedia, canViewMzappOfflineWorkTaskMedia, canViewMzappPropertyFeedback, canViewMzappRecordedCleaningMedia, canViewMzappScopedRecordedCleaningMedia, propertyFeedbackSourceTaskAccess } from './mzapp'
 import { assertR5TaskRuntimeSchemaReady, requireR5RequestSchema, requireR5TaskRuntimeSchema } from '../lib/r5RequestSchema'
 import { buildCleaningMediaUploadFingerprint, CLEANING_MEDIA_IDEMPOTENCY_CONFLICT, storeLocalImmutableMedia } from '../lib/immutableMediaUpload'
 import { activeCleaningTaskWhereSql } from '../services/cleaningSync'
@@ -3324,6 +3324,25 @@ export function feedbackMediaRowReferencesKey(row: any, key: string): boolean {
   })
 }
 
+/** Property-history access is opt-in and only covers exact report photo references. */
+export async function canViewPropertyHistoryFeedbackMedia(
+  pool: any,
+  user: any,
+  row: any,
+  sourceTaskId: string,
+  key: string,
+  resolveAccess: typeof propertyFeedbackSourceTaskAccess = propertyFeedbackSourceTaskAccess,
+): Promise<boolean> {
+  const propertyId = String(row?.property_id || '').trim()
+  if (!pool || !sourceTaskId || !propertyId || row?.historical_work_record_media === true
+    || !['property_maintenance', 'property_deep_cleaning', 'property_daily_necessities'].includes(String(row?.feedback_source_type || ''))
+    || /(?:^|\/)(?:expenses?|receipts?|invoices?)(?:\/|$)/i.test(key)
+    || !feedbackMediaRowReferencesKey(row, key)) return false
+  // The current task, not the historical source (including NULL/obsolete IDs),
+  // must belong to this exact property and authorize the current viewer.
+  return (await resolveAccess(user, propertyId, sourceTaskId, pool)).canViewHistory
+}
+
 function isPropertyFeedbackMediaKey(value: string): boolean {
   const key = String(value || '').trim().replace(/^\/+/, '')
   if (key.startsWith('cleaning/')) return isCleaningMediaKey(key)
@@ -3780,6 +3799,7 @@ router.get(
       const workTaskId = requestedWorkTaskId
       const guestLuggageId = String((req.query as any)?.guest_luggage_id || '').trim()
       const sourceTaskId = String((req.query as any)?.source_task_id || '').trim()
+      const propertyHistoryRequested = String((req.query as any)?.history_scope || '').trim() === 'property'
       const requestedRelatedSourceIds = Array.from(new Set(String((req.query as any)?.source_ids || '')
         .split(',')
         .map((value) => String(value || '').trim())
@@ -3796,6 +3816,9 @@ router.get(
       const requestedDayEndUserId = safeDayEndMediaUserId(requestedDayEndUserIdRaw)
       const requestedDayEndDate = safeDayEndMediaDate(requestedDayEndDateRaw)
       const hasDayEndContext = Boolean(requestedDayEndUserIdRaw || requestedDayEndDateRaw)
+      if (propertyHistoryRequested && (!sourceTaskId || requestedWorkTaskIdRaw || guestLuggageId || hasDayEndContext || hasScopedMediaContext)) {
+        return res.status(403).json({ message: 'forbidden_media' })
+      }
       const variant = String((req.query as any)?.variant || 'original').trim().toLowerCase()
       if (!requestedKey && !sourceUrl) return res.status(400).json({ message: 'missing_key' })
       if (!['original', 'thumbnail', 'preview', 'source'].includes(variant)) return res.status(400).json({ message: 'invalid_variant' })
@@ -3839,6 +3862,7 @@ router.get(
         if (offlineRows.length && (!offlineRow || (requestedWorkTaskId && String(offlineRow.id || '').trim() !== requestedWorkTaskId))) {
           return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
         }
+        if (offlineRow && propertyHistoryRequested) return res.status(403).json({ message: 'forbidden_media' })
         if (offlineRow) {
           const user = (req as any).user || {}
           const userId = String(user.sub || '').trim()
@@ -4127,7 +4151,7 @@ router.get(
         ? guestLuggageMediaRow
           ? await findPropertyFeedbackMediaRows(pgPool, key, workTaskId)
           : []
-        : !hasTaskOrDayEndMedia || (matchingMediaRows.length > 0 && hasTaskContextMismatch)
+        : propertyHistoryRequested || !hasTaskOrDayEndMedia || (matchingMediaRows.length > 0 && hasTaskContextMismatch)
           ? await findPropertyFeedbackMediaRows(pgPool, key, workTaskId)
           : []
       const hasGuestLuggageSourceConflict = matchingGuestLuggageRows.length > 0
@@ -4201,6 +4225,9 @@ router.get(
         || !sourceTaskId
         || !taskBoundFeedback
         || feedbackSourceTaskId === sourceTaskId
+      const canViewPropertyHistoryMedia = propertyHistoryRequested && feedbackMediaRow
+        ? await canViewPropertyHistoryFeedbackMedia(pgPool, user, feedbackMediaRow, sourceTaskId, key)
+        : false
       const canViewFeedbackMedia = feedbackMediaRow && exactFeedbackSourceMatches && canViewFeedbackTaskContext
         ? String(feedbackMediaRow.feedback_source_type || '') === 'external_maintenance_orders'
           ? await canViewExternalMaintenanceCompletionMedia(pgPool, user, feedbackMediaRow, userId, workTaskId, key)
@@ -4216,6 +4243,8 @@ router.get(
           && await canViewMzappGuestLuggageNoticeMedia(user, guestLuggageMediaRow, userId, workTaskId, relatedSourceIds)
         : hasGuestLuggageSourceConflict || hasRecordedSourceConflict || hasDayEndFeedbackSourceConflict
           ? false
+          : propertyHistoryRequested
+            ? canViewPropertyHistoryMedia
           : recordedMedia?.source === 'task'
           ? hasScopedMediaContext
             ? await canViewMzappScopedRecordedCleaningMedia(user, userId, relatedSourceIds, mediaScope, recordedMedia.row)
