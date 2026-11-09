@@ -643,6 +643,7 @@ function buildCleaningTaskUpdateNoticeDetails(before: any, after: any) {
   const changes: string[] = []
   const lines: string[] = []
   const taskDate = cleanNotificationText(after?.task_date || after?.date)
+  const passwordInboxLines = new Map<string, string>()
 
   const add = (change: string, label: string, beforeValue: any, afterValue: any) => {
     if (cleanNotificationText(beforeValue) === cleanNotificationText(afterValue)) return
@@ -653,10 +654,12 @@ function buildCleaningTaskUpdateNoticeDetails(before: any, after: any) {
   if (cleanNotificationText(before?.old_code) !== cleanNotificationText(after?.old_code)) {
     changes.push('password')
     lines.push('旧密码：已更新（值已隐藏）')
+    passwordInboxLines.set('旧密码：已更新（值已隐藏）', formatCleaningTaskFieldChange('旧密码', after?.old_code, before?.old_code))
   }
   if (cleanNotificationText(before?.new_code) !== cleanNotificationText(after?.new_code)) {
     changes.push('password')
     lines.push('新密码：已更新（值已隐藏）')
+    passwordInboxLines.set('新密码：已更新（值已隐藏）', formatCleaningTaskFieldChange('新密码', after?.new_code, before?.new_code))
   }
   add('time', '退房时间', before?.checkout_time, after?.checkout_time)
   add('time', '入住时间', before?.checkin_time, after?.checkin_time)
@@ -674,6 +677,7 @@ function buildCleaningTaskUpdateNoticeDetails(before: any, after: any) {
   return {
     changes: Array.from(new Set(changes)),
     lines: taskDate && lines.length ? [`任务日期：${taskDate}`, ...lines] : lines,
+    inboxLines: (taskDate && lines.length ? [`任务日期：${taskDate}`, ...lines] : lines).map((line) => passwordInboxLines.get(line) || line),
   }
 }
 
@@ -728,6 +732,7 @@ function actualCleaningTaskChangedFields(before: any, after: any, fields: string
 function buildCleaningTaskCreateNoticeDetails(after: any) {
   const changes: string[] = []
   const lines: string[] = []
+  const passwordInboxLines = new Map<string, string>()
   const taskType = String(after?.task_type || after?.type || '').trim().toLowerCase()
   const taskDate = cleanNotificationText(after?.task_date || after?.date)
   if (taskDate) lines.push(`任务日期：${taskDate}`)
@@ -743,12 +748,14 @@ function buildCleaningTaskCreateNoticeDetails(after: any) {
     if (cleanNotificationText(after?.old_code)) {
       changes.push('password')
       lines.push('旧密码：已填写（值已隐藏）')
+      passwordInboxLines.set('旧密码：已填写（值已隐藏）', `旧密码：${cleanNotificationText(after?.old_code)}`)
     }
   } else if (taskType === 'checkin_clean') {
     add('time', '入住时间', after?.checkin_time)
     if (cleanNotificationText(after?.new_code)) {
       changes.push('password')
       lines.push('新密码：已填写（值已隐藏）')
+      passwordInboxLines.set('新密码：已填写（值已隐藏）', `新密码：${cleanNotificationText(after?.new_code)}`)
     }
   } else if (taskType === 'stayover_clean') {
     add('time', '入住中清洁时间', after?.checkin_time)
@@ -763,6 +770,7 @@ function buildCleaningTaskCreateNoticeDetails(after: any) {
   return {
     changes: Array.from(new Set(changes)),
     lines: changes.length ? lines : [],
+    inboxLines: changes.length ? lines.map((line) => passwordInboxLines.get(line) || line) : [],
   }
 }
 
@@ -2412,7 +2420,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
       }
       if (actualChangedFields.length) {
         try {
-          const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, updated)
+          const { changes, lines, inboxLines } = buildCleaningTaskUpdateNoticeDetails(before, updated)
           const propertyId = String(updated.property_id || '').trim()
           if (changes.length && propertyId) {
             const title = lines.length ? '任务信息更新' : null
@@ -2432,6 +2440,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
                   changes,
                   title,
                   body,
+                  inboxBody: inboxLines.join('\n'),
                   data,
                   actorUserId: (req as any).user?.sub,
                 },
@@ -2588,7 +2597,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
       }
     } catch {}
     try {
-      const { changes, lines } = buildCleaningTaskUpdateNoticeDetails(before, task)
+      const { changes, lines, inboxLines } = buildCleaningTaskUpdateNoticeDetails(before, task)
       const propertyId = String((task as any).property_id || '').trim()
       if (changes.length && propertyId) {
         const title = lines.length ? '任务信息更新' : null
@@ -2608,6 +2617,7 @@ router.patch('/tasks/:id', requirePerm('cleaning.task.assign'), requireR5TaskRun
               changes,
               title,
               body,
+              inboxBody: inboxLines.join('\n'),
               data,
               actorUserId: (req as any).user?.sub,
             },
@@ -3029,7 +3039,7 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
       }
       for (const created of createdRows) {
         try {
-          const { changes, lines } = buildCleaningTaskCreateNoticeDetails(created)
+          const { changes, lines, inboxLines } = buildCleaningTaskCreateNoticeDetails(created)
           const propertyId = String(created?.property_id || '').trim()
           if (!changes.length || !propertyId) continue
           enqueueNotification(async () =>
@@ -3044,6 +3054,7 @@ router.post('/tasks', requireCleaningManualCreateAccess, requireR5TaskRuntimeSch
                 changes,
                 title: '任务信息更新',
                 body: lines.join('\n'),
+                inboxBody: inboxLines.join('\n'),
                 data: { entity: 'cleaning_task', entityId: String(created.id), action: 'open_task', kind: 'cleaning_task_manager_fields_updated' },
                 actorUserId: (req as any).user?.sub,
               },
@@ -3958,6 +3969,7 @@ router.post('/tasks/atomic-patch', requirePerm('cleaning.task.assign'), requireR
           changes: notice.changes,
           title: notice.lines.length ? '任务信息更新' : null,
           body: notice.lines.length ? notice.lines.join('\n') : null,
+          inboxBody: notice.inboxLines.length ? notice.inboxLines.join('\n') : null,
           data: notice.lines.length
             ? { entity: 'cleaning_task', entityId: result.id, action: 'open_task', kind: 'cleaning_task_manager_fields_updated' }
             : { entity: 'cleaning_task', entityId: result.id, action: 'open_task' },

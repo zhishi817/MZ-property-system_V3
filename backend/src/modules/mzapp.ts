@@ -1,3 +1,4 @@
+import { propertyFeedbackMutationLocked, enrichPropertyFeedbackLocks } from '../lib/propertyFeedbackPolicy'
 import { Router } from 'express'
 import { z } from 'zod'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
@@ -33,6 +34,7 @@ import {
   isCleaningExecutionTask,
   isActiveCleaningTurnoverCandidate,
   isInspectionFinishedStatus,
+  inspectionSubmissionPendingAfterKeyHandover,
   isDeferredInspectionExecutionDayProjection,
   isKeyOrPasswordActionSemantics,
   keyPhotoConfirmsCurrentTaskProgress,
@@ -88,7 +90,7 @@ import {
   upsertMaintenanceWorkTask,
 } from '../lib/maintenanceWorkflowStore'
 import { buildWorkTaskActionPayload, type WorkTaskActionId, type WorkTaskParticipant } from '../lib/workTaskActions'
-import { dailyTaskAllViewScopes, dailyTaskWorkRecordProjection, evidenceBackedWorkRecordState, isDailyTaskManagerRoleNames, mergeRoleRecordEvidenceWithCancellation, projectDailyTaskListItems, selfCompleteKeyHandoverRecordEvidence } from '../lib/dailyTaskExecutionVisibility'
+import { dailyTaskAllViewScopes, dailyTaskWorkRecordProjection, evidenceBackedWorkRecordState, isDailyTaskManagerRoleNames, mergeRoleRecordEvidenceWithCancellation, ordinaryKeyHandoverRecordEvidence, projectDailyTaskListItems, selfCompleteKeyHandoverRecordEvidence } from '../lib/dailyTaskExecutionVisibility'
 import { cleaningCompletionAuditWhereSql, inspectionSubmissionAuditWhereSql } from '../lib/cleaningCompletionEvidence'
 import {
   buildCanonicalIdempotencyPayloadHmac,
@@ -1979,13 +1981,13 @@ export async function canViewMzappGuestLuggageNoticeMedia(
   }
 }
 
-async function refreshAutoExpenseSourceSummary(refType: 'maintenance' | 'deep_cleaning', row: any) {
+async function refreshAutoExpenseSourceSummary(refType: 'maintenance' | 'deep_cleaning', row: any, client: any = pgPool) {
   if (!hasPg || !pgPool) return
   const refId = String(row?.id || '').trim()
   if (!refId) return
   const sourceSummary = refType === 'maintenance' ? maintenanceSourceSummary(row) : deepCleaningSourceSummary(row)
   try {
-    await pgPool.query(
+    await client.query(
       `UPDATE property_expenses
           SET source_summary = $3
         WHERE ref_type = $1
@@ -1994,9 +1996,11 @@ async function refreshAutoExpenseSourceSummary(refType: 'maintenance' | 'deep_cl
           AND COALESCE(manual_override, false) = false`,
       [refType, refId, sourceSummary || null],
     )
-  } catch {}
+  } catch (error) {
+    if (client !== pgPool) throw error
+  }
   try {
-    await pgPool.query(
+    await client.query(
       `UPDATE company_expenses
           SET source_summary = $3
         WHERE ref_type = $1
@@ -2005,7 +2009,9 @@ async function refreshAutoExpenseSourceSummary(refType: 'maintenance' | 'deep_cl
           AND COALESCE(manual_override, false) = false`,
       [refType, refId, sourceSummary || null],
     )
-  } catch {}
+  } catch (error) {
+    if (client !== pgPool) throw error
+  }
 }
 
 async function listKeysHungNotificationUserIds(actorId?: string) {
@@ -5313,6 +5319,7 @@ async function handleManagerFields(req: any, res: any) {
 
     const passwordRequestId = parsed.data.password_verification?.request_id || crypto.randomUUID()
     const transactionResult = await pgRunInTransaction(async (client) => {
+      const passwordNoticeChanges: Array<{ field: string; before: any; after: any }> = [];
       const loadAuthoritativeUpdates = async (taskIds0: string[]) => {
         const taskIds = Array.from(new Set(taskIds0.map((id) => String(id || '').trim()).filter(Boolean))).sort()
         if (!taskIds.length) return []
@@ -5440,7 +5447,7 @@ async function handleManagerFields(req: any, res: any) {
       const lockedResult = await client.query(
         `SELECT id::text AS id, order_id::text AS order_id, status,
                 lower(COALESCE(task_type, type, '')) AS task_type,
-                property_id::text AS property_id
+                property_id::text AS property_id, old_code, new_code
          FROM cleaning_tasks
          WHERE id::text = ANY($1::text[])
            AND ${activeCleaningTaskWhereSql('')}
@@ -5608,10 +5615,16 @@ async function handleManagerFields(req: any, res: any) {
         if (passwordWriteFields.length) {
           const assignments = passwordWriteFields.map((field, index) => `${field} = $${index + 1}`)
           const values = passwordWriteFields.map((field) => passwordEntryByField.get(field))
-          await client.query(
-            `UPDATE cleaning_tasks SET ${assignments.join(', ')}, updated_at = now() WHERE id::text = $${values.length + 1}::text`,
+          const writtenPassword = await client.query(
+            `UPDATE cleaning_tasks SET ${assignments.join(', ')}, updated_at = now() WHERE id::text = $${values.length + 1}::text RETURNING old_code, new_code`,
             [...values, taskId],
           )
+          const writtenRow = writtenPassword?.rows?.[0]
+          for (const field of passwordWriteFields) {
+            if (writtenRow && !eqNorm(row[field], writtenRow[field])) {
+              passwordNoticeChanges.push({ field, before: row[field], after: writtenRow[field] })
+            }
+          }
         }
         if (claimedFields.length) {
           const confirmed = await confirmTaskPasswordAuthority({
@@ -5805,7 +5818,7 @@ async function handleManagerFields(req: any, res: any) {
           authoritative_task_ids: authoritativeTaskIds,
         })
       }
-      return { replayed: false, responseBody, affectedTaskIds: affected }
+      return { replayed: false, responseBody, affectedTaskIds: affected, passwordNoticeChanges }
     })
     if (!transactionResult) throw new Error('pg not available')
     if (transactionResult.replayed) {
@@ -5840,8 +5853,8 @@ async function handleManagerFields(req: any, res: any) {
           const lines: string[] = []
           if (checkoutTimeInput !== undefined && !eqNorm(checkoutTimeInput, prevRow?.checkout_time)) lines.push(fmt('退房时间', checkoutTimeInput, prevRow?.checkout_time))
           if (checkinTimeInput !== undefined && !eqNorm(checkinTimeInput, prevRow?.checkin_time)) lines.push(fmt('入住时间', checkinTimeInput, prevRow?.checkin_time))
-          if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) lines.push('旧密码：已更新（值已隐藏）')
-          if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) lines.push('新密码：已更新（值已隐藏）')
+          if ((transactionResult.passwordNoticeChanges || []).some((change) => change.field === 'old_code')) lines.push('旧密码：已更新（值已隐藏）')
+          if ((transactionResult.passwordNoticeChanges || []).some((change) => change.field === 'new_code')) lines.push('新密码：已更新（值已隐藏）')
           if (guestRequestInput !== undefined && !eqNorm(guestRequestInput, prevRow?.guest_special_request)) lines.push(fmt('客人需求', guestRequestInput, prevRow?.guest_special_request))
           if (parsed.data.keys_required !== undefined) {
             const nextK = parsed.data.keys_required == null ? 1 : Number(parsed.data.keys_required)
@@ -5882,8 +5895,8 @@ async function handleManagerFields(req: any, res: any) {
           const keyObj = {
             checkout_time: afterRow?.checkout_time == null ? null : String(afterRow.checkout_time),
             checkin_time: afterRow?.checkin_time == null ? null : String(afterRow.checkin_time),
-            old_code_changed: parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code),
-            new_code_changed: parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code),
+            old_code_changed: (transactionResult.passwordNoticeChanges || []).some((change) => change.field === 'old_code'),
+            new_code_changed: (transactionResult.passwordNoticeChanges || []).some((change) => change.field === 'new_code'),
             password_request_id: verificationFields.length ? passwordRequestId : null,
             guest_special_request: afterRow?.guest_special_request == null ? null : String(afterRow.guest_special_request),
             keys_required: nextKeysRequired != null ? nextKeysRequired : (afterRow?.keys_required == null ? 1 : Number(afterRow.keys_required)),
@@ -5893,12 +5906,18 @@ async function handleManagerFields(req: any, res: any) {
           const changes: string[] = []
           if (checkoutTimeInput !== undefined && !eqNorm(checkoutTimeInput, prevRow?.checkout_time)) changes.push('time')
           if (checkinTimeInput !== undefined && !eqNorm(checkinTimeInput, prevRow?.checkin_time)) changes.push('time')
-          if (parsed.data.old_code !== undefined && !eqNorm(parsed.data.old_code, prevRow?.old_code)) changes.push('password')
-          if (parsed.data.new_code !== undefined && !eqNorm(parsed.data.new_code, prevRow?.new_code)) changes.push('password')
+          if ((transactionResult.passwordNoticeChanges || []).some((change) => change.field === 'old_code')) changes.push('password')
+          if ((transactionResult.passwordNoticeChanges || []).some((change) => change.field === 'new_code')) changes.push('password')
           if (guestRequestInput !== undefined && !eqNorm(guestRequestInput, prevRow?.guest_special_request)) changes.push('note')
           if (parsed.data.keys_required !== undefined && nextKeysRequired != null) changes.push('keys')
           const title = propertyCode ? `任务信息更新：${propertyCode}` : '任务信息更新'
           const body = lines.join('\n')
+          const inboxBody = lines.flatMap((line) => {
+            const field = line === '旧密码：已更新（值已隐藏）' ? 'old_code' : line === '新密码：已更新（值已隐藏）' ? 'new_code' : null
+            if (!field) return [line]
+            const saved = (transactionResult.passwordNoticeChanges || []).filter((change) => change.field === field)
+            return saved.length ? saved.map((change) => fmt(field === 'old_code' ? '旧密码' : '新密码', change.after, change.before)) : [line]
+          }).join('\n')
           const eventId = `manager_fields:${propertyCode || repId}:${fieldsKey}`
           const dedupeKey = nextKeysRequired != null
             ? `manager_fields:${propertyCode || repId}:keys_required:${nextKeysRequired}`
@@ -5928,6 +5947,7 @@ async function handleManagerFields(req: any, res: any) {
               changes,
               title,
               body,
+              inboxBody,
               data,
               actorUserId: String(user?.sub || ''),
             })
@@ -8956,6 +8976,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             SELECT DISTINCT ON (event.task_id)
               substring(event.task_id FROM length('cleaning_task:') + 1) AS id,
               event.occurred_at,
+              event.sequence_no,
+              MAX(event.sequence_no) OVER (PARTITION BY event.task_id) AS latest_cancellation_sequence_no,
               lower(COALESCE(event.payload#>>'{patch,lifecycle_state}', '')) IN ('deleted', 'removed', 'tombstone') AS is_deleted
             FROM work_task_events event
             WHERE left(event.task_id, length('cleaning_task:')) = 'cleaning_task:'
@@ -9259,6 +9281,10 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               LEFT JOIN users evidence_actor
                 ON evidence_actor.id::text = evidence.performed_by_user_id::text
               WHERE evidence.performed_by_user_id IS NOT NULL
+                AND (
+                  lower(COALESCE(t.inspection_mode, '')) NOT IN ('same_day', 'deferred')
+                  OR (evidence.performed_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN $1::date AND $2::date
+                )
               ORDER BY
                 CASE evidence.confirmation_source WHEN 'video' THEN 0 ELSE 1 END,
                 evidence.evidence_priority,
@@ -9274,7 +9300,41 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               ORDER BY event.occurred_at DESC, event.sequence_no DESC
               LIMIT 1
             ) cancelled_record ON TRUE
-            WHERE COALESCE(candidate_cancellation.is_deleted, false) = false
+            WHERE (
+                COALESCE(candidate_cancellation.is_deleted, false) = false
+                OR (
+                  -- A current row alone cannot undo a tombstone. Require an explicit,
+                  -- later management reopen of this same task; retain cancellation history.
+                  t.execution_state = 'active'
+                  AND lower(COALESCE(t.status, '')) IN (
+                    'todo', 'pending', 'unassigned', 'assigned', 'in_progress', 'cleaning',
+                    'to_complete', 'to_inspect', 'cleaned', 'restock_pending', 'to_hang_keys',
+                    'restocked', 'inspected', 'ready', 'completed', 'done', 'keys_hung'
+                  )
+                  AND EXISTS (
+                    SELECT 1
+                    FROM work_task_events reopened
+                    WHERE reopened.task_id = ('cleaning_task:' || t.id::text)
+                      AND reopened.source_type = 'cleaning_tasks'
+                      AND reopened.event_type IN ('TASK_UPDATED', 'TASK_ASSIGNMENT_CHANGED')
+                      AND (reopened.occurred_at, reopened.sequence_no)
+                        > (candidate_cancellation.occurred_at, candidate_cancellation.sequence_no)
+                      AND reopened.sequence_no > candidate_cancellation.latest_cancellation_sequence_no
+                      AND reopened.payload#>>'{patch,execution_state}' = 'active'
+                      AND lower(COALESCE(reopened.payload#>>'{patch,status}', '')) IN (
+                        'todo', 'pending', 'unassigned', 'assigned', 'in_progress', 'cleaning',
+                        'to_complete', 'to_inspect', 'cleaned', 'restock_pending', 'to_hang_keys',
+                        'restocked', 'inspected', 'keys_hung'
+                      )
+                      AND lower(COALESCE(reopened.payload#>>'{patch,lifecycle_state}', ''))
+                        NOT IN ('deleted', 'removed', 'tombstone', 'cancelled', 'canceled', 'superseded')
+                      AND reopened.payload#>'{arrangement_revision,reasons}' @> '["management_reopened"]'::jsonb
+                      AND reopened.payload#>>'{arrangement_revision,version}' = 'mz031-v1'
+                      AND lower(COALESCE(reopened.payload#>>'{arrangement_revision,before,status}', '')) IN ('cancelled', 'canceled')
+                      AND reopened.payload#>>'{arrangement_revision,after,status}' = reopened.payload#>>'{patch,status}'
+                  )
+                )
+              )
               AND (
                 lower(COALESCE(t.execution_state, '')) <> 'superseded'
                 OR candidate_id.historical_evidence = true
@@ -10128,6 +10188,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             : canonicalTurnover?.businessIdentity
             || cleaningTaskBusinessIdentity({ sourceId: row.id })
           const sourceKeyHandover = keyHandoverForRow(row)
+          const inspectionSubmissionPending = inspectionSubmissionPendingAfterKeyHandover(row, sourceKeyHandover)
           const keyHandover = sourceKeyHandover || canonicalTurnover?.keyHandover || null
           const lockboxVideoConfirmsCurrentState = keyHandover?.state === 'completed'
             || completedSameDayTurnover?.keysHung === true
@@ -10155,6 +10216,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
             __source_key_handover_completed: sourceKeyHandoverCompleted,
             __source_key_handover: sourceKeyHandover,
+            __inspection_submission_pending: inspectionSubmissionPending,
             __source_lockbox_video_url: row.lockbox_video_url || null,
             __canonical_turnover_source_rows: canonicalTurnover?.sourceRows || [],
             key_handover: keyHandover,
@@ -10302,11 +10364,32 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           }
 
           const effectiveExecutorId = executorId || manualExecutionAssigneeId
-          if (wantExecutor && isCheckinSiteExecution) {
+          const ordinaryHandoverEvidence = ordinaryKeyHandoverRecordEvidence({
+            taskType: row.task_type,
+            inspectionMode,
+            inspectionScope,
+            executionState: row.execution_state,
+            status: raw_status,
+            // Manual confirmations already use the existing inspector record.
+            handoverEvidence: !managerCanSeeAllCleaningTaskPool && manualKeyHandoverRecord
+              ? []
+              : roleRecordEvidence('executor', executorRecordAt, executorRecordDate, executorRecordActorId, executorRecordActorName),
+            completedRoleEvidence: [
+              ...(wantCleaner && isCleaningExecutionTask(row)
+                ? roleRecordEvidence('cleaner', cleanerRecordAt, cleanerRecordDate, cleanerRecordActorId, cleanerRecordActorName)
+                : []),
+              ...(wantInspector
+                ? roleRecordEvidence('inspector', inspectorRecordAt, inspectorRecordDate, inspectorRecordActorId)
+                : []),
+            ],
+            activeInspectorId: wantInspector && inspectionSubmissionPending ? inspectionAssignment.userId : null,
+            activeInspectionDate: wantInspector && inspectionSubmissionPending ? (inspectionDueDate || taskDate) : null,
+          })
+          if (wantExecutor && (isCheckinSiteExecution || ordinaryHandoverEvidence.length > 0)) {
             const executorTerminal = ['cleaned', 'restock_pending', 'restocked', 'ready', 'inspected', 'keys_hung', 'done', 'completed', 'pending_review', 'review_pending', 'awaiting_review', 'closed'].includes(raw_status)
               || !!row.lockbox_video_url
             const cancelled = raw_status === 'cancelled' || raw_status === 'canceled'
-            if (!suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate(row) && !executorTerminal && !cancelled && taskDate >= dateFrom && taskDate <= dateTo && effectiveExecutorId && (allowAllCleaningTasks || effectiveExecutorId === userId)) {
+            if (isCheckinSiteExecution && !suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate(row) && !executorTerminal && !cancelled && taskDate >= dateFrom && taskDate <= dateTo && effectiveExecutorId && (allowAllCleaningTasks || effectiveExecutorId === userId)) {
               const k = `${taskDate}|${rowBusinessIdentity}|${effectiveExecutorId}`
               const arr = executorGroups.get(k) || []
               arr.push({
@@ -10320,7 +10403,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               executorGroups.set(k, arr)
             }
             const recordEvidence = mergeRoleRecordEvidenceWithCancellation({
-              roleEvidence: roleRecordEvidence('executor', executorRecordAt, executorRecordDate, executorRecordActorId),
+              roleEvidence: isCheckinSiteExecution
+                ? roleRecordEvidence('executor', executorRecordAt, executorRecordDate, executorRecordActorId)
+                : ordinaryHandoverEvidence,
               cancelled,
               cancelledAt: cancelledRecordAt,
               currentAssigneeId: effectiveExecutorId,
@@ -10331,7 +10416,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                 || (recordAt ? melbourneDateOnly(recordAt) : null)
               const recordActorId = evidence.actorUserId || null
               const recordActorName = String(evidence.actorName || '').trim() || null
-              const recordState = evidenceBackedWorkRecordState({
+              const recordState = !isCheckinSiteExecution ? 'completed' : evidenceBackedWorkRecordState({
                 cancelled,
                 currentAssigneeId: effectiveExecutorId,
                 evidenceActorUserId: recordActorId,
@@ -10344,6 +10429,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
                   ...base,
                   __date: recordDate,
                   __assignee_executor: recordAssigneeId,
+                  __key_handover_record: !isCheckinSiteExecution,
                   __work_record_state: recordState,
                   __work_record_at: recordAt,
                   __work_record_date: recordDate,
@@ -10398,8 +10484,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             })
             const inspectorTerminal = isInspectionFinishedStatus(raw_status)
               && !checkoutInspectionAwaitingKeyHandover
+              && !inspectionSubmissionPending
             const cancelled = raw_status === 'cancelled' || raw_status === 'canceled'
-            if (!suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate(row) && !inspectorTerminal && !cancelled && (effectiveInspectionAssigneeId || managerCanSeeAllCleaningTaskPool) && inspectorDisplayDate
+            if ((!suppressStandaloneCheckin || inspectionSubmissionPending) && isActiveCleaningTurnoverCandidate(row) && !inspectorTerminal && !cancelled && (effectiveInspectionAssigneeId || managerCanSeeAllCleaningTaskPool) && inspectorDisplayDate
               && (allowAllCleaningTasks || effectiveInspectionAssigneeId === userId || manualInspectionAssigneeId)) {
               const k = withInspectionMergeIsolation(
                 `${inspectorDisplayDate}|${rowBusinessIdentity}|${effectiveInspectionAssigneeId || 'unassigned'}`,
@@ -10605,6 +10692,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
               || '',
           ).trim()
           const isWorkRecordGroup = !!workRecordState && !embedsPendingHandoverRecord
+          const inspectionSubmissionPending = roleKind === 'inspector'
+            && !isWorkRecordGroup
+            && rows.some((row) => row.__inspection_submission_pending === true)
           const hideUnattributedHistoricalMedia = isWorkRecordGroup && workRecordState === 'reassigned'
           const sourceScheduledDate = isWorkRecordGroup ? String(originalScheduledDate || date) : date
           const displayMergeCheckinRow = displayMergeArrangement
@@ -10729,6 +10819,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             ? normalizeInspectionScope(displayMergeCheckinRow.__inspection_scope)
             : p.kind === 'checkin' ? normalizeInspectionScope(p.a.__inspection_scope) : null
           const executorInspection = roleKind === 'executor' && p.kind === 'checkin' && inspectionScope !== 'password_only'
+            && !rows.some((row) => row.__key_handover_record === true)
           const requireSelfComplete = roleKind === 'cleaner' && inspectionMode === 'self_complete'
           const requireLockboxBeforeDone = requireSelfComplete && p.kind !== 'stayover'
           const completionAreas = new Set<string>()
@@ -10839,7 +10930,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           const statusOut =
             roleKind === 'inspector'
               ? (
-                  raw === 'keys_hung'
+                  inspectionSubmissionPending
+                    ? 'to_inspect'
+                    : raw === 'keys_hung'
                     ? 'keys_hung'
                     : lockboxVideoConfirmsCurrentState
                     ? 'keys_hung'
@@ -10988,6 +11081,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             ...(inspectionConflictSourceIds.length ? { __inspection_conflict_source_ids: inspectionConflictSourceIds } : {}),
             __manager_merge_isolation_key: managerMergeIsolationKey,
             __lockbox_video_confirms_current_state: lockboxVideoConfirmsCurrentState,
+            __inspection_submission_pending: inspectionSubmissionPending,
             // Self-complete is an exact-source workflow: a related check-in or
             // checkout phase may share the canonical card, but its video must
             // not complete this cleaner's own handover step.
@@ -11244,17 +11338,17 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         )
         const srcIds = activeSourceIds
         const cleaningTaskIds = Array.from(
-          new Set(arr.filter((x) => String(x?.task_kind || '') === 'cleaning').flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
+          new Set(preferredPool.filter((x) => String(x?.task_kind || '') === 'cleaning').flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
         )
         const inspectionTaskIds = Array.from(
-          new Set(arr.filter((x) => String(x?.task_kind || '') === 'inspection').flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
+          new Set(preferredPool.filter((x) => String(x?.task_kind || '') === 'inspection').flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
         )
         const executionTaskIds = Array.from(
-          new Set(arr.filter((x) => String(x?.task_kind || '') === 'execution').flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
+          new Set(preferredPool.filter((x) => String(x?.task_kind || '') === 'execution').flatMap((x) => (Array.isArray(x?.active_source_ids) ? x.active_source_ids : (Array.isArray(x?.source_ids) ? x.source_ids : [])))),
         )
-        const cleaningStatus = (arr.find((x) => String(x?.task_kind || '') === 'cleaning') || null)?.status || null
-        const inspectionStatus = (arr.find((x) => String(x?.task_kind || '') === 'inspection') || null)?.status || null
-        const executionStatus = (arr.find((x) => String(x?.task_kind || '') === 'execution') || null)?.status || null
+        const cleaningStatus = (preferredPool.find((x) => String(x?.task_kind || '') === 'cleaning') || null)?.status || null
+        const inspectionStatus = (preferredPool.find((x) => String(x?.task_kind || '') === 'inspection') || null)?.status || null
+        const executionStatus = (preferredPool.find((x) => String(x?.task_kind || '') === 'execution') || null)?.status || null
         const hasCleaningExecution = cleaningTaskIds.length > 0
         const hasInspectionExecution = inspectionTaskIds.length > 0
         const hasKeyHandoverExecution = executionTaskIds.length > 0
@@ -11337,28 +11431,28 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             .map((x) => x.executor_name || x.assignee_name || x.cleaner_name || x.inspector_name),
         )
         const cleanerAssigneeId = firstNonEmpty(
-          ...arr
+          ...preferredPool
             .filter((x) => String(x?.task_kind || '') === 'cleaning')
             .map((x) => x.assignee_id),
-          ...arr
+          ...preferredPool
             .filter((x) => String(x?.task_kind || '') === 'cleaning')
             .map((x) => x.__assignee_cleaner),
         )
         const inspectorAssigneeId = firstNonEmpty(
-          ...arr
+          ...preferredPool
             .filter((x) => String(x?.task_kind || '') === 'inspection')
             .map((x) => x.inspector_id || x.assignee_id),
-          ...arr
+          ...preferredPool
             .filter((x) => String(x?.task_kind || '') === 'inspection')
             .map((x) => x.__assignee_inspector),
         )
         const executionAssigneeId = firstNonEmpty(
-          ...arr
+          ...preferredPool
             .filter((x) => String(x?.task_kind || '') === 'execution')
             .map((x) => x.assignee_id || x.__assignee_executor),
         )
         const inspectionPlan = mergeInspectionPlan(
-          arr.map((x) => ({
+          preferredPool.map((x) => ({
             task_type: x.task_type,
             inspection_mode: x.inspection_mode,
             inspection_due_date: x.inspection_due_date,
@@ -11419,7 +11513,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         const mergedStatusCandidates = [cleaningStatus, inspectionStatus]
           .filter((value) => String(value || '').trim())
           .sort((a: any, b: any) => rankStatus(a) - rankStatus(b))
-        const statusOut = selfCompleteAwareManagerStatus({
+        const inspectionSubmissionPending = activeArr.some((task) => task.__inspection_submission_pending === true)
+        const statusOut = inspectionSubmissionPending ? 'to_inspect' : selfCompleteAwareManagerStatus({
           authoritativeProgress: authoritativeSelfCompleteProgress,
           lockboxVideoConfirmsCurrentState,
           cleaningFinished,
@@ -11467,7 +11562,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             ? 'execution'
             : authoritativeSelfCompleteProgress
               ? 'cleaning'
-            : arr.some((x) => String(x?.task_kind || '') === 'inspection')
+            : preferredPool.some((x) => String(x?.task_kind || '') === 'inspection')
               ? 'inspection'
               : 'cleaning',
           execution_role: executionRole,
@@ -11564,10 +11659,12 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
 
     const visibleOut = projectDailyTaskListItems(out, {
       includeManagerUnassignedOffline: managerCanSeeAllTaskPool,
+      includeManagerUnassignedStayoverCleaning: managerCanSeeAllTaskPool,
     }).map((task) => ({
       ...task,
       ...projectDailyTaskStats(task, {
         includeManagerUnassignedOffline: managerCanSeeAllTaskPool,
+        includeManagerUnassignedStayoverCleaning: managerCanSeeAllTaskPool,
       }),
     }))
 
@@ -11793,6 +11890,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
         __inspection_conflict_source_ids,
         __manager_merge_isolation_key,
         __lockbox_video_confirms_current_state,
+        __inspection_submission_pending,
         __key_handover_source_ids,
         __key_handover_source_rows,
         property_ready_for_guest_notification,
@@ -12892,7 +12990,7 @@ async function notifyPropertyFeedbackCreated(params: {
 function mapWorkStatus(raw: any): 'open' | 'in_progress' | 'resolved' | 'cancelled' {
   const s = String(raw ?? '').trim().toLowerCase()
   if (s === 'in_progress') return 'in_progress'
-  if (s === 'pending_review' || s === 'review_pending' || s === 'awaiting_review' || s === 'completed' || s === 'done' || s === 'ready' || s === 'closed') return 'resolved'
+  if (s === 'pending_review' || s === 'review_pending' || s === 'awaiting_review' || s === 'completed' || s === 'done' || s === 'ready' || s === 'resolved' || s === 'closed') return 'resolved'
   if (s === 'canceled' || s === 'cancelled') return 'cancelled'
   return 'open'
 }
@@ -12906,6 +13004,19 @@ function feedbackStatusWhereSql(alias: string, want: string[]) {
   if (wants.has('resolved')) clauses.push(`lower(COALESCE(${alias}.status, '')) IN ('pending_review','review_pending','awaiting_review','completed','done','ready','closed')`)
   if (wants.has('cancelled')) clauses.push(`lower(COALESCE(${alias}.status, '')) IN ('canceled','cancelled')`)
   return clauses.length ? `(${clauses.join(' OR ')})` : 'true'
+}
+
+// Property history keeps review separate and filters before LIMIT, so solved
+// records cannot crowd an older outstanding report out of the active request.
+export function propertyFeedbackHistoryStatusWhereSql(alias: 'm' | 'd', want: string[]) {
+  const statuses = new Set(want)
+  const clauses: string[] = []
+  const status = `lower(COALESCE(${alias}.status, ''))`
+  if (statuses.has('open')) clauses.push(`${status} IN ('','open','pending','pending_assignment','assigned','todo','unassigned')`)
+  if (statuses.has('in_progress')) clauses.push(`${status} = 'in_progress'`)
+  if (statuses.has('pending_review')) clauses.push(`${status} IN ('pending_review','review_pending','awaiting_review')`)
+  if (statuses.has('resolved') || statuses.has('closed')) clauses.push(`${status} IN ('resolved','completed','done','ready','closed')`)
+  return clauses.length ? `(${clauses.join(' OR ')})` : 'false'
 }
 
 const colTypeCache = new Map<string, 'jsonb' | 'text[]' | 'unknown'>()
@@ -13403,6 +13514,8 @@ router.get('/property-feedbacks', async (req, res) => {
   const propertyId = String((req.query as any)?.property_id || '').trim()
   const propertyCode = String((req.query as any)?.property_code || '').trim()
   const sourceTaskId = String((req.query as any)?.source_task_id || '').trim()
+  const propertyHistory = String(req.query.history_scope || '') === 'property'
+  if (propertyHistory && !sourceTaskId) return res.status(400).json({ message: 'property_feedback_source_task_required' })
   if (!propertyId && !propertyCode) return res.status(400).json({ message: 'missing property_id' })
 
   const statusRaw = String((req.query as any)?.status || 'open,in_progress').trim()
@@ -13416,7 +13529,10 @@ router.get('/property-feedbacks', async (req, res) => {
   const dailyFilter = dailyWanted.length ? dailyWanted : ['need_replace']
 
   const limit0 = Number((req.query as any)?.limit || 20)
-  const limit = Number.isFinite(limit0) ? Math.max(1, Math.min(50, limit0)) : 20
+  const limit = Number.isFinite(limit0) ? Math.max(1, Math.min(50, Math.trunc(limit0))) : 20
+  const offset = propertyHistory ? Number(req.query.offset || 0) : 0
+  if (!Number.isSafeInteger(offset) || offset < 0) return res.status(400).json({ code: 'invalid_history_offset' })
+  const fetchLimit = limit + offset
 
   try {
     if (!hasPg || !pgPool) return res.json([])
@@ -13451,14 +13567,14 @@ router.get('/property-feedbacks', async (req, res) => {
     assertMaintenanceRuntimeSchemaReady()
     const canManageMaintenanceWorkflow = isPropertyFeedbackManager(user)
       || await userHasAnyPerm(user, [MAINTENANCE_WORKFLOW_MANAGE_PERMISSION])
-    const feedbackCapabilityContext = { canManageMaintenanceWorkflow }
-    const unresolvedMaintSql = feedbackStatusWhereSql('m', want)
-    const unresolvedDeepSql = feedbackStatusWhereSql('d', want)
+    const feedbackCapabilityContext = { canManageMaintenanceWorkflow, propertyHistory }
+    const unresolvedMaintSql = propertyHistory ? propertyFeedbackHistoryStatusWhereSql('m', want) : feedbackStatusWhereSql('m', want)
+    const unresolvedDeepSql = propertyHistory ? propertyFeedbackHistoryStatusWhereSql('d', want) : feedbackStatusWhereSql('d', want)
     const settle = async (label: string, loader: () => Promise<any[]>) => {
       try {
         return { items: await loader(), error: null as string | null }
       } catch (e: any) {
-        return { items: [] as any[], error: `${label}:${String(e?.message || e)}`.slice(0, 220) }
+        return { items: [] as any[], error: `${label}:unavailable` }
       }
     }
     const [maintenanceResult, deepResult, dailyResult] = await Promise.all([
@@ -13473,11 +13589,17 @@ router.get('/property-feedbacks', async (req, res) => {
               AND ($3::text IS NULL OR m.source_task_id::text = $3)
               AND m.deleted_at IS NULL
               AND (${unresolvedMaintSql})
-            ORDER BY COALESCE(m.submitted_at, m.created_at) DESC
+            ORDER BY COALESCE(m.submitted_at, m.created_at) DESC NULLS LAST, m.id::text DESC
             LIMIT $2`,
-          [scopedPropertyId, limit, sourceTaskId || null],
+          [scopedPropertyId, fetchLimit, propertyHistory ? null : sourceTaskId || null],
         )
-        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('maintenance', row, user, feedbackCapabilityContext))
+        // Select the global history page before querying per-record lock evidence.
+        // Legacy exact-source reads retain their existing response/error behavior.
+        if (propertyHistory) return (r?.rows || []).map((row: any) => ({
+          kind: 'maintenance' as const, id: String(row.id),
+          created_at: row.submitted_at || row.created_at || null, row,
+        }))
+        return Promise.all((r?.rows || []).map(async (row: any) => propertyFeedbackResponseFromRow('maintenance', await enrichPropertyFeedbackLocks(pool, 'maintenance', row), user, feedbackCapabilityContext)))
       }),
       settle('deep_cleaning', async () => {
         try {
@@ -13490,17 +13612,23 @@ router.get('/property-feedbacks', async (req, res) => {
               AND ($3::text IS NULL OR d.source_task_id::text = $3)
               AND d.deleted_at IS NULL
               AND (${unresolvedDeepSql})
-            ORDER BY COALESCE(d.submitted_at, d.created_at) DESC
+            ORDER BY COALESCE(d.submitted_at, d.created_at) DESC NULLS LAST, d.id::text DESC
             LIMIT $2`,
-          [scopedPropertyId, limit, sourceTaskId || null],
+          [scopedPropertyId, fetchLimit, propertyHistory ? null : sourceTaskId || null],
         )
-        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('deep_cleaning', row, user, feedbackCapabilityContext))
+        // Select the global history page before querying per-record lock evidence.
+        // Legacy exact-source reads retain their existing response/error behavior.
+        if (propertyHistory) return (r?.rows || []).map((row: any) => ({
+          kind: 'deep_cleaning' as const, id: String(row.id),
+          created_at: row.submitted_at || row.created_at || null, row,
+        }))
+        return Promise.all((r?.rows || []).map(async (row: any) => propertyFeedbackResponseFromRow('deep_cleaning', await enrichPropertyFeedbackLocks(pool, 'deep_cleaning', row), user, feedbackCapabilityContext)))
       }),
       settle('daily_necessities', async () => {
         try {
           await ensurePropertyDailyNecessitiesColumns()
         } catch {}
-        const params: any[] = [scopedPropertyId, dailyFilter, limit, sourceTaskId || null]
+        const params: any[] = [scopedPropertyId, propertyHistory ? dailyWanted : dailyFilter, fetchLimit, propertyHistory ? null : sourceTaskId || null]
         const r = await pool.query(
           `SELECT n.*
              FROM property_daily_necessities n
@@ -13508,11 +13636,17 @@ router.get('/property-feedbacks', async (req, res) => {
               AND ($4::text IS NULL OR n.source_task_id::text = $4)
               AND n.deleted_at IS NULL
               AND COALESCE(n.status, '') = ANY($2::text[])
-            ORDER BY COALESCE(n.submitted_at, n.created_at) DESC
+            ORDER BY COALESCE(n.submitted_at, n.created_at) DESC NULLS LAST, n.id::text DESC
             LIMIT $3`,
           params,
         )
-        return (r?.rows || []).map((row: any) => propertyFeedbackResponseFromRow('daily_necessities', row, user, feedbackCapabilityContext))
+        // Select the global history page before querying per-record lock evidence.
+        // Legacy exact-source reads retain their existing response/error behavior.
+        if (propertyHistory) return (r?.rows || []).map((row: any) => ({
+          kind: 'daily_necessities' as const, id: String(row.id),
+          created_at: row.submitted_at || row.created_at || null, row,
+        }))
+        return Promise.all((r?.rows || []).map(async (row: any) => propertyFeedbackResponseFromRow('daily_necessities', await enrichPropertyFeedbackLocks(pool, 'daily_necessities', row), user, feedbackCapabilityContext)))
       }),
     ])
     const out = [
@@ -13525,9 +13659,22 @@ router.get('/property-feedbacks', async (req, res) => {
       deepResult.error,
       dailyResult.error,
     ].filter(Boolean) as string[]
-    out.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
-    if (!out.length && errors.length) return res.status(500).json({ message: 'property_feedbacks_failed', errors })
-    return res.json(out.slice(0, limit))
+    out.sort((a, b) => {
+      const timestamp = (value: any) => Number.isFinite(Date.parse(String(value || ''))) ? Date.parse(String(value)) : 0
+      const compare = (left: string, right: string) => left === right ? 0 : left < right ? -1 : 1
+      return timestamp(b.created_at) - timestamp(a.created_at)
+        || compare(b.kind, a.kind) || compare(b.id, a.id)
+    })
+    if ((propertyHistory || !out.length) && errors.length) return res.status(500).json({ message: 'property_feedbacks_failed', errors })
+    const page = out.slice(offset, offset + limit)
+    if (propertyHistory) {
+      const enrichedPage = await settle('history', () => Promise.all(page.map(async (item: any) =>
+        propertyFeedbackResponseFromRow(item.kind, await enrichPropertyFeedbackLocks(pool, item.kind, item.row), user, feedbackCapabilityContext),
+      )))
+      if (enrichedPage.error) return res.status(500).json({ message: 'property_feedbacks_failed', errors: [enrichedPage.error] })
+      return res.json(enrichedPage.items)
+    }
+    return res.json(page)
   } catch (e: any) {
     if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
     return res.status(500).json({ message: e?.message || 'property_feedbacks_failed' })
@@ -13986,13 +14133,16 @@ async function loadAnyPropertyFeedbackRow(kind: PropertyFeedbackRecordKind, id: 
   if (!client) return null
   await ensurePropertyFeedbackKindColumns(kind, client)
   const table = feedbackSourceType(kind)
-  const r = await client.query(`SELECT * FROM ${table} WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [id])
+  const r = await client.query(`SELECT * FROM ${table} WHERE id = $1 AND deleted_at IS NULL LIMIT 1 FOR UPDATE`, [id])
   return r.rows?.[0] || null
 }
 
 type PropertyFeedbackCapabilityContext = {
   canManageMaintenanceWorkflow?: boolean
+  propertyHistory?: boolean
 }
+
+export { propertyFeedbackMutationLocked, enrichPropertyFeedbackLocks } from '../lib/propertyFeedbackPolicy'
 
 export function propertyFeedbackCapabilities(
   user: any,
@@ -14009,20 +14159,19 @@ export function propertyFeedbackCapabilities(
   const canDeleteMaintenance = isMaintenanceFeedbackDeleteManager(user)
   const isCreator = Boolean(actorUserId && creatorUserId && actorUserId === creatorUserId)
   const maintenanceStatus = normalizeMaintenanceWorkflowStatus(row?.status, row?.review_status)
-  const maintenancePendingAssignment = kind !== 'maintenance' || maintenanceStatus === 'pending_assignment'
+  const mutationLocked = propertyFeedbackMutationLocked(row)
   return {
-    can_edit_content: kind === 'maintenance' && maintenanceStatus === 'closed' ? false : isManager || isCreator,
+    can_edit_content: kind === 'maintenance' && maintenanceStatus === 'closed' ? false : isManager || (isCreator && !mutationLocked),
     can_edit_completion_content: kind === 'maintenance'
       && maintenanceStatus !== 'closed'
       && maintenanceStatus !== 'cancelled'
       && (isMaintenanceManager || isAssignedExecutor),
     can_correct_completion: kind === 'maintenance' && maintenanceStatus === 'closed' && isMaintenanceManager,
-    can_delete: kind === 'maintenance'
-      ? (maintenanceStatus !== 'cancelled' && (canDeleteMaintenance || (isCreator && maintenancePendingAssignment)))
-      : (isManager || isCreator),
+    can_delete: !mutationLocked && (canDeleteMaintenance || isCreator),
+    mutation_locked: mutationLocked,
     // Moving categories can create a work item and change workflow projection;
     // it is deliberately manager-only even for the original submitter.
-    can_move_category: isManager && kind !== 'maintenance',
+    can_move_category: isManager && kind !== 'maintenance' && !mutationLocked,
   }
 }
 
@@ -14035,6 +14184,7 @@ async function canAccessPropertyFeedbackRow(
   user: any,
   row: any,
   kind: PropertyFeedbackRecordKind,
+  viewerSourceTaskId?: string,
 ) {
   const propertyId = String(row?.property_id || '').trim()
   if (!propertyId || !client) return false
@@ -14042,6 +14192,10 @@ async function canAccessPropertyFeedbackRow(
   if (!property?.rowCount) return false
   const userId = String(user?.sub || '').trim()
   if (!userId) return false
+  if (viewerSourceTaskId !== undefined) {
+    if (!viewerSourceTaskId) return false
+    return (await propertyFeedbackSourceTaskAccess(user, propertyId, viewerSourceTaskId, client)).canViewHistory
+  }
   if (kind === 'maintenance' && String(row?.assignee_id || '').trim() === userId) return true
   const sourceTaskId = String(row?.source_task_id || '').trim()
   if (sourceTaskId) {
@@ -14060,7 +14214,7 @@ class PropertyFeedbackMutationError extends Error {
   }
 }
 
-function propertyFeedbackResponseFromRow(
+export function propertyFeedbackResponseFromRow(
   kind: PropertyFeedbackRecordKind,
   row: any,
   user?: any,
@@ -14069,7 +14223,7 @@ function propertyFeedbackResponseFromRow(
   if (!row) return null
   const capabilities = user ? propertyFeedbackCapabilities(user, kind, row, capabilityContext) : undefined
   if (kind === 'maintenance') {
-    const summary = summarizeProjectItems('maintenance', row.project_items, row)
+    const summary = summarizeProjectItems('maintenance', row.project_items, capabilityContext.propertyHistory ? { ...row, attachment_urls: [] } : row)
     return {
       id: String(row.id),
       property_id: row.property_id ? String(row.property_id) : null,
@@ -14080,17 +14234,17 @@ function propertyFeedbackResponseFromRow(
       area: row.area || null,
       category: null,
       detail: String(row.details || ''),
-      invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
+      ...(canViewAll(user) && !capabilityContext.propertyHistory ? { invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null } : {}),
       media_urls: summary.photo_urls,
       completion_photo_urls: normalizeUrlArray(row.completion_photo_urls),
       repair_photo_urls: summary.repair_photo_urls,
       repair_notes: row.repair_notes ? String(row.repair_notes) : null,
       created_by_name: row.submitter_name || null,
       created_at: row.submitted_at || row.created_at || null,
-      status: mapWorkStatus(row.status),
+      status: capabilityContext.propertyHistory && ['pending_review', 'review_pending', 'awaiting_review'].includes(String(row.status)) ? 'pending_review' : mapWorkStatus(row.status),
       review_status: row.review_status ? String(row.review_status) : null,
       completed_at: row.completed_at || summary.completed_at || null,
-      project_items: summary.items,
+      project_items: capabilityContext.propertyHistory ? summary.items.map(({ id, name, area, detail, status, before_photos, after_photos }: PropertyFeedbackProjectItem) => ({ id, name, area, detail, status, before_photos, after_photos })) : summary.items,
       ...(capabilities ? { capabilities } : {}),
     }
   }
@@ -14106,16 +14260,16 @@ function propertyFeedbackResponseFromRow(
         .map((s) => String(s || '').trim())
         .filter(Boolean),
       detail: String(row.details || row.notes || ''),
-      invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
+      ...(canViewAll(user) && !capabilityContext.propertyHistory ? { invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null } : {}),
       media_urls: summary.photo_urls,
       repair_photo_urls: summary.repair_photo_urls,
       repair_notes: row.repair_notes ? String(row.repair_notes) : null,
       created_by_name: row.submitter_name || null,
       created_at: row.submitted_at || row.created_at || null,
-      status: mapWorkStatus(row.status),
+      status: capabilityContext.propertyHistory && ['pending_review', 'review_pending', 'awaiting_review'].includes(String(row.status)) ? 'pending_review' : mapWorkStatus(row.status),
       review_status: row.review_status ? String(row.review_status) : null,
       completed_at: row.completed_at || summary.completed_at || null,
-      project_items: summary.items,
+      project_items: capabilityContext.propertyHistory ? summary.items.map(({ id, name, area, detail, status, before_photos, after_photos }: PropertyFeedbackProjectItem) => ({ id, name, area, detail, status, before_photos, after_photos })) : summary.items,
       ...(capabilities ? { capabilities } : {}),
     }
   }
@@ -14129,7 +14283,7 @@ function propertyFeedbackResponseFromRow(
     quantity: row.quantity == null ? null : Number(row.quantity),
     note: row.note ? String(row.note) : null,
     detail: String(row.note || ''),
-    invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null,
+    ...(canViewAll(user) && !capabilityContext.propertyHistory ? { invoice_description_en: row.invoice_description_en ? String(row.invoice_description_en) : null } : {}),
     media_urls: Array.from(new Set([
       ...normalizeUrlArray(row.before_photo_urls),
       ...normalizeUrlArray(row.photo_urls),
@@ -14331,15 +14485,18 @@ router.delete('/property-feedbacks/:kind/:id', async (req, res) => {
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   const kind = String(req.params.kind || '').trim() as PropertyFeedbackRecordKind
   const id = String(req.params.id || '').trim()
+  const propertyHistory = String(req.query.history_scope || '') === 'property'
+  const viewerSourceTaskId = propertyHistory ? String(req.query.source_task_id || '').trim() : undefined
   if (kind !== 'maintenance' && kind !== 'deep_cleaning' && kind !== 'daily_necessities') return res.status(400).json({ message: 'invalid kind' })
   if (!id) return res.status(400).json({ message: 'missing id' })
   try {
     await ensurePropertyFeedbackKindColumns(kind)
     const actorUserId = String(user?.sub || '').trim()
     const deleted = await pgRunInTransaction(async (client: any) => {
-      const row = await loadAnyPropertyFeedbackRow(kind, id, client)
+      const loadedRow = await loadAnyPropertyFeedbackRow(kind, id, client)
+      const row = loadedRow ? await enrichPropertyFeedbackLocks(client, kind, loadedRow) : null
       if (!row) return false
-      if (!await canAccessPropertyFeedbackRow(client, user, row, kind)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      if (!await canAccessPropertyFeedbackRow(client, user, row, kind, viewerSourceTaskId)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
       if (kind === 'maintenance' && normalizeMaintenanceWorkflowStatus(row.status, row.review_status) === 'cancelled') {
         throw new PropertyFeedbackMutationError(409, 'maintenance_cancel_required')
       }
@@ -14391,7 +14548,8 @@ router.post('/property-feedbacks/:kind/:id/move', async (req, res) => {
     await ensurePropertyFeedbackKindColumns(sourceKind)
     await ensurePropertyFeedbackKindColumns(targetKind)
     const row = await pgRunInTransaction(async (client: any) => {
-      const sourceRow = await loadAnyPropertyFeedbackRow(sourceKind, id, client)
+      const loadedSource = await loadAnyPropertyFeedbackRow(sourceKind, id, client)
+      const sourceRow = loadedSource ? await enrichPropertyFeedbackLocks(client, sourceKind, loadedSource) : null
       if (!sourceRow) return null
       if (!await canAccessPropertyFeedbackRow(client, user, sourceRow, sourceKind)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
       if (!propertyFeedbackCapabilities(user, sourceKind, sourceRow).can_move_category) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
@@ -14450,6 +14608,8 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
   if (!hasPg || !pgPool) return res.status(500).json({ message: 'pg not available' })
   const kind = String(req.params.kind || '').trim()
   const id = String(req.params.id || '').trim()
+  const propertyHistory = String(req.query.history_scope || '') === 'property'
+  const viewerSourceTaskId = propertyHistory ? String(req.query.source_task_id || '').trim() : undefined
   if (kind !== 'maintenance' && kind !== 'deep_cleaning' && kind !== 'daily_necessities') return res.status(400).json({ message: 'invalid kind' })
   const parsed = feedbackPatchSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
@@ -14466,15 +14626,16 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
       const afterExpr = afterType === 'text[]' ? '$7::text[]' : '$7::jsonb'
       const canManageMaintenanceWorkflow = isPropertyFeedbackManager(user)
         || await userHasAnyPerm(user, [MAINTENANCE_WORKFLOW_MANAGE_PERMISSION])
-      const capabilityContext = { canManageMaintenanceWorkflow }
+      const capabilityContext = { canManageMaintenanceWorkflow, propertyHistory }
       const ordinaryContentFields = ['area', 'category', 'detail', 'media_urls']
       const completionContentFields = ['note', 'repair_photo_urls']
       const wantsOrdinaryContent = ordinaryContentFields.some((key) => Object.prototype.hasOwnProperty.call(parsed.data, key))
       const wantsCompletionContent = completionContentFields.some((key) => Object.prototype.hasOwnProperty.call(parsed.data, key))
       const updateResult = await pgRunInTransaction(async (client: any) => {
-        const row = await loadPropertyFeedbackRow('maintenance', id, client, true)
+        const loadedRow = await loadPropertyFeedbackRow('maintenance', id, client, true)
+        const row = loadedRow ? await enrichPropertyFeedbackLocks(client, 'maintenance', loadedRow) : null
         if (!row) throw new PropertyFeedbackMutationError(404, 'property_feedback_not_found')
-        if (!await canAccessPropertyFeedbackRow(client, user, row, 'maintenance')) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+        if (!await canAccessPropertyFeedbackRow(client, user, row, 'maintenance', viewerSourceTaskId)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
         const capabilities = propertyFeedbackCapabilities(user, 'maintenance', row, capabilityContext)
         if (wantsOrdinaryContent && !capabilities.can_edit_content) {
           throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
@@ -14545,137 +14706,131 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
       })
       return res.json({ ok: true, row: updateResult.row })
     }
-    await pgRunInTransaction(async (client: any) => {
-      const row = await loadAnyPropertyFeedbackRow(kind, id, client)
+    const result = await pgRunInTransaction(async (client: any) => {
+      const loadedRow = await loadAnyPropertyFeedbackRow(kind, id, client)
+      const row = loadedRow ? await enrichPropertyFeedbackLocks(client, kind, loadedRow) : null
       if (!row) throw new PropertyFeedbackMutationError(404, 'property_feedback_not_found')
-      if (!await canAccessPropertyFeedbackRow(client, user, row, kind)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
+      if (!await canAccessPropertyFeedbackRow(client, user, row, kind, viewerSourceTaskId)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
       if (!canMutatePropertyFeedbackContent(user, kind, row)) throw new PropertyFeedbackMutationError(403, 'forbidden_property_feedback')
-    })
-    if (kind === 'deep_cleaning') {
-      await ensurePropertyDeepCleaningColumns()
-      const existing = await pgPool.query(`SELECT * FROM property_deep_cleaning WHERE id = $1 LIMIT 1`, [id])
-      if (!existing.rowCount) return res.status(404).json({ message: 'not found' })
-      const row = existing.rows[0]
-      const nextAreas = parsed.data.areas !== undefined ? parsed.data.areas.map((x) => String(x || '').trim()).filter(Boolean) : String(row.project_desc || '').split('、').map((x: string) => String(x || '').trim()).filter(Boolean)
-      const nextDetail = parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() : String(row.details || row.notes || '').trim()
-      const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.repair_notes || '').trim()
+      if (kind === 'deep_cleaning') {
+        const nextAreas = parsed.data.areas !== undefined ? parsed.data.areas.map((x) => String(x || '').trim()).filter(Boolean) : String(row.project_desc || '').split('、').map((x: string) => String(x || '').trim()).filter(Boolean)
+        const nextDetail = parsed.data.detail !== undefined ? String(parsed.data.detail || '').trim() : String(row.details || row.notes || '').trim()
+        const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.repair_notes || '').trim()
+        const nextInvoiceDescriptionEn = parsed.data.invoice_description_en !== undefined ? String(parsed.data.invoice_description_en || '').trim() : String(row.invoice_description_en || '').trim()
+        const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
+        const nextRepairMedia = parsed.data.repair_photo_urls !== undefined ? normalizeUrlArray(parsed.data.repair_photo_urls) : normalizeUrlArray(row.repair_photo_urls)
+        const currentResolved = mapWorkStatus(row.status) === 'resolved'
+        const markCompleted = currentResolved || nextRepairMedia.length > 0
+        const nextStatus = markCompleted ? 'completed' : String(row.status || '').trim() || 'pending'
+        const nextReviewStatus = markCompleted ? 'pending' : (row.review_status ? String(row.review_status) : null)
+        const nextCompletedAt = markCompleted ? (row.completed_at || new Date().toISOString()) : null
+        if (!nextAreas.length || !nextDetail) throw new PropertyFeedbackMutationError(400, 'missing_deep_cleaning_fields')
+        const beforeType = await getColumnType('property_deep_cleaning', 'photo_urls')
+        const attachmentType = await getColumnType('property_deep_cleaning', 'attachment_urls')
+        const afterType = await getColumnType('property_deep_cleaning', 'repair_photo_urls')
+        const beforeExpr = beforeType === 'text[]' ? '$4::text[]' : '$4::jsonb'
+        const attachmentExpr = attachmentType === 'text[]' ? '$5::text[]' : '$5::jsonb'
+        const afterExpr = afterType === 'text[]' ? '$7::text[]' : '$7::jsonb'
+        await client.query(
+          `UPDATE property_deep_cleaning
+              SET project_desc = $2,
+                  details = $3,
+                  notes = $3,
+                  photo_urls = ${beforeExpr},
+                  attachment_urls = ${attachmentExpr},
+                  repair_notes = $6,
+                  repair_photo_urls = ${afterExpr},
+                  invoice_description_en = $8,
+                  status = $9,
+                  review_status = $10,
+                  completed_at = $11,
+                  updated_at = now()
+            WHERE id = $1`,
+          [
+            id,
+            nextAreas.join('、'),
+            nextDetail,
+            beforeType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
+            attachmentType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
+            nextNote || null,
+            afterType === 'text[]' ? nextRepairMedia : JSON.stringify(nextRepairMedia),
+            nextInvoiceDescriptionEn || null,
+            nextStatus,
+            nextReviewStatus,
+            nextCompletedAt,
+          ],
+        )
+        await refreshAutoExpenseSourceSummary('deep_cleaning', {
+          id,
+          project_desc: nextAreas.join('、'),
+          details: nextDetail,
+          notes: nextDetail,
+          repair_notes: nextNote || null,
+          invoice_description_en: nextInvoiceDescriptionEn || null,
+        }, client)
+        return ({
+          ok: true,
+          row: {
+            id,
+            property_id: row.property_id ? String(row.property_id) : null,
+            kind: 'deep_cleaning',
+            areas: nextAreas,
+            detail: nextDetail,
+            ...(canViewAll(user) ? { invoice_description_en: nextInvoiceDescriptionEn || null } : {}),
+            note: nextNote || null,
+            repair_notes: nextNote || null,
+            media_urls: nextMedia,
+            repair_photo_urls: nextRepairMedia,
+            created_by_name: row.submitter_name ? String(row.submitter_name) : null,
+            created_at: row.submitted_at || row.created_at || null,
+            status: mapWorkStatus(nextStatus),
+            review_status: nextReviewStatus,
+            completed_at: nextCompletedAt,
+          },
+        })
+      }
+      const nextStatus = parsed.data.status !== undefined ? String(parsed.data.status || '').trim() : String(row.status || '').trim()
+      const nextItemName = parsed.data.item_name !== undefined ? String(parsed.data.item_name || '').trim() : String(row.item_name || '').trim()
+      const nextQuantity = parsed.data.quantity !== undefined ? Math.trunc(Number(parsed.data.quantity)) : Math.trunc(Number(row.quantity || 0))
+      const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.note || '').trim()
       const nextInvoiceDescriptionEn = parsed.data.invoice_description_en !== undefined ? String(parsed.data.invoice_description_en || '').trim() : String(row.invoice_description_en || '').trim()
       const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
-      const nextRepairMedia = parsed.data.repair_photo_urls !== undefined ? normalizeUrlArray(parsed.data.repair_photo_urls) : normalizeUrlArray(row.repair_photo_urls)
-      const currentResolved = mapWorkStatus(row.status) === 'resolved'
-      const markCompleted = currentResolved || nextRepairMedia.length > 0
-      const nextStatus = markCompleted ? 'completed' : String(row.status || '').trim() || 'pending'
-      const nextReviewStatus = markCompleted ? 'pending' : (row.review_status ? String(row.review_status) : null)
-      const nextCompletedAt = markCompleted ? (row.completed_at || new Date().toISOString()) : null
-      if (!nextAreas.length || !nextDetail) return res.status(400).json({ message: 'missing deep cleaning fields' })
-      const beforeType = await getColumnType('property_deep_cleaning', 'photo_urls')
-      const attachmentType = await getColumnType('property_deep_cleaning', 'attachment_urls')
-      const afterType = await getColumnType('property_deep_cleaning', 'repair_photo_urls')
-      const beforeExpr = beforeType === 'text[]' ? '$4::text[]' : '$4::jsonb'
-      const attachmentExpr = attachmentType === 'text[]' ? '$5::text[]' : '$5::jsonb'
-      const afterExpr = afterType === 'text[]' ? '$7::text[]' : '$7::jsonb'
-      await pgPool.query(
-        `UPDATE property_deep_cleaning
-            SET project_desc = $2,
-                details = $3,
-                notes = $3,
-                photo_urls = ${beforeExpr},
-                attachment_urls = ${attachmentExpr},
-                repair_notes = $6,
-                repair_photo_urls = ${afterExpr},
-                invoice_description_en = $8,
-                status = $9,
-                review_status = $10,
-                completed_at = $11,
-                updated_at = now()
+      if (!dailyNecessitiesStatusSchema.safeParse(nextStatus).success) throw new PropertyFeedbackMutationError(400, 'invalid_status')
+      if (!nextItemName) throw new PropertyFeedbackMutationError(400, 'missing_item_name')
+      if (!Number.isFinite(nextQuantity) || nextQuantity < 1) throw new PropertyFeedbackMutationError(400, 'invalid_quantity')
+      if (!nextNote && !nextMedia.length) throw new PropertyFeedbackMutationError(400, 'missing_note')
+      const photoType = await getColumnType('property_daily_necessities', 'photo_urls')
+      const photoExpr = photoType === 'text[]' ? '$6::text[]' : '$6::jsonb'
+      await client.query(
+        `UPDATE property_daily_necessities
+            SET status = $2,
+                item_name = $3,
+                quantity = $4,
+                note = $5,
+                photo_urls = ${photoExpr},
+                invoice_description_en = $7
           WHERE id = $1`,
-        [
-          id,
-          nextAreas.join('、'),
-          nextDetail,
-          beforeType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
-          attachmentType === 'text[]' ? nextMedia : JSON.stringify(nextMedia),
-          nextNote || null,
-          afterType === 'text[]' ? nextRepairMedia : JSON.stringify(nextRepairMedia),
-          nextInvoiceDescriptionEn || null,
-          nextStatus,
-          nextReviewStatus,
-          nextCompletedAt,
-        ],
+        [id, nextStatus, nextItemName, nextQuantity, nextNote || null, photoType === 'text[]' ? nextMedia : JSON.stringify(nextMedia), nextInvoiceDescriptionEn || null],
       )
-      await refreshAutoExpenseSourceSummary('deep_cleaning', {
-        id,
-        project_desc: nextAreas.join('、'),
-        details: nextDetail,
-        notes: nextDetail,
-        repair_notes: nextNote || null,
-        invoice_description_en: nextInvoiceDescriptionEn || null,
-      })
-      return res.json({
+      return ({
         ok: true,
         row: {
           id,
           property_id: row.property_id ? String(row.property_id) : null,
-          kind: 'deep_cleaning',
-          areas: nextAreas,
-          detail: nextDetail,
-          invoice_description_en: nextInvoiceDescriptionEn || null,
+          kind: 'daily_necessities',
+          item_name: nextItemName,
+          quantity: nextQuantity,
           note: nextNote || null,
-          repair_notes: nextNote || null,
+          detail: nextNote || '',
+          ...(canViewAll(user) ? { invoice_description_en: nextInvoiceDescriptionEn || null } : {}),
           media_urls: nextMedia,
-          repair_photo_urls: nextRepairMedia,
           created_by_name: row.submitter_name ? String(row.submitter_name) : null,
           created_at: row.submitted_at || row.created_at || null,
-          status: mapWorkStatus(nextStatus),
-          review_status: nextReviewStatus,
-          completed_at: nextCompletedAt,
+          status: nextStatus,
         },
       })
-    }
-    await ensurePropertyDailyNecessitiesColumns()
-    const existing = await pgPool.query(`SELECT * FROM property_daily_necessities WHERE id = $1 LIMIT 1`, [id])
-    if (!existing.rowCount) return res.status(404).json({ message: 'not found' })
-    const row = existing.rows[0]
-    const nextStatus = parsed.data.status !== undefined ? String(parsed.data.status || '').trim() : String(row.status || '').trim()
-    const nextItemName = parsed.data.item_name !== undefined ? String(parsed.data.item_name || '').trim() : String(row.item_name || '').trim()
-    const nextQuantity = parsed.data.quantity !== undefined ? Math.trunc(Number(parsed.data.quantity)) : Math.trunc(Number(row.quantity || 0))
-    const nextNote = parsed.data.note !== undefined ? String(parsed.data.note || '').trim() : String(row.note || '').trim()
-    const nextInvoiceDescriptionEn = parsed.data.invoice_description_en !== undefined ? String(parsed.data.invoice_description_en || '').trim() : String(row.invoice_description_en || '').trim()
-    const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
-    if (!dailyNecessitiesStatusSchema.safeParse(nextStatus).success) return res.status(400).json({ message: 'invalid status' })
-    if (!nextItemName) return res.status(400).json({ message: 'missing item_name' })
-    if (!Number.isFinite(nextQuantity) || nextQuantity < 1) return res.status(400).json({ message: 'invalid quantity' })
-    if (!nextNote && !nextMedia.length) return res.status(400).json({ message: 'missing note' })
-    const photoType = await getColumnType('property_daily_necessities', 'photo_urls')
-    const photoExpr = photoType === 'text[]' ? '$6::text[]' : '$6::jsonb'
-    await pgPool.query(
-      `UPDATE property_daily_necessities
-          SET status = $2,
-              item_name = $3,
-              quantity = $4,
-              note = $5,
-              photo_urls = ${photoExpr},
-              invoice_description_en = $7
-        WHERE id = $1`,
-      [id, nextStatus, nextItemName, nextQuantity, nextNote || null, photoType === 'text[]' ? nextMedia : JSON.stringify(nextMedia), nextInvoiceDescriptionEn || null],
-    )
-    return res.json({
-      ok: true,
-      row: {
-        id,
-        property_id: row.property_id ? String(row.property_id) : null,
-        kind: 'daily_necessities',
-        item_name: nextItemName,
-        quantity: nextQuantity,
-        note: nextNote || null,
-        detail: nextNote || '',
-        invoice_description_en: nextInvoiceDescriptionEn || null,
-        media_urls: nextMedia,
-        created_by_name: row.submitter_name ? String(row.submitter_name) : null,
-        created_at: row.submitted_at || row.created_at || null,
-        status: nextStatus,
-      },
     })
+    return res.json(result)
   } catch (e: any) {
     if (e instanceof PropertyFeedbackMutationError) return res.status(e.statusCode).json({ code: e.code })
     return res.status(500).json({ message: e?.message || 'property_feedback_patch_failed' })

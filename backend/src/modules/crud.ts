@@ -1,6 +1,7 @@
+import { enrichPropertyFeedbackLocks, propertyFeedbackMutationLocked, lockPropertyFeedbackMutationSource, lockPropertyFeedbackExpenseReferences, assertPropertyFeedbackExpenseReferenceUnchanged, lockPropertyFeedbackExpenseKeys } from '../lib/propertyFeedbackPolicy'
 import { Router } from 'express'
 import { requireAnyPerm, requireResourcePerm, userHasAnyPerm } from '../auth'
-import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgDelete, pgRunInTransaction, pgRunWithAdvisoryLock } from '../dbAdapter'
+import { hasPg, pgPool, pgSelect, pgInsert as rawPgInsert, pgUpdate as rawPgUpdate, pgDelete as rawPgDelete, pgRunInTransaction, pgRunWithAdvisoryLock } from '../dbAdapter'
 import { buildExpenseFingerprint, hasFingerprint, setFingerprint, addDedupLog } from '../fingerprint'
 import { db, addAudit } from '../store'
 import { normalizeUrlList } from '../lib/normalizeUrlList'
@@ -11,6 +12,41 @@ import { maintenanceTaskSummaryFromDetails } from '../lib/maintenanceWorkflowSto
 import { assertMaintenanceRuntimeSchemaReady, isMaintenanceRuntimeSchemaReady } from '../lib/maintenanceRuntimeSchema'
 import { assertMaintenanceWorkflowSchemaReady, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
 import { isPdfRenderServiceUser } from '../services/pdfRenderServiceAuth'
+
+// Only feedback-linked accounting writes join the source row lock protocol.
+async function pgInsert(resource: string, payload: Record<string, any>, client?: any): Promise<any> {
+  if (!['property_expenses', 'company_expenses'].includes(resource)) return rawPgInsert(resource, payload, client)
+  const save = async (tx: any) => {
+    await lockPropertyFeedbackExpenseKeys(tx, resource, [payload])
+    await lockPropertyFeedbackExpenseReferences(tx, [payload])
+    return rawPgInsert(resource, payload, tx)
+  }
+  return client ? save(client) : pgRunInTransaction(save)
+}
+
+async function pgUpdate(resource: string, id: string, payload: Record<string, any>, client?: any): Promise<any> {
+  if (!['property_expenses', 'company_expenses'].includes(resource)) return rawPgUpdate(resource, id, payload, client)
+  const save = async (tx: any) => {
+    const previous = await tx.query(`SELECT * FROM ${resource} WHERE id = $1`, [id])
+    await lockPropertyFeedbackExpenseKeys(tx, resource, [previous.rows[0], { ...previous.rows[0], ...payload }])
+    await lockPropertyFeedbackExpenseReferences(tx, [previous.rows[0], { ...previous.rows[0], ...payload }], [previous.rows[0]])
+    await assertPropertyFeedbackExpenseReferenceUnchanged(tx, resource as 'property_expenses' | 'company_expenses', id, previous.rows[0])
+    return rawPgUpdate(resource, id, payload, tx)
+  }
+  return client ? save(client) : pgRunInTransaction(save)
+}
+
+async function pgDelete(resource: string, id: string, client?: any): Promise<any> {
+  if (!['property_expenses', 'company_expenses'].includes(resource)) return rawPgDelete(resource, id, client)
+  const remove = async (tx: any) => {
+    const previous = await tx.query(`SELECT * FROM ${resource} WHERE id = $1`, [id])
+    await lockPropertyFeedbackExpenseKeys(tx, resource, [previous.rows[0]])
+    await lockPropertyFeedbackExpenseReferences(tx, [previous.rows[0]], [previous.rows[0]])
+    await assertPropertyFeedbackExpenseReferenceUnchanged(tx, resource as 'property_expenses' | 'company_expenses', id, previous.rows[0])
+    return rawPgDelete(resource, id, tx)
+  }
+  return client ? remove(client) : pgRunInTransaction(remove)
+}
 
 const router = Router()
 // Supabase removed
@@ -875,6 +911,7 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
           } catch (e: any) {
             if (pdfRenderReadOnly) throw e
             const msg = String(e?.message || '')
+            if (msg === 'feedback_expense_reference_conflict' || msg === 'property_feedback_not_found') return res.status(409).json({ code: msg })
             if (resource === 'fixed_expenses' && /relation\s+"?fixed_expenses"?\s+does\s+not\s+exist/i.test(msg)) {
               await pgPool.query(`CREATE TABLE IF NOT EXISTS fixed_expenses (
                 id text PRIMARY KEY,
@@ -1831,7 +1868,15 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 ON CONFLICT (fixed_expense_id, month_key) WHERE ${wherePred}
                 DO UPDATE SET ${updSets.join(', ')}
                 RETURNING *`
-              const up = await pgPool!.query(sql, vals)
+              const up = await pgRunInTransaction(async (client) => {
+                // Serialize the optional recurring key before source locks. This
+                // also covers first insert vs concurrent ON CONFLICT upsert.
+                await lockPropertyFeedbackExpenseKeys(client, resource, [toInsert])
+                const previous = (await client.query(`SELECT * FROM ${resource} WHERE fixed_expense_id = $1 AND month_key = $2`, [fixedId, monthKey])).rows[0]
+                await lockPropertyFeedbackExpenseReferences(client, [previous, { ...previous, ...toInsert }], [previous])
+                if (previous) await assertPropertyFeedbackExpenseReferenceUnchanged(client, resource as 'property_expenses' | 'company_expenses', String(previous.id), previous)
+                return client.query(sql, vals)
+              })
               const rowUp = up?.rows?.[0] || null
               if (rowUp) {
                 try { addAudit(resource, String(rowUp.id), 'upsert', null, rowUp, (req as any).user?.sub) } catch {}
@@ -1843,6 +1888,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
         }
       } catch (e: any) {
         const msg = String(e?.message || '')
+        if (msg === 'feedback_expense_reference_conflict' || msg === 'property_feedback_not_found') return res.status(409).json({ code: msg })
         if (/duplicate key value violates unique constraint/i.test(msg)) {
           return res.status(409).json({ message: msg })
         }
@@ -2297,6 +2343,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
     }
   } catch (e: any) {
     const msg = String(e?.message || '')
+    if (msg === 'feedback_expense_reference_conflict' || msg === 'property_feedback_not_found') return res.status(409).json({ code: msg })
     if (/duplicate|unique/i.test(msg)) return res.status(409).json({ message: '唯一键冲突' })
     return res.status(500).json({ message: msg || 'create failed' })
   }
@@ -2580,6 +2627,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
       try {
         if (resource === 'property_maintenance') {
           const result: any = await pgRunInTransaction(async (client) => {
+            if (!await lockPropertyFeedbackMutationSource(client, resource, id, String(user.sub || ''))) throw new Error('property_feedback_not_found')
             const keys = Object.keys(toUpdate).filter(k => toUpdate[k] !== undefined)
             if (!keys.length) {
               let cur: any = before
@@ -2661,6 +2709,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
           const { pgPool } = require('../dbAdapter')
           if (pgPool) {
             const result: any = await pgRunInTransaction(async (client) => {
+              if (!await lockPropertyFeedbackMutationSource(client, resource, id, String(user.sub || ''))) throw new Error('property_feedback_not_found')
               const jsonbFields = new Set(['photo_urls','repair_photo_urls','attachment_urls','checklist','consumables'])
               const keys = Object.keys(toUpdate).filter(k => toUpdate[k] !== undefined)
               const set = keys.map((k, i) => jsonbFields.has(k) ? `"${k}" = $${i + 1}::jsonb` : `"${k}" = $${i + 1}`).join(', ')
@@ -2678,11 +2727,17 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
           } else {
             row = await pgUpdate(resource, id, toUpdate)
           }
+        } else if (resource === 'property_daily_necessities') {
+          row = await pgRunInTransaction(async (client) => {
+            if (!await lockPropertyFeedbackMutationSource(client, resource, id, String(user.sub || ''))) throw new Error('property_feedback_not_found')
+            return pgUpdate(resource, id, toUpdate, client)
+          })
         } else {
           row = await pgUpdate(resource, id, toUpdate)
         }
       } catch (e: any) {
         const msg = String(e?.message || '')
+        if (msg === 'feedback_expense_reference_conflict' || msg === 'property_feedback_not_found') return res.status(409).json({ code: msg })
         if (resource === 'recurring_payments' && /column\s+"?frequency_months"?\s+of\s+relation\s+"?recurring_payments"?\s+does\s+not\s+exist/i.test(msg)) {
           const { pgPool } = require('../dbAdapter')
           if (pgPool) await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS frequency_months integer;')
@@ -2786,6 +2841,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
     return res.json(merged)
   } catch (e: any) {
     const msg = String(e?.message || '')
+    if (msg === 'feedback_expense_reference_conflict' || msg === 'property_feedback_not_found') return res.status(409).json({ code: msg })
     const mlow = msg.toLowerCase()
     if (mlow.startsWith('missing_columns:')) {
       const cols = msg.slice('missing_columns:'.length).split(',').map(s => s.trim()).filter(Boolean)
@@ -2856,7 +2912,22 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
         addAudit(resource, id, 'delete', before, null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
         return res.json({ ok: true, ...result })
       }
-      if (resource === 'property_maintenance' || resource === 'property_deep_cleaning') {
+      if (resource === 'property_deep_cleaning' || resource === 'property_daily_necessities') {
+        const result = await pgRunInTransaction(async (client) => {
+          const locked = await client.query(`SELECT * FROM ${resource} WHERE id = $1 FOR UPDATE`, [id])
+          if (!locked.rows[0]) return 'not_found'
+          const kind = resource === 'property_deep_cleaning' ? 'deep_cleaning' : 'daily_necessities'
+          const row = await enrichPropertyFeedbackLocks(client, kind, locked.rows[0])
+          if (propertyFeedbackMutationLocked(row)) return 'locked'
+          await pgDelete(resource, id, client)
+          return 'deleted'
+        })
+        if (result === 'locked') return res.status(409).json({ code: 'property_feedback_locked' })
+        if (result === 'not_found') return res.status(404).json({ message: 'not found' })
+        addAudit(resource, id, 'delete', before, null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
+        return res.json({ ok: true })
+      }
+      if (resource === 'property_maintenance') {
         await pgRunInTransaction(async (client) => {
           assertMaintenanceRuntimeSchemaReady()
           await voidAutoExpensesByRef(client, resource === 'property_maintenance' ? 'maintenance' : 'deep_cleaning', id)
@@ -2878,6 +2949,7 @@ router.delete('/:resource/:id', requireResourcePerm('delete'), async (req, res) 
     addAudit(resource, id, 'delete', before, null, (req as any).user?.sub, { ip: req.ip, user_agent: req.headers['user-agent'] })
     return res.json({ ok: true })
   } catch (e: any) {
+    if (e?.message === 'feedback_expense_reference_conflict' || e?.message === 'property_feedback_not_found') return res.status(409).json({ code: e.message })
     return res.status(500).json({ message: e?.message || 'delete failed' })
   }
 })

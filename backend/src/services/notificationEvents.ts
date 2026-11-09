@@ -1,3 +1,4 @@
+import { notificationPushContent } from '../lib/notificationChannelContent'
 import { v4 as uuid } from 'uuid'
 import { hasPg, pgPool, pgRunAfterCommit } from '../dbAdapter'
 import { listInspectionTaskUserIds, listCleaningTaskUserIds, listUserIdsByRoles, listWorkTaskUserIds } from '../modules/notifications'
@@ -51,6 +52,8 @@ export type EmitNotificationEventParams = {
   changes?: string[] | null
   title?: string | null
   body?: string | null
+  /** Server-only inbox text; body remains the unchanged push-safe text. */
+  inboxBody?: string | null
   data?: any
   priority?: NotificationPriority
   actorUserId?: string | null
@@ -477,7 +480,8 @@ export async function emitNotificationEvent(params: EmitNotificationEventParams,
 
   const baseData = await enrichNotificationData(params, client, actor)
   const data = {
-    ...(typeof baseData === 'object' && baseData ? baseData : {}),
+    ...notificationPushContent('', baseData).data,
+    ...(process.env.NOTIFICATION_INBOX_PASSWORD_VALUES_ENABLED === 'true' && typeof params.inboxBody === 'string' && params.inboxBody.trim() ? { _inbox_body: params.inboxBody.trim() } : {}),
     event_id: eventId,
     entity,
     entityId,

@@ -13,6 +13,19 @@ export function isTaskLocked(autoSyncEnabled: boolean | null | undefined): boole
   return autoSyncEnabled === false
 }
 
+export function hasTaskKeyUploadAssignee(params: {
+  isKeyHandover: boolean
+  isCheckinOnly: boolean
+  assigneeId?: unknown
+  inspectorId?: unknown
+  cleanerId?: unknown
+}): boolean {
+  const candidate = params.isKeyHandover || params.isCheckinOnly
+    ? (params.assigneeId || params.inspectorId)
+    : (params.inspectorId || params.cleanerId || params.assigneeId)
+  return Boolean(String(candidate ?? '').trim())
+}
+
 export type TaskInspectionMode = 'pending_decision' | 'same_day' | 'deferred' | 'self_complete' | 'checked_done'
 export type TaskInspectionScope = 'inspect_and_hang' | 'password_only'
 export type TaskInspectionModeOption = { label: string; value: TaskInspectionMode }

@@ -223,12 +223,15 @@ export function buildWebTaskCapabilityPayload(task: Record<string, any>, context
     isCleaningExecution,
     canConfigureInspection,
   })
+  const cleanerId = cleanText(task.cleaner_id || (pureCheckin ? null : task.assignee_id)) || null
+  const inspectorId = cleanText(task.inspector_id) || null
+  const executorId = cleanText(pureCheckin ? (task.assignee_id || task.inspector_id || task.cleaner_id) : task.assignee_id) || null
 
   const badges: WebTaskDisplayBadge[] = []
   if (pureCheckin) badges.push({ id: 'pure_checkin_inspection', label: '入住现场执行', tone: 'info' })
   if (isPasswordOnly) badges.push({ id: 'password_only_site_action', label: '仅改密码/挂钥匙', tone: 'special' })
   if (isKeysHung) badges.push({ id: 'keys_hung', label: '已挂钥匙', tone: 'success' })
-  if (isSelfComplete) badges.push({ id: 'self_complete', label: '自完成', tone: 'special' })
+  if (isSelfComplete && cleanerId) badges.push({ id: 'self_complete', label: '自完成', tone: 'special' })
   if (isCheckedDone) badges.push({ id: 'checked_done', label: '已检查', tone: 'success' })
   if (taskEnded) badges.push({ id: 'task_ended', label: '任务已结束', tone: 'success' })
 
@@ -242,9 +245,6 @@ export function buildWebTaskCapabilityPayload(task: Record<string, any>, context
     inspectionMode,
     autoSyncLocked,
   }, context)
-  const cleanerId = cleanText(task.cleaner_id || (pureCheckin ? null : task.assignee_id)) || null
-  const inspectorId = cleanText(task.inspector_id) || null
-  const executorId = cleanText(pureCheckin ? (task.assignee_id || task.inspector_id || task.cleaner_id) : task.assignee_id) || null
   const participantSummary: WebTaskParticipantSummary = {
     primary_role: semantics === 'key_or_password_action' || semantics === 'checkin_inspection'
       ? 'executor'

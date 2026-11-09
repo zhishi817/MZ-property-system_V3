@@ -1,5 +1,688 @@
 # Change Release Ledger
 
+## CRL-20261109-001 — 挂钥匙执行人历史与未提交检查的移动端可见性
+
+- **Repository:** `root`
+- **Status:** verified combined candidate; final complete gates and independent commit review GO; selected for commit/push/PR
+- **Updated:** 2026-11-09 UTC
+- **Request:** 修复 MSQ2806W、MSQ3906W、AU8508 的挂钥匙执行人历史遗漏，以及挂钥匙后正式提交检查前移动端任务提前隐藏；用户同意修复这两个关联问题。
+- **Outcome:** 普通退房/入住挂钥匙执行人保留准确执行日的只读执行记录，不伪造正式检查审计；精确 source 仍待正式检查提交时保留可操作检查卡和独立已挂钥匙事实。尚未提交、推送、部署或真机验收。
+
+### Implementation
+
+- Previous behavior: ordinary video evidence passed historical SQL eligibility but was only emitted for password-only check-in execution; cleaner history and self-complete fallback could not represent a different uploader. Pending inspection cards were promoted to `keys_hung` by physical video evidence and disappeared before a formal work record existed.
+- New behavior: ordinary attributed video evidence produces a read-only `key_or_password_action` execution record; same actor/source/day genuine cleaner or inspection history wins, and the actor's live pending inspection retains the fact without a duplicate history. Existing manual-confirmation, password-only and self-complete handling remain separate.
+- Exact-source video audit `finalization_pending + inspection_photos`, active source, actual inspection assignment and same-day/deferred mode retain `to_inspect` until a matching later formal submission resolves the requirement. Reopened assignments, completed/cancelled/superseded/deleted sources and foreign-source facts cannot reopen work. The previously recorded video action stays disabled.
+- Manager live classification uses active children while `phase_history` retains historical actors. Physical video evidence never becomes an inspection-completion audit or an assignment grant.
+- Evidence: bounded `BEGIN READ ONLY` production SQL independently confirmed the three historical examples are deferred checkout tasks with no inspector, prior-day cleaner A evidence, and next-day video uploader B. AU8508's legacy restock `submit_inspection` is correctly excluded. Exact room code WSP3710 was absent from the bounded property/task lookup; the reported sequence is tested with synthetic fixtures, not claimed as exact production reproduction.
+
+### Files / Areas
+
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — ordinary exact-source handover history deduplication and lifecycle guards.
+- `backend/src/lib/cleaningInspection.ts` — physical handover versus pending formal-inspection predicate.
+- `backend/src/lib/workTaskActions.ts` — an existing source handover cannot re-enable duplicate access-video submission.
+- `backend/src/modules/mzapp.ts` — role-aware historical emission, ordinary evidence date filtering, pending inspection projection and manager active-child semantics.
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — ordinary actor/date deduplication and existing-source wiring regression.
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — pending submission positive, resolved and fail-closed boundaries.
+- `backend/scripts/tests/test_handover_visibility_routes.ts` — actual Express route with in-memory SQL-shaped fixtures, no real DB or business API; actor/date, manager, permissions, source and finalization cases.
+- `backend/package.json` — route fixture runs from daily-task visibility quality command.
+- `docs/feature-regression-registry.md` — FR-040 invariants and coverage.
+- `docs/change-release-ledger.md` — this unit and verification evidence.
+
+### Impact / Dependencies
+
+- API: no new public request/response fields; existing ordinary handover history gains correct execution semantics and live inspection retains actionable status.
+- Database / migration / backfill: none; only read query/projection changes; no production writes.
+- Config / environment / dependencies: none; local tests reuse installed dependencies without installation.
+- Permissions: no assignment, participant grant or media proxy authorization change. Ordinary standalone handover records do not acquire inspector-photo or lock-code read views.
+- Related units: root/CRL-20261024-004 (MZ-077 self-complete history), root/CRL-20261104-004 (MZ-107 later formal submission). Existing business identities retained unchanged.
+
+### Validation
+
+- `npm run check:backend` — passed on the final source, including TypeScript build and the existing complete backend aggregate.
+- Direct `ts-node --transpile-only` executions of `test_daily_task_execution_visibility.ts`, `test_cleaning_inspection_merge.ts` and `test_work_task_actions.ts` — passed; initial static wiring assertions updated for the new bounded branches.
+- `test_handover_visibility_routes.ts` — 19 actual Express fixture cases passed; covers manual-confirmation deduplication, manager live inspection semantics and actors whose current role differs from their historical role.
+- Independent read-only implementation review found three P2 boundaries; all corrected and rechecked, with no remaining P0/P1. This is implementation review, not a release action approval or user commit/push authorization.
+- `CI=true npm run check:full` with database connection environment removed — Root development guards, ledger/FR checks and complete Backend aggregate passed; Web lint, 60 files / 332 tests and production build passed; clean Mobile ledger/typecheck/lint/button/fast checks passed. Mobile full Jest: 86 suites passed / 1 failed; 884 tests passed / 1 failed (885 total). Jest also reported an open-handle warning. The complete gate exited 1, so release remains BLOCKED.
+- Mobile baseline diagnosis: the unchanged `inspectionMediaQueue.test.ts` restart fixture expires at `2026-11-09T01:02:03Z`; the test now runs after that date. The same test fails on clean `origin/Dev@d438a6177b403825ec65d82fc8b4d054c346c5a1` (1 failed / 7 skipped), and passes with only a temporary `/tmp` Jest `Date.now` override to `2026-11-08T12:00:00Z` (1 passed / 7 skipped). Mobile source/config remains untouched. This controlled comparison does not turn the original gate green; fix the test clock separately, not production expiry behavior.
+- Final `python3 scripts/audit_change_release_ledger.py` — PASS, 10 changed files / 10 recorded. `python3 scripts/audit_feature_regression_registry.py` — PASS, 40 FRs / 324 mappings. `git diff --check` — PASS. Only this worktree's four tracked backend compiler outputs were restored; no generated output is included, and Mobile remains clean.
+- Real PostgreSQL candidate-query execution, live browser/device walkthrough and exact WSP3710 reproduction — not run.
+
+- **Combined 2026-11-09 validation:** `CI=true npm run check:release` and `CI=true npm run check:fast` both exited 0 on the integrated source, with cleared database environment and Node external-connection guard. Complete backend aggregate including all selected wired regressions PASS; Web lint, 60 files / 333 tests and production build PASS; paired final Mobile 8 fast suites / 156 tests and 87 full suites / 893 tests PASS. Backend no-emit TypeScript, ledger/FR audits, staged diff hygiene PASS. Logs retained outside the candidate as root-release-check.log and root-fast-check.log.
+- **Combined isolated PostgreSQL:** MZ-084 PASS: 18 linkage, 36 removed/zero-expense audit, 12 task/expense lock orderings, 18 stale-reference races, 3 orphan-reference checks. MZ-111 PASS: 39 SQL cases + 12 source-extracted ownership/cancellation cases, audit unchanged. Separate new temporary Unix-socket PostgreSQL 16.15 clusters, TCP disabled, both stopped. No application bootstrap, production URL or production data.
+- **Integration corrections:** MZ-099 Web import retains newer Dev atomic editing helpers; shared npm scripts retain every newer Dev test. MZ-111 fixture extracts the MZ-077 pending-inspection predicate and additionally asserts its current/previous/unrelated actor and cancellation boundaries; runtime behavior was not altered for test compatibility. MZ-077 exact WSP3710/live device reproduction and production query-performance verification remain not run.
+- **Warnings and cleanup:** existing Web React Hook dependency/image warnings and tool deprecation/cache notices remain recorded, not errors. The first backend-only attempt reached the cross-repository static contract then lacked a paired Mobile path; after linking the correct candidate, the complete release gate passed. The temporary symlink and five generated tracked backend outputs were restored/removed before final staging. No artifacts, environment files, production identifiers, dependency installation or unrelated content were included.
+
+- **Final post-review validation (2026-11-09):** final pagination code and paired Mobile draft-restoration correction passed both `check:release` and `check:fast` with exit 0. Web remains 60/333; paired Mobile is now 87 suites / 894 tests (fast 8/156). Evidence: root-release-final.log and root-fast-final.log. Focused property-history suite and TypeScript no-emit also passed. No source changes after these final runs; only ledger receipts remain.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; only explicitly selected source paths staged; ignored dependencies and build outputs excluded.
+- Combined shared-file hunks are jointly selected by the user; each fingerprint is registered once under the first selected owning unit, with remaining owners referenced by this combined scope.
+- `backend/package.json` — SHA-256: `54b6d65a018de034345050129f3bdfee21913c6e86caa24ba9a0a9f1b6d6a7d2`
+- `backend/package.json` — SHA-256: `7cbee91ec03a91c04ea57c0291b33a011f96d3246fea4bddc9b34740f365c45f`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `191fac506e60c9b58ce20c087ce4daa77c1c7fcc9a9f8e8cac986fc6602bc41e`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `5d5d0d905d4d38b42e636cde41fd05eda7a5da0252a76bbc15e122fa4731a183`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `ee04516096f2882abe81af9598872fea9497394d6fd2e2b94b506c14dfd25401`
+- `backend/scripts/tests/test_cleaning_inspection_merge.ts` — SHA-256: `fa96242eb662712653a17e43edd42b0a7af33e49c47f90ecd7bfdf7e7d797ba5`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `46dd0cf49469a72555d364b79b6587be9181e65835d9886271e52513043c63e9`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `49aadbfca650e8e6e34b94aa787e56781873546c4aee99cff5b099dabcb5e102`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `53a77c628dc401f404a6f79fc207e88c5195c8f6512af31c51b6c7cdbedaba85`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `5b46597cee3981ba4fd2c4462b3cf0b5600db6cff1a4467298614f44f25629cc`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `63fad24d3521edbee397dcc5c86b614ca9e5a286b63bc92168bf54f94b21dbc8`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `c05c5f77d3da77cc87eba7437303b305a26641eac490cd32719a92a5ac3341e6`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `c2f58a80cc82319d7a64b6bf00985ab784d8409556c2d06c2fc4b494fad994d4`
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — SHA-256: `ce1986a9c424e28e025a0ed699e0bc4057a16b69e6612b8022e8ba55729bb85c`
+- `backend/scripts/tests/test_handover_visibility_routes.ts` — SHA-256: `38d2ff6433396a8226cb33aaebff8e6d953c8623c8223c8aa2765b4e4c908e77`
+- `backend/src/lib/cleaningInspection.ts` — SHA-256: `6cf6c4889da8b518b0d13eca41529af970b8dae40cd03a5a4cb141401b7bc96e`
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — SHA-256: `69e5b70010b50bb8a3aa763a569c84f547af54e2e49b8add5b0f730df8f572c5`
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — SHA-256: `b4db007be95bdbe553e043caff79ef384f184702559dac7bc40070257525e9f8`
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — SHA-256: `f287a4e273c460960593f6dce883d28e4856a93e4f0677894b915d168cf23741`
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — SHA-256: `fc01c7d1947225de475f531a7fe913961926088712e7b1bade2cbc8273783b52`
+- `backend/src/lib/workTaskActions.ts` — SHA-256: `76c5a35c2fb8908eddfc42f7aa034d7a5ab432620412cf97fe36991d4a01e957`
+- `backend/src/modules/mzapp.ts` — SHA-256: `034b8bd8d3306c9d28aadb8bd04c3767a7834ab92335e1e16c8140eca0d15c81`
+- `backend/src/modules/mzapp.ts` — SHA-256: `050d38fb613f91c017c0eceb47f562edb5428f09a73104faceeb25b9dfa1ecdb`
+- `backend/src/modules/mzapp.ts` — SHA-256: `065a54885f6c3a0d8f61a2f4b55d9d06bff3c358261efb6a8fbd7a69a368d161`
+- `backend/src/modules/mzapp.ts` — SHA-256: `075f36abef727f3c38264ce4d6514000d8c75f474bd6cc7d7cec278ed0d6aca7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0bc3d5ecb691c0658e47c2d22d28bb674580b13d6f568c4b815dfe024e28aa4b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `0f75b91500d98dbd339e64957b37c1fa1c63a88ff2b1411ee71eead24bdadddf`
+- `backend/src/modules/mzapp.ts` — SHA-256: `13e5c62f9246f344d234f46d5f37caab32c78e12c91b9693e97390fa921cd0d3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `183f6a7866dbc33db314af2d334aa7a1cf6f741988b2a25038977dfb50cef5f3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `195742a0b09704f43724aef8baaee8ba1a42059229e89a0e9e66449b7c9ae4a9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `19af8fce6d01ca6eeb73e59d3badf95092df8bc4e423045a834b6432074ed255`
+- `backend/src/modules/mzapp.ts` — SHA-256: `20d8c31ff2a32780d1e4d24f0f4c6b20a8e17e4b9c41ffbc4e880abbf4ea6767`
+- `backend/src/modules/mzapp.ts` — SHA-256: `2ddb0f4f5d0d95358b66a18adbfe030bf1174b097db3c18ae993b2fd037e740a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `32dbe6ae5c4f42da39348767a6aaaa9feac1e32a63a5a220ab4ec14c0e6b139e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `33bf434dbc7d2331c1b35db339235fc35f44be41799d08650be41845c77c168e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `357977e22d479eaed11efe434aa9b64461672e17a09ee2106f3b2b34873ec210`
+- `backend/src/modules/mzapp.ts` — SHA-256: `35f8e5b9a97110f68c65dbff9c72b8ad731891127865f5c5bd511fea27d3c0d8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `35fe4af9e0e7860d26c6b30fedf21920d8445f2560edf4694ea528f2b6d648b2`
+- `backend/src/modules/mzapp.ts` — SHA-256: `366841ef0c787fab372dfc5a3a23a81c0574238e81b018fdcbfbe9a4a941cc3f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3b40e5f7195d9050f240e889b31763c4805b9f254ac82690be9429d74a3c4488`
+- `backend/src/modules/mzapp.ts` — SHA-256: `3d1580466f3ce046367265be1eb74fb6cb5e756404f501d9f5fdccf9daf0b1de`
+- `backend/src/modules/mzapp.ts` — SHA-256: `40b7dc2963970054d6b225c07bf17c4a420f65de368153519855241eba4534d4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4b1899305aeb352b3f323841fa8e66655a67a66ac33cae2a6475492178baf4e7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4d40ce094b00a72e4ef2d6e7496e972b5cdcfcddb6e66082d02f625a42f53756`
+- `backend/src/modules/mzapp.ts` — SHA-256: `4f6ddc2c06686cb2832f6bb2d180ed8a9f1b0ea97ce9f380ca5a2380eaf7ce8e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `51e80188fb7074921d610673c36bf9be455b7a9ec8be2bb672a55cfb6dc438e3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `52a5fccd177ad9841ebc3b3f8368fb909d7c76f3a41a102c153aa886d349046a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `54e8544da7ba6cad520ac6adfa4bb146e46214d426107d2d55741ed247912ca1`
+- `backend/src/modules/mzapp.ts` — SHA-256: `57d3ffafd3387ea91ded5b09e191cffeb4f1c6f6eb402c47d75e8b5129eeef35`
+- `backend/src/modules/mzapp.ts` — SHA-256: `585f530fdae879fa2049888a8b42efb0ae2f75113e09fcd7acccb591f5c7e0de`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5914b7469c2c9b30015a1084e542f903a7a3370c4944f32b52456b4842674723`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5a0869ffa327f775511ec554e76745587d5c583c2b2667dc9dbee5e2d412cf3b`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5e786a3f392629297990f83ab7666d62470300cae3e1eec728a7fd22b6ec88b5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `5f6bf41602597bae699edfa6bb6727d551b8dad0539f3386015bd95486badb32`
+- `backend/src/modules/mzapp.ts` — SHA-256: `66be32f9aa2a922e6a932cfcc53668522418fda5de88b6c11c8f9c12c59ea450`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6cf6d5e93bb96f9426292aa185f504ea51d7ed49b9df141cd76c6b8d4c0165f0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6d8a3490fb380cbb0a723bc9f8803b5d1877d4be311c5fbbf62f708f8c456d31`
+- `backend/src/modules/mzapp.ts` — SHA-256: `6e05ed4db88e399e3e0d2a9e164cab94b8aec0eff5c4ee9f5c9d070c45695246`
+- `backend/src/modules/mzapp.ts` — SHA-256: `736d6801ff7d9e3b98cfe3eaa3eab799f91de0ce9c4607eb6e2ef03b04db489e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `744a50df21b9e7030588d4a56d3c80c046fdaf4c298bc47f6378ef961215fe81`
+- `backend/src/modules/mzapp.ts` — SHA-256: `747cb36969f86d172a92fad81955997b5bdb6c87bc28421a39e2666d76a5ef8d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `78d88026ee7ae6ef8ff5417542e6a1e61614fefa9421ee686b6e9d25c57d4d8d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7cb3f9202be4f68b9338510d2080ea88c07d2db223d1bbfaa678f4325e5cee7c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7dcc0f350087a143efcb915f180642a6d26fdd57e5e4a10129a884c4a450c899`
+- `backend/src/modules/mzapp.ts` — SHA-256: `7ec4c8ae16ee0f17822bcd2331bd36d821ff3b7ca1d63adf0763e517f37d3a41`
+- `backend/src/modules/mzapp.ts` — SHA-256: `81c94137cc2a619b665dcdf47d990596dffe444ab70d18a026cba4c6bba865f0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `829fdc42a875d3f2e131f6a6f70e38f0f153b56b573ac8587c7eb7e71a72703e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `84c5325d4239fb000116141ef6b8355a6dd7992282c719c9d0c9265b27cc950e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `860336187486d10247a8b42e3ea00beb1afe968648279c686d7e7d84da699536`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8724f955b44145e1cae7c7c8b3f9e6d31953abf8bc3c3ee1879b6427679ef605`
+- `backend/src/modules/mzapp.ts` — SHA-256: `87aeee7c92fff65e59e868b413dc0f9acb06b53c95092746d3483734dbe60720`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8d3591580afcb70596648117ebb03f8575b0f93983b3c6700e16815c3a8cbf2c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `8f5d730db13ff648969bb71da6c51a6c0ee4e241594c1df11c5969035dd1754e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `911e555cc678048fd5eb3da6329168669995155dc51b28b67dd3733d0914d54f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `94cd7605d7843bba0acf4dee278728f085e146c98bd244fd59d8a38f8c74b404`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9684bb5cbdbc13c14a3e13b3673538ea1b656504675fd60587ef202e6246eea4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9863537b870928199921f2e4833de2e858f13fa520da01a4c854c46b38f81ad4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `989a6be5154e7782ef57caf02f33308d4770628345c74405273c0dfbc64a7bd1`
+- `backend/src/modules/mzapp.ts` — SHA-256: `994f6e54c2d28c608b0307cbc3cd3260476b8372e1116a2ef483a5a778fc68dc`
+- `backend/src/modules/mzapp.ts` — SHA-256: `9baf56eaeb22964c0a65eb001d3b3a8dabd4463941628c2f6a88887898dd2c5f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `a463a1a27475b2bb75042c9bdfcfb9feda91099d5021567abdada04abff044a7`
+- `backend/src/modules/mzapp.ts` — SHA-256: `aa027314e51b5885168477121a7f2e78d3c60308c04ccfced0d9342177664f68`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ab03f18b669e5b4f24c0a61ba96031678ab8f8e0d0e98e6589437c2c1e301319`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ac817872846f0944f901b0ae724306e685ae61efd5aa9d75489516d44f5f75c9`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b3653200da08077723bedbe487da77fd550b69f609a8f9944b6685e55ded3a93`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b3a8a5ceb4b8c850097d8571aadb05f220e370c339b88955dd0b2550723b2a8d`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b4ef620b7c22363ee5eddc63e01882e89339b0f986ac789b644d9234a87a5b0c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b60f9cf9b70e045f3cf57362d43fa9553fe7cfca8b84171cf70f457fa7d1778a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `b9981efe9469cec6663b4b18c918299c2b1e434d62d813e314ed32ee82266bf8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bd60f1099992ee8c3949f798d84a142472ec084df16266ea3eddde3e0f48afa4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bdb7100c34b38feee79d2973a286b921283c3fccca8719a8de599ca329646993`
+- `backend/src/modules/mzapp.ts` — SHA-256: `be63a17a937e1a59571864f56b966130d7ee5414a472746a84ce2965f36c4b6e`
+- `backend/src/modules/mzapp.ts` — SHA-256: `bf96015a569724de520e4213da9cd5906d14426ef5e6f58f893da2609e84fe58`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c13eaee531bee794a6dc7169c77c9294cb8fde9f4ecf04328a11a58ea0a68b75`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c3bf4055763a2da9080761aa5dfa5207273d5fda40f68f9f5b3fbf7ab9b04894`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c3de7f99db3d04f2879af061ca03be9118d382a934edec28fb22b44dafcb5ad0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c5b90a6f597a098c13ad890d54e10f7b8d9279b216694d7b72c9e8589a15b042`
+- `backend/src/modules/mzapp.ts` — SHA-256: `c8d085de975174d81f48f4122a2a8d36e0fdaf7f5fdb35680cf493c6c2740946`
+- `backend/src/modules/mzapp.ts` — SHA-256: `cd60b8ac7a84cd328835775fb7f6744d01b66479322145a223e26fd83318a968`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d0837542f830b44419c00018b021bad413835f63994b8d4c466876f8aa7620cc`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d15eb449d24281d8ae76c92e42e90399143dfea4f727817e2684478b23a30f51`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d1b21aadcc9329965edb57ff0d9408c0bee13223f635a0bcca477935ee02a787`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d1bc9299f377ae0211256778baed6a75d63017e7d15cae166dd0813b859c7d72`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d259a71823ddff4a0c2d5d703f3802eb7818e48a1214f4b4397507acb77fd541`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d29fc75d39e4cf07d9a2fe2de572aede732748a3b8629c8a071811fa0ff13713`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d54bf1e5950635be1505e716665c5275baf2ad2bf98ae4200bce7f0b0675e98f`
+- `backend/src/modules/mzapp.ts` — SHA-256: `d7c73dd8c76a33c8d381e26f24d873d375ae36df1c59c74eb6affe7900dd5855`
+- `backend/src/modules/mzapp.ts` — SHA-256: `db54d7d353c3efe97556c7dd66088a5720eecdd5e949bcffdc3005ef045c672a`
+- `backend/src/modules/mzapp.ts` — SHA-256: `dc963f7f6073c9345f336e88f4ecc651b692f311e5240eca8b4d800b70839938`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ddb62ac224517ecdef69b76760ea4d98c1c82fbce103fd6f1c09b90a9a8fd5af`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e570148961538ccf7f98bdff9caf989de5d68fe60bd9ae84be4c97d180e02de5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e5cc46fce760dca1761d3a5da30767fb0e79b15a545ad274c101b8d0446d8e3c`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e7a5c722c9e387ddaf8ef8388363d8916d901aad7497c1809a55d237778f8aae`
+- `backend/src/modules/mzapp.ts` — SHA-256: `e7b84a2dc218b274de52b50520526b759befb0e1c1c3cec35e1212f0680d8136`
+- `backend/src/modules/mzapp.ts` — SHA-256: `eb8079d5f786c4aebf5bef8a10cb4da7f6785684de07d3c103bb47ae269fb300`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ee8d45697c8e3491a47b971414dc4d0e1507b2616b8210884aeff106dfa6bca8`
+- `backend/src/modules/mzapp.ts` — SHA-256: `eee4d1c71f4456cce208fb96a11656149e186de2cc19ff49432cba13ace0e4a0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f60138440689908a01ad8c7ed80553ec03d1542a434179f7034fb14da89839b0`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f6915410af6797aad00ccc3b6ef4f7e66903a6bd7448492bb070c9f07803fb38`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f850d2173d1dbfa8b117e38ac6323fea55ae8dfd65a402094ff5e68dc7b3bfe4`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f862308f15bc4ee786243228cb6c5424b5cb2ca1b359d6048c5a954370c9cca5`
+- `backend/src/modules/mzapp.ts` — SHA-256: `f9367c1a6a98d41d03938fe4be18c85f2d72bd926f02052a0348a37485c84af3`
+- `backend/src/modules/mzapp.ts` — SHA-256: `fcc483d924146025dfcbdb0d2d01a2282662e80248524eee40ee400a80f65925`
+- `backend/src/modules/mzapp.ts` — SHA-256: `ff727e76e96b937154e71bae3dc081237a1e23bc190093639d5588017905b6fd`
+- `docs/feature-regression-registry.md` — SHA-256: `103a1a686e01211ae9ac12860fbae4ec8020560f5723392061395080e569ccb9`
+- `docs/feature-regression-registry.md` — SHA-256: `115cfbefd2e8bd1b957fca85f73a42835130c58dc99198a54174cf91539b349f`
+- `docs/feature-regression-registry.md` — SHA-256: `1d0d0899e5c97b20cfd00235da667e3a4637ea24f27d0b4d688f63e8e38a30c4`
+- `docs/feature-regression-registry.md` — SHA-256: `245a7afc40cb68d45955d9130ce7b5a42e722b7090fcd5c813a610d26c811679`
+- `docs/feature-regression-registry.md` — SHA-256: `299f3520b2f5290cd09dc12cd67927ee73b84c079432b60d3e8925bcf38f2d86`
+- `docs/feature-regression-registry.md` — SHA-256: `30e490409841684e04be43d2bec09bffee55f05e59a0c20751167e986449f424`
+- `docs/feature-regression-registry.md` — SHA-256: `65857baa8edc660e6eac8fbc04a428d808b9c1c32befa20efb3dda12288d223b`
+- `docs/feature-regression-registry.md` — SHA-256: `78f6f047f44871a7221b8405f16adcd8fc29ea6073fe3a3da27b1aaf9df46c4d`
+- `docs/feature-regression-registry.md` — SHA-256: `7db089cea9f647b11a15a3234883c35d9ad76f4b1f425d00690c9d3898fe8f56`
+- `docs/feature-regression-registry.md` — SHA-256: `85268c5cfe43ae6c8a1f5c3506590a7793f7c683f0631b1a456921d37b0845c0`
+- `docs/feature-regression-registry.md` — SHA-256: `bde133f3ba6e09bc4ce99f39b1040c684bf12e2094d4dd190e3526a2e9c0d9ee`
+- `docs/feature-regression-registry.md` — SHA-256: `c67db753a3ba656464b8a7647ac77a200958f0a2d067b43f3876f1789047291b`
+- `docs/feature-regression-registry.md` — SHA-256: `cce968b78c8ce3de95fc25c7b0f84468423997ac8302a9f94e149ca8b3bc5a49`
+- `docs/feature-regression-registry.md` — SHA-256: `e1a53cb62538a68ef15553c1e06fd717c25ae2a99ae02c7d023e4eb0f96e69b8`
+- `docs/feature-regression-registry.md` — SHA-256: `f3714ceb36b6eb72ed2268bca37f89fad4dbe916b17ec4c428653561c80431e7`
+- `docs/feature-regression-registry.md` — SHA-256: `fd2a9f76c1b71d03f9b886a7712501e64bcf25bbaabede3538110b23a135941e`
+
+### Release Attempts
+
+#### RA-20261109-FIVE-ROOT
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261109-001`, `CRL-20261107-001`, `CRL-20261103-005`, `CRL-20261109-002`, `CRL-20261108-001`
+- Selected CRL identities: `root/CRL-20261109-001`, `root/CRL-20261107-001`, `root/CRL-20261103-005`, `root/CRL-20261109-002`, `root/CRL-20261108-001`
+- Intended action: `commit`
+- Branch: `codex/mz-077-084-099-100-111-20261109`
+- Base: `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`; fetched at `2026-11-09T07:16:13Z`
+- Candidate patch SHA-256: `e8835a5138c61aa8de422e1f3417230e573995dd30b3a9e4ad0307df44f9da62`
+- Commit SHA: not committed
+- Dependencies: `mobile/CRL-20261109-001@653590daa8a4c55a8abb7421575f8e6d81036d21`; `mobile/CRL-20261109-002@653590daa8a4c55a8abb7421575f8e6d81036d21`; `mobile/CRL-20261109-003@653590daa8a4c55a8abb7421575f8e6d81036d21`
+- Required validation: PASS; final post-review check:release and check:fast exited 0, no-emit/focused PASS, Web 60/333 plus build, paired final Mobile 87/894 and fast 8/156, both isolated PG suites and exact scope passed.
+- Shared-hunk review: PASS; only five selected source candidates integrated; latest-Dev Web import retained; additive script union retained every current-Dev check; combined mzapp/visibility/registry/package hunks explicitly selected together.
+- Generated-file review: PASS; staged diff contains no dist, node_modules, environment files, preview/cache or evidence logs; temporary generated output restored and paired-Mobile symlink removed before final gate.
+- Technical state: verified
+- User authorization: selected-for-commit; latest explicit user request also authorizes subsequent push/PR for these five tasks in one branch per repository; no repeat SHA prompt required by the latest instruction.
+- Independent review: GO; independent final review matched exact candidate e8835a5138c61aa8de422e1f3417230e573995dd30b3a9e4ad0307df44f9da62 and independently reran exact pre-commit gate (40 files / 244 hunks), found no unresolved P0/P1/P2; scope is commit only.
+- Action conclusion: GO; blockers: none; commit only, exact paired push review follows content commit.
+
+### Risks / Release Notes
+
+- Worktree is isolated at freshly fetched `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`; original mixed/frozen worktrees untouched. Mobile validation uses clean `origin/Dev@d438a6177b403825ec65d82fc8b4d054c346c5a1` with no source modifications. Both bases were fetched and reconfirmed unchanged at `2026-11-09T04:34:05Z`.
+- History means the physical handover action completed, not an inspection completion or fee entitlement; settlement and immutable audit writes are unchanged.
+- Sensitive-information review: no credentials, URLs, passwords, personal identities or production query dumps added; fixture IDs and actors synthetic.
+- Rollback: remove only this candidate's verified hunks. No migration rollback or production data repair required.
+- Git/delivery state: not committed; not pushed; PR not created; not merged; backend not deployed; OTA not published; device/production behavior verification not run. MZ tracker was unavailable; no new board number assigned.
+
+
+### Combined Release Preparation (2026-11-09)
+
+- Board scope: MZ-077. Latest user explicitly requested commit, push and PR for MZ-077/084/099/100/111, one combined branch per repository. No merge/deployment/production writes authorized.
+- Branch: `codex/mz-077-084-099-100-111-20261109`; fresh `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`, fetched 2026-11-09T07:16:13Z. Prior validation above is source-candidate history, not proof of this integrated range.
+- Current technical state: candidate; integrated required checks/review pending; not committed, not pushed, PR not created, not merged, not deployed, OTA not published, device/production verification not run.
+
+## CRL-20261107-001 — MZ-084 同房源反馈历史与业务锁
+
+- **Repository:** `root`
+- **Status:** verified combined candidate; final complete gates and independent commit review GO; selected for commit/push/PR
+- **Updated:** 2026-11-07 UTC
+- **Request:** 问题反馈前查看同房源历史；本人跨任务修改/删除未派工、未完成且未产生费用的原反馈；管理员、客服、线下经理删除他人也受同样限制；现场人员不见收费；已解决折叠，不新增进展时间线。
+- **Outcome:** 本地候选增加当前任务授权的房源历史、独立状态组和稳定分页，服务端统一锁定能力与同表删除/费用/派工入口，并保留旧媒体和管理完成证据权限；尚未部署或真机验证。
+
+### Implementation
+
+- Previous behavior: GET 仅匹配当前 source_task_id，旧 NULL、过期投影及其他任务/作者反馈不可见；创建人和管理删除在部分状态/费用下可绕过；日用品/深清内容授权检查与写入分离，库存和通用工作任务/费用入口缺少同源事务锁。
+- New behavior: 显式 history_scope=property 使用当前 source_task_id 服务端验证任务参与及同房源；只取消旧反馈的 source 筛选，保留状态组并以 created_at/kind/id 稳定排序支持 offset/limit；旧接口默认保持原范围。DTO/媒体只返回反馈内容和问题图片，不包含结构化财务字段或财务凭证。
+- Key decisions: 以 created_by_user_id 精确判断本人，不用姓名推断；当前字段、工作投影、维修/通用审计与公司/房源费用历史共同锁定。零额、已作废、人工费用仍算已产生费用。源行先锁，再写工作任务或费用；清除当前证据前在既有 audit_logs 同步保存最小布尔锁收据。保留正式取消、完成证据与管理更正，不新增角色权限或迁移。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — modified: property history access, grouped pagination/DTO, authoritative capabilities, transactional PATCH/DELETE and category-move lock.
+- `backend/src/modules/cleaning_app.ts` — modified: opt-in current-task property photo authorization, preserving collision and other media scopes.
+- `backend/src/lib/propertyFeedbackPolicy.ts` — added: shared historical assignment/completion/expense evidence, source-first locks and durable minimal audit receipt.
+- `backend/src/modules/crud.ts` — modified: deep/daily deletion locks; feedback source corrections preserve lock evidence; feedback-linked manual expense insert/update/delete and fixed/month upsert share source-first transactions, recurring-key serialization and reference-conflict checks; old orphan expense corrections remain permitted under existing permissions.
+- `backend/src/modules/inventory.ts` — modified: same daily-necessity source deletion policy and atomic update/expense sync; deleted sources cannot recreate expenses.
+- `backend/src/modules/work_tasks.ts` — modified: three generic task mutation routes lock live feedback source before work task; other source types unchanged.
+- `backend/scripts/tests/test_property_feedback_history_policy.ts` — added: role/status/evidence/DTO and multi-entry transaction contracts.
+- `backend/scripts/tests/test_property_feedback_history_routes.ts` — added: actual handlers with isolated adapter, three kinds and 180-record pagination.
+- `backend/scripts/tests/test_property_feedback_history_media.ts` — added: isolated media scope and deny cases.
+- `backend/scripts/tests/test_property_feedback_history_pg.ts` — added: opt-in fresh Unix-socket PostgreSQL evidence/concurrency regression.
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — modified: updated creator/delete lock matrix; completion evidence permissions remain independently asserted.
+- `backend/package.json` — modified: focused history regression command; no dependency changes.
+- `package.json` — modified: wire focused regression into check:fast and check:backend.
+- `docs/feature-regression-registry.md` — modified: FR-046 invariant, cross-layer scope and test mapping.
+- `docs/change-release-ledger.md` — modified: current release unit only; prior remote identities preserved.
+
+### Integration Performance Correction (2026-11-09)
+
+- Independent review found deep property-history pages enriched every preceding row. The release owner requested the minimal correction: retain the same three queries, status filters, stable timestamp/kind/ID ordering and page contents, then enrich only the globally selected page (at most 50 records). Legacy exact-source response and partial-error handling stay unchanged. Missing page lock evidence still fails closed with a generic error.
+- Focused route regression passed with page-size lock-query counts at offsets 0/50/100/150, zero evidence reads for an empty page, no page overlap/loss, unchanged capability/finance boundaries and fail-closed enrichment errors. Raw rows are never returned to the client. Existing source SELECT cost still grows with deep offset; no production load claim.
+
+### Impact / Dependencies
+
+- API: opt-in property history query, current source task required; additive offset and capability mutation_locked; mobile counterpart required for the new user-facing flow.
+- Database / migration: no schema change, migration or backfill. Future authorized business writes may add a minimal feedback_lock_preserved receipt to existing audit_logs. Existing request schema helpers remain; no production request invoked.
+- Config / environment: no deployed changes. Existing local node_modules reused through ignored symlink; original dirty worktree and its environment files untouched.
+- Dependencies: no new packages. Paired mobile/CRL-20261109-001.
+- Related units: root/CRL-20261007-002 completion evidence boundaries; FR-010 and FR-046.
+
+### Validation
+
+- `DATABASE_URL='' npm run test:property-feedback-history --prefix backend` — PASS: policy, actual handler adapter, scoped media and pre-existing feedback access contract.
+- `DATABASE_URL='' npm run build --prefix backend` and `backend/node_modules/.bin/tsc -p backend --noEmit` — PASS; five tracked generated build deltas restored exactly to clean HEAD after validation; not included as source changes.
+- `test:mzapp-media-visibility`, `test:maintenance-workflow-schema`, `test:maintenance-workflow-actions`, `test:maintenance-auto-expense`, `test:mzapp-form-photo-routes`, `test:guest-luggage-media-contract`, `test:offline-task-assignment-patch`, `test:offline-task-assignment-first-patch` — PASS with DATABASE_URL empty.
+- `test_daily_necessities_auto_expense.ts` — PASS, isolated pure fixtures.
+- `npm run test:root-quality-workflow-contract` — PASS, 10 tests.
+- `test_property_feedback_history_pg.ts` — PASS on final helper in isolated local PostgreSQL 16 cluster /tmp/mz084-pg-5OaSWQ with TCP disabled: 18 expense linkage cases, 36 removed/zero-expense audit cases, all three kinds relink/clear/generated receipts, 12 task/expense lock orderings, 18 stale expense relink/delete races across both expense tables and three feedback kinds, and three existing-orphan/new-reference safeguards. Concurrent waits verified through pg_stat_activity. The cluster was newly created for this task, only its own stopped instance reused; each generated schema removed and server explicitly confirmed stopped. No .env, existing database, remote API or production data accessed.
+- `python3 scripts/audit_feature_regression_registry.py` — PASS, 41 FRs / 327 mappings; PG manual test accurately not-wired.
+- `git diff --check` — PASS. `python3 scripts/audit_change_release_ledger.py` — PASS, 15 changed files / 15 recorded. Full check:full, production/API/browser/device verification not run.
+
+- **Combined 2026-11-09 validation:** `CI=true npm run check:release` and `CI=true npm run check:fast` both exited 0 on the integrated source, with cleared database environment and Node external-connection guard. Complete backend aggregate including all selected wired regressions PASS; Web lint, 60 files / 333 tests and production build PASS; paired final Mobile 8 fast suites / 156 tests and 87 full suites / 893 tests PASS. Backend no-emit TypeScript, ledger/FR audits, staged diff hygiene PASS. Logs retained outside the candidate as root-release-check.log and root-fast-check.log.
+- **Combined isolated PostgreSQL:** MZ-084 PASS: 18 linkage, 36 removed/zero-expense audit, 12 task/expense lock orderings, 18 stale-reference races, 3 orphan-reference checks. MZ-111 PASS: 39 SQL cases + 12 source-extracted ownership/cancellation cases, audit unchanged. Separate new temporary Unix-socket PostgreSQL 16.15 clusters, TCP disabled, both stopped. No application bootstrap, production URL or production data.
+- **Integration corrections:** MZ-099 Web import retains newer Dev atomic editing helpers; shared npm scripts retain every newer Dev test. MZ-111 fixture extracts the MZ-077 pending-inspection predicate and additionally asserts its current/previous/unrelated actor and cancellation boundaries; runtime behavior was not altered for test compatibility. MZ-077 exact WSP3710/live device reproduction and production query-performance verification remain not run.
+- **Warnings and cleanup:** existing Web React Hook dependency/image warnings and tool deprecation/cache notices remain recorded, not errors. The first backend-only attempt reached the cross-repository static contract then lacked a paired Mobile path; after linking the correct candidate, the complete release gate passed. The temporary symlink and five generated tracked backend outputs were restored/removed before final staging. No artifacts, environment files, production identifiers, dependency installation or unrelated content were included.
+
+- **Final post-review validation (2026-11-09):** final pagination code and paired Mobile draft-restoration correction passed both `check:release` and `check:fast` with exit 0. Web remains 60/333; paired Mobile is now 87 suites / 894 tests (fast 8/156). Evidence: root-release-final.log and root-fast-final.log. Focused property-history suite and TypeScript no-emit also passed. No source changes after these final runs; only ledger receipts remain.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; only explicitly selected source paths staged; ignored dependencies and build outputs excluded.
+- Combined shared-file hunks are jointly selected by the user; each fingerprint is registered once under the first selected owning unit, with remaining owners referenced by this combined scope.
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `08d5f5728355e61e50ee2b5827bfcc8b43ac49ded758680f7045ab9c526c667b`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `2d2dd8812a9ad09dc8908caecbbf6b92e8219caa74cca758abbf08f2bc9dda18`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `2e1af64d67ab5ca486f267577658d2f0865b6be3bc4f89c35fcb1a2ae443df0a`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `94678629fb3e3f5b05a010f9f3b38af69874f482547d0a86fb228ad0f5e07439`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `9adf3a74da5f3aee836de53b5365a8f5868d981a798159f87e776004139323e7`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `9e4b9b9453c5594e48699ceb66c615bfcbd25d715c40e937fec1877bf210df54`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `cda3d18e77c1b03dfd12486cfe7815d278f3404557879b9c2651626e1147027d`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `cfba9f8cbcd001ca983403488baf4150fae2fbf532c1294031b718c817264dc1`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `e6eb9b94697dcfac0024cc5bbeeb4849200d1e3423f1f106264f4fc4a50f909a`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `f0a818e392158468c59d9af8e2a490a8ff706353478a099f95b1b3a23a8290bd`
+- `backend/scripts/tests/test_mzapp_media_visibility.ts` — SHA-256: `f53613ea3df3adffcbb0db8d86751e9a92bca25e5ca6adb1d52105fe1d0b58a5`
+- `backend/scripts/tests/test_property_feedback_history_media.ts` — SHA-256: `3d90875a5ceacaa43b48d9654c36d5be7c15892b0afe71b56817945408b47ef7`
+- `backend/scripts/tests/test_property_feedback_history_pg.ts` — SHA-256: `d70d4e10825f8c21784f29ecfeeabbdd552c64631ab20653936f171a2a15ad84`
+- `backend/scripts/tests/test_property_feedback_history_policy.ts` — SHA-256: `43146ec66b87516593faa92f145e64549574584a7d544e384f3c4fe9df615bde`
+- `backend/scripts/tests/test_property_feedback_history_routes.ts` — SHA-256: `1a6bf3a6e92bbc4bd895f10515013b129c38a13c37fd22ca3090ee27090da51c`
+- `backend/src/lib/propertyFeedbackPolicy.ts` — SHA-256: `10716d13cf7b44907780b94a147064839741470afc4f456fe5496ea0bf14acc5`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `0cb89299809d0b07f584e8b6d7fa4f163b1d254a00f7ebacf0861594e9efcc35`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `28f8a2be45897292a403afef40c25822611b12e7d989f3623197f3064932d94c`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `3c289c8d0cf39643112b201488996e5ee54ba046c860628f9653b65ce9243f47`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `5ce24de174c376b3b9742552bcc76f532e2e3d0dd2758ddd6a132aabc1132355`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `84e6fdc87a696356cdd308a4461bbaf1b55aac1a35ef4f93bb35870e37b3eca5`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `9fbc9d7f9d5031558ad9a78955de9cdd7504f2ae4486545c0dfd879a9f3d148d`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `b5c7e573f20f7fcca4d22633284d42916efa2f29357bdd83d5df44ebe6d657a0`
+- `backend/src/modules/cleaning_app.ts` — SHA-256: `ec42c9fd7c8661bdfb511ba00b58eb396d2fac2832377e6fd8e853565b253ab2`
+- `backend/src/modules/crud.ts` — SHA-256: `168d29d0a2e37f4b368bc3d2b9c3cc70b9a8b8719bed9761c20391e93bc79c65`
+- `backend/src/modules/crud.ts` — SHA-256: `3139b2d035d6305cdc5ce02d58dbc5d14fed8d5240b20bec1ceb1afaa657d37d`
+- `backend/src/modules/crud.ts` — SHA-256: `33b665bc9780a06bf72d897785d2cb24cce054d2620b01cb8ba9be46a3db6cb2`
+- `backend/src/modules/crud.ts` — SHA-256: `3a52ac2f0ace1bf7de50090bfed48d0b10b31ab99e57eb7affcb31e6d60fe273`
+- `backend/src/modules/crud.ts` — SHA-256: `3c4608015c6b65c4d62c821545a7b80ca83e337572fd9ff1fd9d72873eacfcbb`
+- `backend/src/modules/crud.ts` — SHA-256: `3fe82d85b33431d08935471f1b66152488e55922db69595b77062d945e5aeb54`
+- `backend/src/modules/crud.ts` — SHA-256: `776ff782fcbd4e923246480d7d30d1971d3fcb7356ce181764d4a61289fbc561`
+- `backend/src/modules/crud.ts` — SHA-256: `7a9baf59748633e160f5dbf81853be69ca9c7de8b28f4ef5b097e50b737a2ee6`
+- `backend/src/modules/crud.ts` — SHA-256: `86f0826ffc6901f36b768da7306c2e4aa1572f860761b022d79e9a3e33d5c3c5`
+- `backend/src/modules/crud.ts` — SHA-256: `9777dd1992e9b8f0572c5aa71d300f751acb3385750e169e894907da391aab5c`
+- `backend/src/modules/crud.ts` — SHA-256: `a68c66edd5e920ef1921ff64799e0069309bd4d399e1d472a46e9db21555de79`
+- `backend/src/modules/crud.ts` — SHA-256: `a8726b5fa8ae0c2d01207834f90346383a525850ad3f0ec4e3392390ac6a76a6`
+- `backend/src/modules/crud.ts` — SHA-256: `d4ed02bba99e4356743da2de278d7d37c9087385a3a1d5a7965bf7341f351cbd`
+- `backend/src/modules/crud.ts` — SHA-256: `d9a3124806e1d53336b25f868f867af9f47f00f53ce1a5546c533b84c6b2ca6c`
+- `backend/src/modules/inventory.ts` — SHA-256: `a50447d0cd1e2cbae5d6c33d5f38d7e978084ed634369c5a20b523542caeee2f`
+- `backend/src/modules/inventory.ts` — SHA-256: `a97dd749c6e3ed461a2749708cfa13176f7abe7379f224d68c2d36accceda7ea`
+- `backend/src/modules/inventory.ts` — SHA-256: `b9c71b4c518005dbe11163fce918bb32347a509ad3d38139d958f31fb36d7f7b`
+- `backend/src/modules/inventory.ts` — SHA-256: `ca54f882c2532cb6919e17b572405470c7185297c70327a25801db7dee14f73f`
+- `backend/src/modules/inventory.ts` — SHA-256: `cc002359bc4318b310cb541d58db13a21f0e2184d800249e1f49d5930bb1567c`
+- `backend/src/modules/inventory.ts` — SHA-256: `ef0a14bd2fb20b2891baaf868930621def6519b133964570d99580dc41b0f624`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `205ee078a48a3a17ce1039144d8f3129594bbda141b147a6653136f6c8c96142`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `9474b14cab7ff97ff7399eb4d7fc2b8b8f35cb46dbb01013604e36009e7d75db`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `cfdeedb892af5e04ba569a7f59aa4ef09a24f8d5d0424e26f71964defa59d697`
+- `backend/src/modules/work_tasks.ts` — SHA-256: `e80d47694f05bb4b4d00ca985d030dba9a36f1cc4ed996dfc41edf70dfba738b`
+- `package.json` — SHA-256: `da67229ee7edad8936de5a23cfa4428d8c3c596f19f94289ba118fb873f74e4c`
+- `package.json` — SHA-256: `fb0bea6d330ddda47d38007a75c3ef2ba3bdef147e60f16c96d65a01f2599a03`
+
+### Release Attempts
+
+- None. Clean detached candidate based on freshly fetched origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b (fetch reflog 2026-11-07 17:29:47 +1100); original dirty worktree preserved. Technical state candidate; authorization not-selected; commit/push/deploy conclusion NOT VERIFIED pending independent final review and explicit selection.
+
+### Risks / Release Notes
+
+- No production writes or API tests. Costs in free-text descriptions or photo pixels cannot be automatically redacted; only structured finance fields, invoice descriptions and dedicated receipt namespaces are excluded.
+- Offset pages are deterministic on a stable dataset; concurrent new records may shift pages, and client de-duplication is required. Deep history does more indexed evidence reads; production query plans and load are not measured here.
+- Historical records lacking creator ID stay non-owner-editable. Missing required evidence relations fail closed rather than return false capability certainty.
+- Rollback is revert of this single root unit plus paired mobile unit before/after normal authorized release. Audit lock receipts are deliberately retained business evidence, not erased by source rollback.
+- Sensitive-information review: synthetic test fixtures only; no secrets, environment contents, tokens, production records or credentials added.
+- Git state: not committed; not pushed; PR not created/not merged; backend not deployed; OTA not published; device/production verification not run.
+
+
+### Combined Release Preparation (2026-11-09)
+
+- Board scope: MZ-084. Latest user explicitly requested commit, push and PR for MZ-077/084/099/100/111, one combined branch per repository. No merge/deployment/production writes authorized.
+- Branch: `codex/mz-077-084-099-100-111-20261109`; fresh `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`, fetched 2026-11-09T07:16:13Z. Prior validation above is source-candidate history, not proof of this integrated range.
+- Current technical state: candidate; integrated required checks/review pending; not committed, not pushed, PR not created, not merged, not deployed, OTA not published, device/production verification not run.
+
+## CRL-20261103-005 — MZ-099 未分配入住中清洁管理可见性与标签纠正
+
+- **Status:** verified combined candidate; final complete gates and independent commit review GO; selected for commit/push/PR
+- **Repository:** `root`
+- **Updated:** 2026-11-03 11:10 UTC
+- **Request:** 让已排期但未分配的入住中清洁出现在 Web 任务安排和有权限的 Mobile 管理 `all` 视图并可安排；普通清洁员 `mine` 不变；未分配时隐藏误导性的“自完成”和“钥匙未上传”，但保留原 `self_complete` 业务流程。
+- **Outcome:** Web Task Center 与三个既有管理角色的 Mobile `all` 服务端投影可取得未分配 `stayover_clean`；self/mine、房源跟进和其他未分配任务边界不变。Web 卡片只在真实清洁执行人存在时显示“自完成”，钥匙缺失提示只在真实参与人存在时显示。
+
+### Implementation
+
+- Previous behavior: 共享执行列表把未分配非周转清洁一律过滤，导致入住中清洁在 Web 任务安排和 Mobile 管理列表同时消失；Web capability 无条件展示 `self_complete`，清洁页面把 `null` 转成字符串 `"null"` 后误判为已有钥匙上传责任人。
+- New behavior: 新增窄范围 `includeManagerUnassignedStayoverCleaning` 投影，只由 Web 安排面和 admin/offline_manager/customer_service 的 Mobile `all` 服务端列表/统计启用；不修改周转识别或 cleaner mine。self-complete 语义继续下发，但 badge 绑定真实 cleaner；钥匙责任 helper 对 null/undefined 失败关闭。
+- Key decisions: 不把 `stayover_clean` 加入 turnover 类型，不改变任务状态、负责人、动作、权限码、数据库或 `inspection_mode`；客户端仍以 Root 显式投影为权威。
+
+### Files / Areas
+
+- `backend/src/lib/dailyTaskExecutionVisibility.ts` — modified: add the manager/task-center-only unassigned stayover projection.
+- `backend/src/lib/dailyTaskExecutionStats.ts` — modified: keep manager list and daily counts on the same visibility option.
+- `backend/src/lib/webTaskCapabilities.ts` — modified: preserve self-complete semantics but require a real cleaner before showing the badge.
+- `backend/src/modules/task_center.ts` — modified: include scheduled unassigned stayover cleaning in the Web assignment surface.
+- `backend/src/modules/mzapp.ts` — modified: enable the stayover exception only for the existing authorized manager-all pool.
+- `backend/scripts/tests/test_daily_task_execution_visibility.ts` — modified: cover all three manager roles, Web wiring and cleaner-mine exclusion.
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — modified: cover manager count/mine exclusion parity.
+- `backend/scripts/tests/test_web_task_capabilities.ts` — modified: cover unassigned/assigned self-complete badge behavior.
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — modified: prove unassigned stayover is visible/assignable while another non-turnover cleaning type remains hidden.
+- `backend/package.json` — modified: expose the capability regression as a named test.
+- `frontend/src/lib/cleaningTaskUi.ts` — modified: add null-safe key-upload participant detection.
+- `frontend/src/lib/cleaningTaskUi.test.ts` — modified: cover null and real participant cases.
+- `frontend/src/app/cleaning/page.tsx` — modified: consume the null-safe helper.
+- `docs/feature-regression-registry.md` — modified: update FR-035 invariant and test mapping for MZ-099.
+- `package.json` — modified: run the capability regression in backend/full and fast quality gates.
+- `docs/change-release-ledger.md` — modified: record this root release unit.
+
+### Impact / Dependencies
+
+- API: response membership changes only for scheduled active unassigned `stayover_clean` in Web Task Center and authorized Mobile manager `view=all`; payload fields and actions are unchanged.
+- Database / migration: none.
+- Config / environment: none.
+- Dependencies: paired `mobile/CRL-20261109-002`; Root must be deployed before any Mobile release.
+- Related units: `root/CRL-20261010-001`, `root/CRL-20261013-005`, `mobile/CRL-20261013-006`.
+
+### Validation
+
+- `npm run test:daily-task-execution-visibility --prefix backend` with the existing local test runner — passed: role matrix, Web wiring and mine exclusion.
+- `npm run test:daily-task-execution-stats --prefix backend` with the existing local test runner — passed: list/count parity.
+- `npm run test:web-task-capabilities --prefix backend` with the existing local test runner/dependency path — passed.
+- `npm run test:task-center-daily-projection --prefix backend` — passed after independent review identified and corrected the stale pre-MZ-099 expectation.
+- `esbuild ... changed Root/Web TypeScript and TSX entrypoints` — passed: all changed runtime/test entrypoints parsed and bundled; SCSS treated as text for syntax validation.
+- bundled `cleaningTaskUi` assertions — passed: null participants hide and real participants show key-upload responsibility.
+- `git diff --check` — passed before ledger update.
+- `npm run test:root-quality-workflow-contract` — passed: 10 tests.
+- `npm run test:ledger-range-audit` — passed: 53 tests.
+- `python3 scripts/audit_feature_regression_registry.py` and `python3 scripts/audit_change_release_ledger.py` — passed after final corrections.
+- User-authorized lockfile installs — passed with official `https://registry.npmjs.org/` and existing lockfiles for Root backend/frontend and paired Mobile; installs were local to the isolated worktrees, with no global package, database connection or production access.
+- Focused Web UI Vitest — passed: `src/lib/cleaningTaskUi.test.ts`, 10/10 tests.
+- Paired Mobile focused Jest — passed: visibility, active realtime/store reconciliation and TasksScreen role/render coverage, 3 suites / 157 tests.
+- `CI=true npm run check:full` with `DATABASE_URL` and `DATABASE_DIRECT_URL` explicitly unset — PASS: dev-preview guards, ledger and Feature Registry audits, Root workflow contract (10/10), backend TypeScript build and complete contract chain, Web lint (baseline warnings only), Web Vitest (57 files / 315 tests, coverage gate), Web production build, and paired Mobile full gate (84 suites / 827 tests). The repository-required Phase 5 contract used a temporary local link to the isolated paired Mobile worktree; the link was removed after the gate. No Neon or production database/API was used.
+- Independent review — GO; P0/P1/P2 = 0 after correcting the stale Task Center expectation and verifying Web list/count parity, manager/mine boundaries, explicit server denial, labels, CI wiring, database/production-write exclusions and the paired Mobile authority flow.
+
+- **Combined 2026-11-09 validation:** `CI=true npm run check:release` and `CI=true npm run check:fast` both exited 0 on the integrated source, with cleared database environment and Node external-connection guard. Complete backend aggregate including all selected wired regressions PASS; Web lint, 60 files / 333 tests and production build PASS; paired final Mobile 8 fast suites / 156 tests and 87 full suites / 893 tests PASS. Backend no-emit TypeScript, ledger/FR audits, staged diff hygiene PASS. Logs retained outside the candidate as root-release-check.log and root-fast-check.log.
+- **Combined isolated PostgreSQL:** MZ-084 PASS: 18 linkage, 36 removed/zero-expense audit, 12 task/expense lock orderings, 18 stale-reference races, 3 orphan-reference checks. MZ-111 PASS: 39 SQL cases + 12 source-extracted ownership/cancellation cases, audit unchanged. Separate new temporary Unix-socket PostgreSQL 16.15 clusters, TCP disabled, both stopped. No application bootstrap, production URL or production data.
+- **Integration corrections:** MZ-099 Web import retains newer Dev atomic editing helpers; shared npm scripts retain every newer Dev test. MZ-111 fixture extracts the MZ-077 pending-inspection predicate and additionally asserts its current/previous/unrelated actor and cancellation boundaries; runtime behavior was not altered for test compatibility. MZ-077 exact WSP3710/live device reproduction and production query-performance verification remain not run.
+- **Warnings and cleanup:** existing Web React Hook dependency/image warnings and tool deprecation/cache notices remain recorded, not errors. The first backend-only attempt reached the cross-repository static contract then lacked a paired Mobile path; after linking the correct candidate, the complete release gate passed. The temporary symlink and five generated tracked backend outputs were restored/removed before final staging. No artifacts, environment files, production identifiers, dependency installation or unrelated content were included.
+
+- **Final post-review validation (2026-11-09):** final pagination code and paired Mobile draft-restoration correction passed both `check:release` and `check:fast` with exit 0. Web remains 60/333; paired Mobile is now 87 suites / 894 tests (fast 8/156). Evidence: root-release-final.log and root-fast-final.log. Focused property-history suite and TypeScript no-emit also passed. No source changes after these final runs; only ledger receipts remain.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; only explicitly selected source paths staged; ignored dependencies and build outputs excluded.
+- Combined shared-file hunks are jointly selected by the user; each fingerprint is registered once under the first selected owning unit, with remaining owners referenced by this combined scope.
+- `backend/scripts/tests/test_daily_task_execution_stats.ts` — SHA-256: `0008d75b5762ea065e89527592558731d7210435e88ddfbc3ec5f2ded6c439ef`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `3b97657467061cd75e72113ca837da622a3ffe87b84d636e53536fd54e54642d`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `41442e47d0cb68b6a83f4c3b051ea2fb420fcf23ac80fd0354d1cfb7207a7a65`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `5ec82a20bb15403dbcb01a6c15a01c1ea901f80a085b07e88b027433488bc34f`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `ca6f483f9d8801f57ffeb1e840dce4d9f4111e62dc51fc05b5166f2bd92a4581`
+- `backend/scripts/tests/test_task_center_daily_projection.ts` — SHA-256: `f1e09ceac8e5c2181e9326e81096862e93536ff6cae9e5731d9f85ac10b8cb7f`
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `4e48f19d4b9f82e41f761e43153ee69e0c6ae6b2232dfdb8d4542b465da797a6`
+- `backend/scripts/tests/test_web_task_capabilities.ts` — SHA-256: `d785e0270724966c0a37b900cfcdabb47ed3b72c7cd5fe71d4accfa99f7074ab`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `d6682237cb46592aebb2f70be033c6de6568dc67378509776aaf4c435c0c6bc8`
+- `backend/src/lib/dailyTaskExecutionStats.ts` — SHA-256: `eeb28ae629e0efcc2800d29d75f700427a9afa8d055b0df1c25756bfd3e5239d`
+- `backend/src/lib/webTaskCapabilities.ts` — SHA-256: `6a853071f685b740c15127b8b4d1606f9ed120f5c6da5198db50cbd9bb2051a1`
+- `backend/src/lib/webTaskCapabilities.ts` — SHA-256: `71efd0764f12a517a156b03065703ac5173ace122ef0b30cdfed2eb9bbf3f46a`
+- `backend/src/lib/webTaskCapabilities.ts` — SHA-256: `d7b501f4bcf85151b378823cc41ae2a7ecb3695c3d1a79eebecc4a30ebe8e2b8`
+- `backend/src/modules/task_center.ts` — SHA-256: `80e2c6fb8a5f8474d0a544c91c34e66d58d3bd6e9616c0684724cd89a3ddf498`
+- `backend/src/modules/task_center.ts` — SHA-256: `ca1fd7f98db6c6cd2c2c437352e7b2f31099bfeb208527d483ed8e8188c0ff50`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `7a5f2fcaf3032d47863f550da29e248a941e647e12572820441f7dff3c1fcbce`
+- `frontend/src/app/cleaning/page.tsx` — SHA-256: `bd937aa0215ea17af9fd955673b0d16fa2d909953b39f5f502b98427c9e532f1`
+- `frontend/src/lib/cleaningTaskUi.test.ts` — SHA-256: `1bdad10755e521948c8550234d0c3cdf4bb0c544fb46e6c268f4efe498abccda`
+- `frontend/src/lib/cleaningTaskUi.test.ts` — SHA-256: `5f61b9386895c4dbe2541b453567ab1187e8baab6ff93fec95da5ccfa97f3eeb`
+- `frontend/src/lib/cleaningTaskUi.ts` — SHA-256: `72084c1fbdbe9c58921422528a4dbc5757bd56002b95da69c178cbf5682e4b01`
+
+### Release Attempts
+
+- None yet.
+
+### Risks / Release Notes
+
+- Risk: manager-list membership and count projections must ship together with the paired Mobile cache/realtime scope; rollback is a revert of this CRL's code, tests, registry and ledger hunks.
+- Sensitive-information review: no credentials, tokens, cookies, URLs, production rows, screenshots or environment values added.
+- Git state: uncommitted on `codex/mz099-unassigned-stayover-20261103`; no staging, commit, push, PR, merge, migration, production write, deployment or OTA.
+
+### Combined Release Preparation (2026-11-09)
+
+- Board scope: MZ-099. Latest user explicitly requested commit, push and PR for MZ-077/084/099/100/111, one combined branch per repository. No merge/deployment/production writes authorized.
+- Branch: `codex/mz-077-084-099-100-111-20261109`; fresh `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`, fetched 2026-11-09T07:16:13Z. Prior validation above is source-candidate history, not proof of this integrated range.
+- Current technical state: candidate; integrated required checks/review pending; not committed, not pushed, PR not created, not merged, not deployed, OTA not published, device/production verification not run.
+
+## CRL-20261109-002 — MZ-100 信息中心密码正文与锁屏推送隔离
+
+- **Repository:** `root`
+- **Status:** verified combined candidate; final complete gates and independent commit review GO; selected for commit/push/PR
+- **Updated:** 2026-11-07 UTC
+- **Request:** 用户明确开始修复 MZ-100 信息中心密码隐藏；084 不在范围。仅本地实现及隔离验证，不提交、推送、部署或操作生产数据。
+- **Outcome:** 激活后新任务通知的信息中心正文显示事件时的密码变更；锁屏推送保持原隐藏正文。历史消息不回填、不读取当前任务伪造过去值。
+
+### Implementation
+
+- 原先信息中心与 Push 读取同一隐藏正文。新增服务器私有 `_inbox_body`，仅已授权收件人的 Inbox 将其投影为 body；队列及两个 Expo 出口移除该字段。
+- Web 普通更新、新建、原子更新和 Mobile manager-fields 入口均传递独立正文。Mobile 仅使用事务锁定前值及实际 UPDATE RETURNING 后值，不使用未落库请求值；未领取字段不生成虚假密码值。
+- 不变：服务端收件人、角色/房源/任务权限、actor exclusion、event_id、去重、未读计数、跳转、密码来源和传播规则。
+- 默认关闭 `NOTIFICATION_INBOX_PASSWORD_VALUES_ENABLED`。先部署所有队列和 Expo 消费者的隔离保护，核实无旧实例后，另行授权配置为精确字符串 `true`。本次未启用任何环境配置。
+
+### Files / Areas
+
+- `backend/src/lib/notificationChannelContent.ts` — Inbox/Push 内容投影及私有字段剥离。
+- `backend/src/modules/cleaning.ts` — 四个 Web/任务创建通知入口。
+- `backend/src/modules/mzapp.ts` — 事务捕获实际密码变更并构造 Inbox 正文。
+- `backend/src/modules/notifications.ts` — 用户归属过滤后的 Inbox 投影及最终 Push 保护。
+- `backend/src/services/notificationEvents.ts` — 默认关闭激活门及保留字段注入拒绝。
+- `backend/src/services/notificationQueueWorker.ts` — 取队列后、分组前剥离私有正文。
+- `backend/scripts/tests/test_mz100_notification_password_channels.ts` — 隔离合成通道、重放、私有数据及入口回归。
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — 原隐藏契约限定为 Push。
+- `backend/package.json` — 专项测试入口。
+- `package.json` — backend 聚合门接线。
+- `docs/notification-registry.yaml` — 内容契约和双阶段激活/回滚约束。
+- `docs/feature-regression-registry.md` — FR-003 测试映射。
+- `docs/change-release-ledger.md` — 本单元证据。
+
+### Impact / Dependencies
+
+- API：Inbox response 形状不变；启用后新消息 body 恢复值，data 不暴露私有字段。
+- Database / migration：无 schema/migration，无本次数据库操作；未来运行仅在原通知 JSON data 中保存事件正文。
+- Config / environment：新增默认关闭激活变量；无依赖安装，未修改真实环境。
+- Dependencies：实时 API 与 git ls-remote 验证的 `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`，含 PR #447 MZ-091/110；无 Mobile 源码变更。
+- 原第一候选误用 main-only fetch refspec 下的旧 origin/Dev 缓存，已保留为非交付证据；最终候选仅为 mz100-current-dev。
+
+### Validation
+
+- `tsc -p backend/tsconfig.json --noEmit` — PASS，最终当前 Dev 代码检查通过。
+- `npm run test:app-notification-policies --prefix backend` — PASS，合成正向角色、负向排除及 fail-closed。
+- `npm run test:mz091-password-authority --prefix backend` — PASS。
+- `python3 scripts/audit_feature_regression_registry.py` — PASS，40 FRs / 324 mappings。
+- `npm run test:mz100-notification-password-channels --prefix backend` — PASS；4个Web入口、Mobile保存值/并发/重放、空值、默认关闭/激活矩阵、Push metadata防泄露。
+- 配套 Mobile `5c6b88fbc424bffe6aeaa378d420354a46d4960c`的 `notificationInbox.test.ts` — PASS，1 suite / 3 tests；仅已有合成客户端映射，不代替真机。
+- `python3 scripts/audit_change_release_ledger.py` — PASS，13/13当前任务文件覆盖，远程Dev lineage通过。
+- Notification Registry YAML、policy key唯一性和writer检查 — PASS。
+- `npm run check:backend` — PASS，最终聚合含 backend build 和全部后端门（含MZ-100），DATABASE_URL为空、无环境配置、外网连接阻断，仅允许合成本地HTTP。首轮网络保护阻止本地HTTP、第二轮缺配套Mobile链接均已纠正并完整重跑通过；构建生成的tracked dist和临时Mobile链接已移除候选范围。
+- 独立源码复审：已修正滚动发布泄露和未落库请求值两个问题；复审无新 P0/P1/P2。
+- 全量跨前后端 check:full、真实隔离 PostgreSQL/API、浏览器、设备/弱网及生产验证未运行，不将合成验证当端到端验收。
+
+- **Combined 2026-11-09 validation:** `CI=true npm run check:release` and `CI=true npm run check:fast` both exited 0 on the integrated source, with cleared database environment and Node external-connection guard. Complete backend aggregate including all selected wired regressions PASS; Web lint, 60 files / 333 tests and production build PASS; paired final Mobile 8 fast suites / 156 tests and 87 full suites / 893 tests PASS. Backend no-emit TypeScript, ledger/FR audits, staged diff hygiene PASS. Logs retained outside the candidate as root-release-check.log and root-fast-check.log.
+- **Combined isolated PostgreSQL:** MZ-084 PASS: 18 linkage, 36 removed/zero-expense audit, 12 task/expense lock orderings, 18 stale-reference races, 3 orphan-reference checks. MZ-111 PASS: 39 SQL cases + 12 source-extracted ownership/cancellation cases, audit unchanged. Separate new temporary Unix-socket PostgreSQL 16.15 clusters, TCP disabled, both stopped. No application bootstrap, production URL or production data.
+- **Integration corrections:** MZ-099 Web import retains newer Dev atomic editing helpers; shared npm scripts retain every newer Dev test. MZ-111 fixture extracts the MZ-077 pending-inspection predicate and additionally asserts its current/previous/unrelated actor and cancellation boundaries; runtime behavior was not altered for test compatibility. MZ-077 exact WSP3710/live device reproduction and production query-performance verification remain not run.
+- **Warnings and cleanup:** existing Web React Hook dependency/image warnings and tool deprecation/cache notices remain recorded, not errors. The first backend-only attempt reached the cross-repository static contract then lacked a paired Mobile path; after linking the correct candidate, the complete release gate passed. The temporary symlink and five generated tracked backend outputs were restored/removed before final staging. No artifacts, environment files, production identifiers, dependency installation or unrelated content were included.
+
+- **Final post-review validation (2026-11-09):** final pagination code and paired Mobile draft-restoration correction passed both `check:release` and `check:fast` with exit 0. Web remains 60/333; paired Mobile is now 87 suites / 894 tests (fast 8/156). Evidence: root-release-final.log and root-fast-final.log. Focused property-history suite and TypeScript no-emit also passed. No source changes after these final runs; only ledger receipts remain.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; only explicitly selected source paths staged; ignored dependencies and build outputs excluded.
+- Combined shared-file hunks are jointly selected by the user; each fingerprint is registered once under the first selected owning unit, with remaining owners referenced by this combined scope.
+- `backend/scripts/tests/test_mz091_password_authority_contract.ts` — SHA-256: `e2ac391cb5744c0b4468a6d9ab178fabce67d2da7b4d51e722eb9229b0b3bbd7`
+- `backend/scripts/tests/test_mz100_notification_password_channels.ts` — SHA-256: `218853dd987dd209b4b9af17ab40ea3830a5d0d1d267f159b7886251e09bcec0`
+- `backend/src/lib/notificationChannelContent.ts` — SHA-256: `d2fe914ac9d79ee580ac5914088c9f64a66454303019f25e6ec8779b81d13390`
+- `backend/src/modules/cleaning.ts` — SHA-256: `183d1134453b4aed63e83c146713fbffbf1d9e9be9df2f5d82ae5d9ff6357a13`
+- `backend/src/modules/cleaning.ts` — SHA-256: `186a276a4392c7828ca09258d4bba65046bc83ec887776891e75f3dab194babe`
+- `backend/src/modules/cleaning.ts` — SHA-256: `1928b91e8802acc7dade366d05569da0c8e1133e846d863ce50974a436df8013`
+- `backend/src/modules/cleaning.ts` — SHA-256: `284bd41e848106abdbcf61b2843f94b6ec5de1d866917594d7af19bc93a8c9a6`
+- `backend/src/modules/cleaning.ts` — SHA-256: `294bbeeaabff848ca410c3bd0832661b79cea9f11ed75095264a388037431feb`
+- `backend/src/modules/cleaning.ts` — SHA-256: `645318310c477bfbe472d4339a6de0aa7b75078e40850a04a16bbc3afadea668`
+- `backend/src/modules/cleaning.ts` — SHA-256: `64620ebfd0780da38772a9112fcd4934a99ebab285886f2d7089256d5fff00ff`
+- `backend/src/modules/cleaning.ts` — SHA-256: `751e5b4137616d60ce6a3b7fc09eac3871929508645bd84affca93d676fce46f`
+- `backend/src/modules/cleaning.ts` — SHA-256: `856602f8071b9d0d30373bd12266a03da56d559b15ce9cf4038a9c05a90d0420`
+- `backend/src/modules/cleaning.ts` — SHA-256: `9847a045de1ea8c4441fc740a1493b1884c40759b892abc2b79fdc58798fb1ae`
+- `backend/src/modules/cleaning.ts` — SHA-256: `d36900bb282da4ba8fdf689ef76e589c4f8a1d21b4be6fb9278a0a12544fc682`
+- `backend/src/modules/cleaning.ts` — SHA-256: `e9e29b40f5d83af120f883bad830b4ce747f45ebf45f9e84bf55257b6aa1a75d`
+- `backend/src/modules/cleaning.ts` — SHA-256: `edb6fc019ddac2d7b85986b19a0280a671b99f1ca0f29403ca9b450933253f8a`
+- `backend/src/modules/cleaning.ts` — SHA-256: `f2145a1394ac77ca199a8dfc9d91a02b18ad8f4c60a4a5d286db45947093ea9b`
+- `backend/src/modules/cleaning.ts` — SHA-256: `f8d8dc8bb83159fe50a6d5fb930bb103d63615da76b2cea1d6dfea594e90fa19`
+- `backend/src/modules/notifications.ts` — SHA-256: `2655bea329d8691244c229013c67c7d0d6359bf70d7fa68558e6ba5549e4aeac`
+- `backend/src/modules/notifications.ts` — SHA-256: `4c3ead38b6c2c839d6f9f3e765d1921ca254bdb7f088b417339f9c16d57534da`
+- `backend/src/modules/notifications.ts` — SHA-256: `9d6b44068e606fdf89e23c8b98ae5911566b81537b9af2d9ccf3d63e56fe72dd`
+- `backend/src/modules/notifications.ts` — SHA-256: `de7eecccde17fd097f3f0a030057dd01b4d1e1f2c47928139e067ad5a6a4185a`
+- `backend/src/services/notificationEvents.ts` — SHA-256: `50f2c370f2733de94ad7d0652c6c1910b84d5c2f2d4c4fe5c89ca97c01ce9194`
+- `backend/src/services/notificationEvents.ts` — SHA-256: `d128e1fd353f40d0afd835bce05759791e282fc96d01cec9455cc00cc96a6b51`
+- `backend/src/services/notificationEvents.ts` — SHA-256: `f3626874752d6880b4622509ef1eb1404357fd19e3e64cda172681571142603c`
+- `backend/src/services/notificationQueueWorker.ts` — SHA-256: `24e31626105ba276b6e303c8ca7b34665b13bca2076fb8777449ca1fdf4e89cb`
+- `backend/src/services/notificationQueueWorker.ts` — SHA-256: `608595641a661d878a7c64b08fbaebb1da6d756d0d2a822cafcf65e437a3b787`
+- `docs/notification-registry.yaml` — SHA-256: `22c098af67b26900f7b050f6a7045ec993ced8b6d4227885f179d483d2282d30`
+- `docs/notification-registry.yaml` — SHA-256: `36f7549e8d2d51e2d5685bfe754da4a86161f47dff527b50e28bc52405807969`
+- `docs/notification-registry.yaml` — SHA-256: `671d6ad27a695f154aeaf35367788e59f0704a7b5c7e57ebe92f86c243636659`
+- `docs/notification-registry.yaml` — SHA-256: `a6fb65cf030ec90747ce7b122d84f6d460d5786a0f5ab8fe2ceb2e6f9baf6e96`
+
+### Release Attempts
+
+- None. not committed / not pushed / PR not created / not merged / not deployed / OTA not published / device and production verification not run。
+
+### Risks / Release Notes
+
+- 激活前必须完成 sanitizer-first 部署；回滚仅可关闭生产者开关并保留队列/Expo 剥离代码。存储存在私有正文时，不得回滚到会直接转发整个 data 的旧消费者。
+- 激活前生成的隐藏消息不会因后续激活恢复。不能凭本地通过认定用户手机已修复。
+- 无真实密码、数据库 URL、token、敏感日志或生产数据进入本变更；仅 SYNTH 测试值。
+
+
+
+### Reconciliation Receipt (2026-11-09)
+
+- The unpublished MZ-100 source candidate reused CRL-20261107-001 independently from MZ-084. This combined attempt assigns MZ-100 root/CRL-20261109-002; MZ-084 retains root/CRL-20261107-001. Source business content is preserved; no remote CRL identity was changed.
+
+### Combined Release Preparation (2026-11-09)
+
+- Board scope: MZ-100. Latest user explicitly requested commit, push and PR for MZ-077/084/099/100/111, one combined branch per repository. No merge/deployment/production writes authorized.
+- Branch: `codex/mz-077-084-099-100-111-20261109`; fresh `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`, fetched 2026-11-09T07:16:13Z. Prior validation above is source-candidate history, not proof of this integrated range.
+- Current technical state: candidate; integrated required checks/review pending; not committed, not pushed, PR not created, not merged, not deployed, OTA not published, device/production verification not run.
+
+## CRL-20261108-001 — 移动端明确恢复任务的删除过滤例外
+
+- **Repository:** `root`
+- **Status:** verified combined candidate; final complete gates and independent commit review GO; selected for commit/push/PR
+- **Updated:** 2026-11-08 UTC
+- **Request:** 排查已恢复并重新分配的退房任务为何仍被移动端 work-tasks 删除历史过滤，只做最小本地取数修复并保留审计及角色边界。
+- **Outcome:** 本地候选允许当前 active 且有可靠、晚于取消记录的明确删除恢复事件的任务进入既有角色投影；仅重新 assigned 不会绕过删除屏障。尚未部署，不能据此声称用户端恢复。
+
+### Implementation
+
+- Previous behavior: latest cancellation patch 的 deleted/removed/tombstone 标记会一直阻止任务进入 candidate_tasks，即使之后已有明确恢复事件。
+- New behavior: 保留原 is_deleted=false 分支及全部历史候选/取消记录投影；仅为当前 execution_state=active、已知非取消状态增加 EXISTS 例外。
+- Evidence: 同一 cleaning_task ID、source_type=cleaning_tasks、TASK_UPDATED/TASK_ASSIGNMENT_CHANGED、patch.execution_state=active、已知开放 patch.status、无删除/取消/取代 lifecycle 标记、mz031-v1 management_reopened、before.status=cancelled/canceled、after.status 与 patch.status 一致。
+- Ordering: 恢复的 (occurred_at, sequence_no) 必须晚于原最新取消，且 sequence_no 必须大于该任务所有取消事件的最大序号。时钟矛盾采取 fail-closed；之后普通改派不撤销明确恢复证据。
+- Scope: 不硬编码业务任务/订单 ID；不改审计、状态机、权限、角色归属、历史投影及数据库数据。删除后恢复再普通取消仍按原规则展示取消历史。
+
+### Files / Areas
+
+- `backend/src/modules/mzapp.ts` — GET /mzapp/work-tasks 的取消 CTE 增加排序证据，现行候选增加明确恢复例外。
+- `backend/scripts/tests/test_mzapp_restored_task_visibility_pg.ts` — 从实际源码抽取 SQL 和角色归属谓词，隔离 Unix-socket PostgreSQL 合成回归，无应用 bootstrap/dotenv/生产 URL 回退。
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — 适配 WHERE 分组括号，保留 superseded/history 契约并增加明确恢复证据及排序约束。
+- `docs/change-release-ledger.md` — 本地候选、验证范围和未运行阶段记录。
+
+### Impact / Dependencies
+
+- API: 返回结构不变，仅修正满足明确恢复证据的候选过滤。
+- Database / migration: none；只读 SQL，无 schema 或生产数据变更。
+- Config / environment / dependencies: none；复用已有 node_modules，没有安装依赖。
+- Related units: none；不包含其他 worktree 的 MZ-084 或历史未提交修改。
+
+### Validation
+
+- PASS: `env -i PATH="$PATH" HOME="$HOME" USER="$USER" NODE_ENV=test MZ_RESTORE_TEST_SOCKET=/tmp/mz-restore-pg.Fx8GT2/socket MZ_RESTORE_TEST_DATA_DIR=/tmp/mz-restore-pg.Fx8GT2/data MZ_RESTORE_TEST_WRITE=ephemeral-only node -r ts-node/register/transpile-only scripts/tests/test_mzapp_restored_task_visibility_pg.ts` (backend cwd): 39 PostgreSQL cases + 8 extracted production role-ownership predicates. Covers restored/deleted, missing/old/wrong-task/wrong-source/inconsistent evidence, later reassignment, re-deletion, timestamps/sequence conflicts, superseded/current-cancelled rows, cancellation/completion history, previous/unrelated assignees. Every case verifies audit rows unchanged.
+- PASS: sanitized environment, backend cwd, `node -r ts-node/register/transpile-only scripts/tests/test_daily_task_execution_visibility.ts`; `node -r ts-node/register/transpile-only scripts/tests/test_daily_task_execution_stats.ts`; `node -r ts-node/register/transpile-only scripts/tests/test_task_executor_eligibility.ts`.
+- PASS: `npm run build --prefix backend -- --outDir /tmp/mz-restored-task-build-20261108`; `backend/node_modules/.bin/tsc --noEmit -p backend`. Build output outside worktree, no tracked dist changes.
+- Local PG initially could not initialize/connect under sandbox IPC limits; approved execution used only disposable /tmp cluster, listen_addresses='', Unix socket port 55438, verified data_directory, temporary tables and rollback. No application server, account login, production URL, production API or production database access performed by this task.
+- PASS: backend cwd, sanitized environment, `node -r ts-node/register/transpile-only scripts/tests/test_work_tasks_cleaning_candidate_scope.ts`; `node -r ts-node/register/transpile-only scripts/tests/test_work_tasks_cleaning_candidate_equivalence.ts`; `node -r ts-node/register/transpile-only scripts/tests/test_work_tasks_cleaning_arrangement_equivalence.ts`. The old scope regex initially failed on the added WHERE grouping; its expectation was minimally updated without removing the history/superseded guard.
+- PASS: `python3 scripts/audit_change_release_ledger.py` (4 changed / 4 recorded paths, coverage PASS); `python3 scripts/audit_feature_regression_registry.py` (40 FRs / 323 mappings, 92 mobile mappings deferred); `git diff --check`. Disposable PG server stopped successfully after tests.
+- Parent investigation separately reported a forced read-only production SELECT using this final source predicate: old gate=false, corrected gate=true for the reported restored task, transaction_read_only=on. This is compatibility evidence only, not deployed HTTP/device validation; this implementation worker performed no production access.
+- Not run: full aggregate, HTTP/API bootstrap, live account, independent release review, deployment, OTA and device tests. Focused tests do not claim end-to-end coverage or full release gate.
+
+- **Combined 2026-11-09 validation:** `CI=true npm run check:release` and `CI=true npm run check:fast` both exited 0 on the integrated source, with cleared database environment and Node external-connection guard. Complete backend aggregate including all selected wired regressions PASS; Web lint, 60 files / 333 tests and production build PASS; paired final Mobile 8 fast suites / 156 tests and 87 full suites / 893 tests PASS. Backend no-emit TypeScript, ledger/FR audits, staged diff hygiene PASS. Logs retained outside the candidate as root-release-check.log and root-fast-check.log.
+- **Combined isolated PostgreSQL:** MZ-084 PASS: 18 linkage, 36 removed/zero-expense audit, 12 task/expense lock orderings, 18 stale-reference races, 3 orphan-reference checks. MZ-111 PASS: 39 SQL cases + 12 source-extracted ownership/cancellation cases, audit unchanged. Separate new temporary Unix-socket PostgreSQL 16.15 clusters, TCP disabled, both stopped. No application bootstrap, production URL or production data.
+- **Integration corrections:** MZ-099 Web import retains newer Dev atomic editing helpers; shared npm scripts retain every newer Dev test. MZ-111 fixture extracts the MZ-077 pending-inspection predicate and additionally asserts its current/previous/unrelated actor and cancellation boundaries; runtime behavior was not altered for test compatibility. MZ-077 exact WSP3710/live device reproduction and production query-performance verification remain not run.
+- **Warnings and cleanup:** existing Web React Hook dependency/image warnings and tool deprecation/cache notices remain recorded, not errors. The first backend-only attempt reached the cross-repository static contract then lacked a paired Mobile path; after linking the correct candidate, the complete release gate passed. The temporary symlink and five generated tracked backend outputs were restored/removed before final staging. No artifacts, environment files, production identifiers, dependency installation or unrelated content were included.
+
+- **Final post-review validation (2026-11-09):** final pagination code and paired Mobile draft-restoration correction passed both `check:release` and `check:fast` with exit 0. Web remains 60/333; paired Mobile is now 87 suites / 894 tests (fast 8/156). Evidence: root-release-final.log and root-fast-final.log. Focused property-history suite and TypeScript no-emit also passed. No source changes after these final runs; only ledger receipts remain.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none; only explicitly selected source paths staged; ignored dependencies and build outputs excluded.
+- Combined shared-file hunks are jointly selected by the user; each fingerprint is registered once under the first selected owning unit, with remaining owners referenced by this combined scope.
+- `backend/scripts/tests/test_mzapp_restored_task_visibility_pg.ts` — SHA-256: `345c8947b9fd968b71b8fe315a0c08f8d598a213ace6e3f06adfbd855d43a4b4`
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — SHA-256: `08ef9035a12b81e2e19afa013654bff3b881588f57465d5c018be24cd9d211d3`
+- `backend/scripts/tests/test_work_tasks_cleaning_candidate_scope.ts` — SHA-256: `ba14ff32d41d1331737d85c40d8da3daedeb29f520a004ce81aa0916bd632728`
+
+### Release Attempts
+
+- None. Local implementation only. Clean detached worktree created from fresh `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`, fetched at `2026-11-08T02:12:08Z`; original dirty worktrees preserved. Technical state: candidate; authorization: not-selected; commit/push action conclusion: NOT VERIFIED (not requested; independent release review and release gates not run).
+
+### Risks / Release Notes
+
+- Evidence intentionally narrow: legacy/malformed restores and contradictory clocks remain hidden for manual review. The unchanged cancellation-history path is not redesigned. Query adds window aggregates and a correlated EXISTS; production-scale latency/plan has not been benchmarked.
+- Rollback: revert only this CRL's code/test hunks; no data rollback or migration needed.
+- Sensitive-information review: no secrets, credentials, production identifiers, .env data, logs, generated dist or dependency tree included.
+- Git/delivery: detached HEAD at baseline; not committed, not pushed, PR not created, not merged, backend not deployed, OTA not published, device/production verification not run.
+
+
+### Combined Release Preparation (2026-11-09)
+
+- Board scope: MZ-111. Latest user explicitly requested commit, push and PR for MZ-077/084/099/100/111, one combined branch per repository. No merge/deployment/production writes authorized.
+- Branch: `codex/mz-077-084-099-100-111-20261109`; fresh `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`, fetched 2026-11-09T07:16:13Z. Prior validation above is source-candidate history, not proof of this integrated range.
+- Current technical state: candidate; integrated required checks/review pending; not committed, not pushed, PR not created, not merged, not deployed, OTA not published, device/production verification not run.
+
 ## CRL-20261106-001 — MZ-110 管理任务保存局部权威回执
 
 - **Repository:** `root`

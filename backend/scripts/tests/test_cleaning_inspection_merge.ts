@@ -15,6 +15,7 @@ import {
   isCheckinKeyHandoverTask,
   isDeferredInspectionExecutionDayProjection,
   isInspectionModeAllowedForTask,
+  inspectionSubmissionPendingAfterKeyHandover,
   keyPhotoConfirmsCurrentTaskProgress,
   lockboxVideoConfirmsCurrentTaskState,
   mergeCleaningKeyHandoverProjections,
@@ -225,7 +226,7 @@ function testManagerMergePreservesAuthoritativeSelfCompleteProgress() {
   assert.match(workTasksSource, /canonicalPairBusinessIdentity: canonicalPair\?\.business_identity/)
   assert.match(workTasksSource, /canonicalCheckoutSourceId: canonicalPair\?\.checkout/)
   assert.match(workTasksSource, /status: selfCompleteSourceStatus/)
-  assert.match(workTasksSource, /const statusOut = selfCompleteAwareManagerStatus\(\{/)
+  assert.match(workTasksSource, /const statusOut = inspectionSubmissionPending \? 'to_inspect' : selfCompleteAwareManagerStatus\(\{/)
   assert.match(workTasksSource, /self_complete_progress: selfCompleteProgress/)
   assert.match(workTasksSource, /const authoritativeSelfCompleteProgress = resolveAuthoritativeSelfCompleteManagerProgress\(\{/)
   assert.match(workTasksSource, /authoritativeSelfCompleteProgress[\s\S]*?\? 'cleaning'/)
@@ -545,6 +546,33 @@ function testFormalInspectionSubmissionClearsOnlyTheResolvedVideoRequirement() {
     lockboxVideoUrl: 'recorded',
     latestUploadAudit,
   })?.missing_requirements, ['cleaning_consumables', 'inspection_photos'], 'media presence alone cannot clear a formal-submission requirement')
+}
+
+function testKeyHandoverDoesNotConsumePendingInspection() {
+  const task = { id: 'pending-inspection', task_type: 'checkout_clean', inspection_mode: 'same_day', inspector_id: 'inspector-a', status: 'in_progress', execution_state: 'active' }
+  const input = {
+    taskId: task.id, status: task.status, executionState: task.execution_state, lockboxVideoUrl: 'recorded',
+    latestUploadAudit: { performed_as_action: 'upload_access_video', performed_at: '2026-11-09T01:08:00.000Z', metadata: { finalization_pending: true, missing_requirements: ['inspection_photos'] } },
+  }
+  const handover = projectCleaningKeyHandover(input)
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover(task, handover), true)
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover({ ...task, status: 'keys_hung' }, handover), true)
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover({ ...task, task_type: 'checkin_clean', inspector_id: null, assignee_id: 'inspector-a' }, handover), true)
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover({ ...task, inspection_mode: 'deferred' }, handover), true)
+  for (const status of ['assigned', 'inspected', 'to_hang_keys', 'done', 'ready', 'completed', 'cancelled']) {
+    assert.equal(inspectionSubmissionPendingAfterKeyHandover({ ...task, status }, handover), false, `must not reopen ${status}`)
+  }
+  for (const execution_state of ['cancelled', 'superseded', 'deleted']) {
+    assert.equal(inspectionSubmissionPendingAfterKeyHandover({ ...task, execution_state }, handover), false)
+  }
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover({ ...task, inspector_id: null }, handover), false)
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover({ ...task, inspection_mode: 'self_complete' }, handover), false)
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover({ ...task, task_type: 'stayover_clean' }, handover), false)
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover({ ...task, task_type: 'checkin_clean', inspection_scope: 'password_only' }, handover), false)
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover(task, handover && { ...handover, source_task_id: 'other-task' }), false)
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover(task, null), false)
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover(task, projectCleaningKeyHandover({ ...input, formalInspectionSubmittedAt: '2026-11-09T01:19:00.000Z' })), false, 'formal submit ends pending inspection')
+  assert.equal(inspectionSubmissionPendingAfterKeyHandover(task, projectCleaningKeyHandover({ ...input, formalInspectionSubmittedAt: '2026-11-09T01:00:00.000Z' })), true, 'old submission cannot settle a newer missing requirement')
 }
 
 function testManualKeysHungIsVisibleWithoutPretendingVideoEvidenceExists() {
@@ -2445,6 +2473,7 @@ testKeyHandoverFactStaysSeparateFromWorkflowFinalization()
 testManualCheckinLinkMigrationIsGuardedAndTransactional()
 testKeyHandoverSurvivesOrdinaryWorkflowChanges()
 testFormalInspectionSubmissionClearsOnlyTheResolvedVideoRequirement()
+testKeyHandoverDoesNotConsumePendingInspection()
 testManualKeysHungIsVisibleWithoutPretendingVideoEvidenceExists()
 testKeyHandoverFactRequiresExactCurrentTaskMediaOrManualConfirmation()
 testQueuedInspectionUsesCapturedBusinessDateOnlyWithExactEvidence()

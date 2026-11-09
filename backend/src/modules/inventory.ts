@@ -1,3 +1,4 @@
+import { enrichPropertyFeedbackLocks, propertyFeedbackMutationLocked, lockPropertyFeedbackMutationSource } from '../lib/propertyFeedbackPolicy'
 import { Router } from 'express'
 import { db, addAudit } from '../store'
 import { z } from 'zod'
@@ -77,6 +78,7 @@ function sendInventoryError(req: any, res: any, error: any) {
 async function syncDailyReplacementAutoExpense(row: any) {
   if (!(hasPg && pgPool) || !row?.id) return { ok: true, skipped: true, error: 'pg_unavailable' }
   return pgRunInTransaction(async (client) => {
+    if (!await lockPropertyFeedbackMutationSource(client, 'property_daily_necessities', String(row.id), '')) throw httpError(409, 'property_feedback_not_found')
     await ensureDailyPriceListSchema(client)
     return syncDailyNecessityAutoExpenseWithClient(client, row)
   })
@@ -5735,53 +5737,53 @@ router.patch('/daily-replacements/:id', requireAnyPerm(['inventory_daily_replace
     if (!(hasPg && pgPool)) return res.status(501).json({ message: 'not available without PG' })
     await ensureInventorySchema()
     await ensureDailyNecessitiesSchema()
-    const before = await pgPool.query(`SELECT * FROM property_daily_necessities WHERE id = $1 LIMIT 1`, [id])
-    const prev = before.rows?.[0]
-    if (!prev) return res.status(404).json({ message: 'not found' })
+    const outcome = await pgRunInTransaction(async (client) => {
+      if (!await lockPropertyFeedbackMutationSource(client, 'property_daily_necessities', id, String(actorId(req) || ''))) throw httpError(404, 'not found')
+      const before = await client.query(`SELECT * FROM property_daily_necessities WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [id])
+      const prev = before.rows?.[0]
+      if (!prev) throw httpError(404, 'not found')
 
-    const patch: Record<string, any> = {}
-    if (parsed.data.occurred_at !== undefined) patch.submitted_at = parsed.data.occurred_at
-    if (parsed.data.item_id !== undefined) patch.item_id = parsed.data.item_id || null
-    if (parsed.data.item_name !== undefined) patch.item_name = parsed.data.item_name
-    if (parsed.data.quantity !== undefined) patch.quantity = parsed.data.quantity
-    if (parsed.data.note !== undefined) patch.note = parsed.data.note || null
-    if (parsed.data.invoice_description_en !== undefined) patch.invoice_description_en = parsed.data.invoice_description_en || null
-    if (parsed.data.before_photo_urls !== undefined) {
-      patch.before_photo_urls = JSON.stringify(parsed.data.before_photo_urls || [])
-      patch.photo_urls = JSON.stringify(parsed.data.before_photo_urls || [])
-    }
-    if (parsed.data.after_photo_urls !== undefined) patch.after_photo_urls = JSON.stringify(parsed.data.after_photo_urls || [])
-    if (parsed.data.replacement_at !== undefined) patch.replacement_at = parsed.data.replacement_at || null
-    if (parsed.data.replacer_name !== undefined) patch.replacer_name = parsed.data.replacer_name || null
-    if (parsed.data.pay_method !== undefined) patch.pay_method = parsed.data.pay_method ? String(parsed.data.pay_method).trim() : null
-    if (parsed.data.status !== undefined) patch.status = parsed.data.status
-    patch.updated_at = new Date().toISOString()
+      const patch: Record<string, any> = {}
+      if (parsed.data.occurred_at !== undefined) patch.submitted_at = parsed.data.occurred_at
+      if (parsed.data.item_id !== undefined) patch.item_id = parsed.data.item_id || null
+      if (parsed.data.item_name !== undefined) patch.item_name = parsed.data.item_name
+      if (parsed.data.quantity !== undefined) patch.quantity = parsed.data.quantity
+      if (parsed.data.note !== undefined) patch.note = parsed.data.note || null
+      if (parsed.data.invoice_description_en !== undefined) patch.invoice_description_en = parsed.data.invoice_description_en || null
+      if (parsed.data.before_photo_urls !== undefined) {
+        patch.before_photo_urls = JSON.stringify(parsed.data.before_photo_urls || [])
+        patch.photo_urls = JSON.stringify(parsed.data.before_photo_urls || [])
+      }
+      if (parsed.data.after_photo_urls !== undefined) patch.after_photo_urls = JSON.stringify(parsed.data.after_photo_urls || [])
+      if (parsed.data.replacement_at !== undefined) patch.replacement_at = parsed.data.replacement_at || null
+      if (parsed.data.replacer_name !== undefined) patch.replacer_name = parsed.data.replacer_name || null
+      if (parsed.data.pay_method !== undefined) patch.pay_method = parsed.data.pay_method ? String(parsed.data.pay_method).trim() : null
+      if (parsed.data.status !== undefined) patch.status = parsed.data.status
+      patch.updated_at = new Date().toISOString()
 
-    const keys = Object.keys(patch)
-    if (!keys.length) return res.json(prev)
-    const setSql = keys.map((key, idx) => `${key} = $${idx + 1}${key === 'before_photo_urls' || key === 'after_photo_urls' || key === 'photo_urls' ? '::jsonb' : key === 'submitted_at' || key === 'replacement_at' || key === 'updated_at' ? '::timestamptz' : ''}`).join(', ')
-    const values = keys.map((key) => patch[key])
-    const updated = await pgPool.query(
-      `UPDATE property_daily_necessities
-       SET ${setSql}
-       WHERE id = $${keys.length + 1}
-       RETURNING *`,
-      [...values, id],
-    )
-    const updatedRow = updated.rows?.[0] || null
-    try {
-      const sync = await syncDailyReplacementAutoExpense(updatedRow)
-      res.setHeader('x-auto-expense-sync', sync?.skipped ? 'skipped' : (sync?.ok ? 'ok' : 'failed'))
-      if (sync?.error) res.setHeader('x-auto-expense-reason', String(sync.error).slice(0, 80))
-    } catch (e: any) {
-      res.setHeader('x-auto-expense-sync', 'failed')
-      res.setHeader('x-auto-expense-reason', 'sync_error')
-      try { console.error('[daily-replacement-auto-expense:update]', id, String(e?.message || e)) } catch {}
-    }
+      const keys = Object.keys(patch)
+      if (!keys.length) return { prev, updatedRow: prev, sync: { ok: true, skipped: true } }
+      const setSql = keys.map((key, idx) => `${key} = $${idx + 1}${key === 'before_photo_urls' || key === 'after_photo_urls' || key === 'photo_urls' ? '::jsonb' : key === 'submitted_at' || key === 'replacement_at' || key === 'updated_at' ? '::timestamptz' : ''}`).join(', ')
+      const values = keys.map((key) => patch[key])
+      const updated = await client.query(
+        `UPDATE property_daily_necessities
+         SET ${setSql}
+         WHERE id = $${keys.length + 1} AND deleted_at IS NULL
+         RETURNING *`,
+        [...values, id],
+      )
+      const updatedRow = updated.rows?.[0] || null
+      await ensureDailyPriceListSchema(client)
+      const sync = await syncDailyNecessityAutoExpenseWithClient(client, updatedRow)
+      return { prev, updatedRow, sync }
+    })
+    if (!outcome) return res.status(500).json({ message: 'db not ready' })
+    const { prev, updatedRow, sync } = outcome
+    res.setHeader('x-auto-expense-sync', sync?.skipped ? 'skipped' : (sync?.ok ? 'ok' : 'failed'))
     addAudit('DailyReplacement', id, 'update', prev, updatedRow, actorId(req))
     return res.json(updatedRow)
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'failed' })
+    return res.status(e?.statusCode || 500).json({ message: e?.message || 'failed' })
   }
 })
 
@@ -5793,9 +5795,11 @@ router.delete('/daily-replacements/:id', requireAnyPerm(['inventory_daily_replac
     await ensureInventorySchema()
     await ensureDailyNecessitiesSchema()
     const result = await pgRunInTransaction(async (client) => {
-      const before = await client.query(`SELECT * FROM property_daily_necessities WHERE id = $1 LIMIT 1`, [id])
+      const before = await client.query(`SELECT * FROM property_daily_necessities WHERE id = $1 AND deleted_at IS NULL LIMIT 1 FOR UPDATE`, [id])
       const prev = before.rows?.[0] || null
       if (!prev) return { ok: false as const, code: 404 as const, message: 'not found' }
+      const evidence = await enrichPropertyFeedbackLocks(client, 'daily_necessities', prev)
+      if (propertyFeedbackMutationLocked(evidence)) return { ok: false as const, code: 409 as const, message: 'property_feedback_locked' }
       await client.query(`DELETE FROM property_daily_necessities WHERE id = $1`, [id])
       try {
         await client.query(

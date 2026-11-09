@@ -122,6 +122,24 @@ function main() {
     daily_stats_business_identity: 'manual_work_task:offline-1',
     daily_stats_state: 'completed',
   }, 'a legacy completed offline row without a trustworthy timestamp never re-enters active statistics')
+  const unassignedStayover = {
+    id: 'stayover-unassigned',
+    source_id: 'stayover-unassigned',
+    source_type: 'cleaning_tasks',
+    task_kind: 'cleaning',
+    task_type: 'stayover_clean',
+    scheduled_date: '2026-10-04',
+    property_id: 'stayover-property',
+    cleaner_id: null,
+    assignee_id: null,
+    status: 'pending',
+  }
+  assert.equal(projectDailyTaskStats(unassignedStayover).daily_stats_group, null, 'cleaner mine statistics exclude unassigned stayover cleaning')
+  assert.equal(
+    projectDailyTaskStats(unassignedStayover, { includeManagerUnassignedStayoverCleaning: true }).daily_stats_group,
+    'offline',
+    'manager all statistics include the same unassigned stayover shown in the list',
+  )
   const deferredInspections = Array.from({ length: 6 }, (_, index) => ({
     id: `inspection-${index + 1}`,
     source_id: `inspection-${index + 1}`,

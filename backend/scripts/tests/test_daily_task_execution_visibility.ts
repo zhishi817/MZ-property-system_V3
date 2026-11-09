@@ -10,11 +10,31 @@ import {
   isDailyTaskManagerRoleNames,
   isOrdinaryOfflineDailyTask,
   mergeRoleRecordEvidenceWithCancellation,
+  ordinaryKeyHandoverRecordEvidence,
   projectDailyTaskListItems,
   projectTaskCenterManageableWorkTasks,
   projectVisibleDailyTasks,
   selfCompleteKeyHandoverRecordEvidence,
 } from '../../src/lib/dailyTaskExecutionVisibility'
+
+const ordinaryHandoverInput = {
+  taskType: 'checkout_clean', inspectionMode: 'deferred', inspectionScope: 'inspect_and_hang',
+  status: 'completed', executionState: 'active',
+  handoverEvidence: [{ performedAt: '2026-10-13T04:05:38.000Z', recordDate: '2026-10-13', actorUserId: 'uploader-b', actorName: 'Uploader B' }],
+  completedRoleEvidence: [{ performedAt: '2026-10-12T04:00:00.000Z', recordDate: '2026-10-12', actorUserId: 'cleaner-a' }],
+}
+assert.deepEqual(ordinaryKeyHandoverRecordEvidence(ordinaryHandoverInput), ordinaryHandoverInput.handoverEvidence, 'prior-day cleaner cannot consume another actor next-day handover')
+assert.deepEqual(ordinaryKeyHandoverRecordEvidence({ ...ordinaryHandoverInput, completedRoleEvidence: ordinaryHandoverInput.handoverEvidence }), [], 'same actor/day real submission takes precedence')
+assert.equal(ordinaryKeyHandoverRecordEvidence({ ...ordinaryHandoverInput, handoverEvidence: [...ordinaryHandoverInput.handoverEvidence, ...ordinaryHandoverInput.handoverEvidence] }).length, 1)
+assert.deepEqual(ordinaryKeyHandoverRecordEvidence({ ...ordinaryHandoverInput, activeInspectorId: 'uploader-b', activeInspectionDate: '2026-10-13' }), [], 'same actor current inspection retains the handover fact on its live card')
+assert.equal(ordinaryKeyHandoverRecordEvidence({ ...ordinaryHandoverInput, activeInspectorId: 'inspector-c', activeInspectionDate: '2026-10-13' }).length, 1)
+for (const executionState of ['cancelled', 'superseded', 'deleted']) assert.deepEqual(ordinaryKeyHandoverRecordEvidence({ ...ordinaryHandoverInput, executionState }), [])
+for (const patch of [
+  { taskType: 'stayover_clean' }, { inspectionMode: 'self_complete' },
+  { taskType: 'checkin_clean', inspectionScope: 'password_only' }, { status: 'cancelled' },
+  { handoverEvidence: [{ ...ordinaryHandoverInput.handoverEvidence[0], actorUserId: '' }] },
+  { handoverEvidence: [{ ...ordinaryHandoverInput.handoverEvidence[0], recordDate: null }] },
+]) assert.deepEqual(ordinaryKeyHandoverRecordEvidence({ ...ordinaryHandoverInput, ...patch }), [])
 
 assert.deepEqual(
   dailyTaskAllViewScopes({ requestedView: 'all', roleNames: ['custom_scheduler'], permissionCodes: ['cleaning.schedule.manage'] }),
@@ -79,12 +99,16 @@ const expectedPartnerVisible = [
 for (const role of DAILY_TASK_MANAGER_ROLES) {
   assert.equal(isDailyTaskManagerRoleNames([role]), true, `${role} must use the authorized all-task projection`)
   assert.deepEqual(
-    projectVisibleDailyTasks(cases, { includeManagerUnassignedOffline: true }).map((task) => task.id),
+    projectVisibleDailyTasks(cases, {
+      includeManagerUnassignedOffline: true,
+      includeManagerUnassignedStayoverCleaning: true,
+    }).map((task) => task.id),
     [
       ...expectedPartnerVisible.slice(0, 8),
       'offline-unassigned',
       'offline-unassigned-source',
       ...expectedPartnerVisible.slice(8),
+      'stayover-unassigned',
     ],
     `${role} must receive the same daily execution semantics`,
   )
@@ -94,7 +118,6 @@ assert.deepEqual(
   expectedPartnerVisible,
   'partner projection includes assigned-to-self candidates only and excludes unassigned tasks',
 )
-
 assert.equal(
   evidenceBackedWorkRecordState({ currentAssigneeId: 'staff-b', evidenceActorUserId: 'staff-a' }),
   'reassigned',
@@ -147,6 +170,16 @@ const caseById = (id: string) => {
   assert.ok(task, `missing fixture ${id}`)
   return task
 }
+assert.deepEqual(
+  dailyTaskExecutionVisibility(caseById('stayover-unassigned'), { includeManagerUnassignedStayoverCleaning: true }),
+  { visible: true, reason: 'visible' },
+  'manager assignment surfaces include an unassigned stayover cleaning task',
+)
+assert.equal(
+  dailyTaskExecutionVisibility(caseById('stayover-unassigned')).visible,
+  false,
+  'ordinary cleaner mine projection remains assignment-scoped for stayover cleaning',
+)
 assert.deepEqual(dailyTaskExecutionVisibility(caseById('maintenance-review')), { visible: false, reason: 'review_only' })
 assert.deepEqual(dailyTaskExecutionVisibility(caseById('maintenance-closed-mapped-done')), { visible: false, reason: 'terminal' })
 assert.deepEqual(dailyTaskExecutionVisibility(caseById('external-maintenance-closed-mapped-done')), { visible: false, reason: 'review_only' })
@@ -512,8 +545,8 @@ assert.match(mzapp, /isWorkRecordGroup[\s\S]*?work_record_date: workRecordDate \
 assert.match(mzapp, /cleaningAuditBusinessDateSql\('audit'\)/, 'queued action audits must be bucketed by the evidence-backed cleaning business date')
 assert.match(mzapp, /cleaner_record\.record_date::text AS cleaner_record_date[\s\S]*?inspector_record\.record_date::text AS inspector_record_date/, 'role projections must carry the evidence-backed record date through candidate selection')
 assert.match(mzapp, /historical_candidate_ids AS MATERIALIZED[\s\S]*?cleaningCompletionAuditWhereSql\('audit'\)[\s\S]*?inspectionSubmissionAuditWhereSql\('audit'\)[\s\S]*?media\.type = 'lockbox_video'/, 'terminal cleaning rows must remain queryable only from genuine immutable execution evidence')
-assert.match(mzapp, /if \(wantExecutor && isCheckinSiteExecution\) \{[\s\S]*?if \(!suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate\(row\)[\s\S]*?const recordEvidence = mergeRoleRecordEvidenceWithCancellation/, 'a completed turnover may suppress its duplicate live check-in card but must still emit the executor work record')
-assert.match(mzapp, /wantInspector[\s\S]*?cleaningType\(row\.task_type\) !== 'stayover'[\s\S]*?if \(!suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate\(row\)[\s\S]*?const recordEvidence = mergeRoleRecordEvidenceWithCancellation/, 'a completed turnover may suppress its duplicate live inspection card but must still emit the inspection work record')
+assert.match(mzapp, /if \(wantExecutor && \(isCheckinSiteExecution \|\| ordinaryHandoverEvidence\.length > 0\)\) \{[\s\S]*?if \(isCheckinSiteExecution && !suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate\(row\)[\s\S]*?const recordEvidence = mergeRoleRecordEvidenceWithCancellation/, 'a completed turnover may suppress its duplicate live check-in card but must still emit the executor work record')
+assert.match(mzapp, /wantInspector[\s\S]*?cleaningType\(row\.task_type\) !== 'stayover'[\s\S]*?if \(\(!suppressStandaloneCheckin \|\| inspectionSubmissionPending\) && isActiveCleaningTurnoverCandidate\(row\)[\s\S]*?const recordEvidence = mergeRoleRecordEvidenceWithCancellation/, 'a completed turnover may suppress its duplicate live inspection card but must still emit the inspection work record')
 assert.match(mzapp, /const k = `\$\{d\}\|\$\{businessIdentity\}\|\$\{String\(it\.__manager_merge_isolation_key \|\| ''\)\.trim\(\)\}`/, 'manager aggregation must group one reliable business identity without using property/date as identity')
 assert.match(mzapp, /const activeArr = arr\.filter[\s\S]*?const preferredPool = activeArr\.length \? activeArr : arr/, 'a live card must remain the top-level projection when its immutable phase history is also present')
 assert.match(mzapp, /__merged_children: \(activeArr\.length \? activeArr : arr\)/, 'historical phases must not add a second actionable child beside the live card')
@@ -575,6 +608,8 @@ assert.match(sourceUpsertRoute, /terminal_status_requires_transition[\s\S]*?clie
 assert.match(mzapp, /const allViewScopes = dailyTaskAllViewScopes\([\s\S]*?const allowAll = allViewScopes\.generic[\s\S]*?const allowAllCleaningTasks = allViewScopes\.cleaning/, 'the route must keep generic all-task access role-scoped while granting cleaning-only access through cleaning.schedule.manage')
 assert.match(mzapp, /const managerCanSeeAllTaskPool = allowAll[\s\S]*?const managerCanSeeAllCleaningTaskPool = allowAllCleaningTasks/, 'custom cleaning schedulers must not inherit offline, maintenance, or other generic task pools')
 assert.match(mzapp, /includeManagerUnassignedOffline: managerCanSeeAllTaskPool/, 'manager list and count projections must share the ordinary unassigned offline policy')
+assert.match(mzapp, /includeManagerUnassignedStayoverCleaning: managerCanSeeAllTaskPool/, 'manager list and count projections must share the unassigned stayover policy')
+assert.match(taskCenter, /projectVisibleDailyTasks\(cleaningTasks, \{[\s\S]*?includeManagerUnassignedStayoverCleaning: true/, 'Web Task Center must keep scheduled unassigned stayover cleaning visible for assignment')
 assert.match(mzapp, /source_workflow_status: maintenanceSourceWorkflowStatus/, 'maintenance source workflow must survive the closed-to-done work-task mapping')
 assert.match(taskCenter, /projectTaskCenterManageableWorkTasks\(dedupeBoardTasks/, 'Web work-task loader must preserve assignment candidates while reusing shared execution semantics')
 assert.match(taskCenter, /FROM property_maintenance m[\s\S]*?m\.status::text/, 'web management projection must read authoritative maintenance workflow status')
