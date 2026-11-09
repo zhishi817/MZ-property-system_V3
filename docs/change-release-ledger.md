@@ -213,15 +213,17 @@
 - Branch: `codex/mz-077-084-099-100-111-20261109`
 - Base: `origin/Dev@a9c64f5b5a48ba28679734a2f924e2c16722bd6b`; fetched at `2026-11-09T07:16:13Z`
 - Candidate patch SHA-256: `e8835a5138c61aa8de422e1f3417230e573995dd30b3a9e4ad0307df44f9da62`
-- Commit SHA: not committed
-- Dependencies: `mobile/CRL-20261109-001@653590daa8a4c55a8abb7421575f8e6d81036d21`; `mobile/CRL-20261109-002@653590daa8a4c55a8abb7421575f8e6d81036d21`; `mobile/CRL-20261109-003@653590daa8a4c55a8abb7421575f8e6d81036d21`
+- Commit SHA: `3811fd1a1936f20671435661db3d36518f088ab9`; reviewed candidate content commit
+- Dependencies: `mobile/CRL-20261109-001@d3b3b597a4fc8e5a8caa6764685075d5a6f69bb9`; `mobile/CRL-20261109-002@d3b3b597a4fc8e5a8caa6764685075d5a6f69bb9`; `mobile/CRL-20261109-003@d3b3b597a4fc8e5a8caa6764685075d5a6f69bb9`
 - Required validation: PASS; final post-review check:release and check:fast exited 0, no-emit/focused PASS, Web 60/333 plus build, paired final Mobile 87/894 and fast 8/156, both isolated PG suites and exact scope passed.
 - Shared-hunk review: PASS; only five selected source candidates integrated; latest-Dev Web import retained; additive script union retained every current-Dev check; combined mzapp/visibility/registry/package hunks explicitly selected together.
 - Generated-file review: PASS; staged diff contains no dist, node_modules, environment files, preview/cache or evidence logs; temporary generated output restored and paired-Mobile symlink removed before final gate.
-- Technical state: verified
+- Technical state: committed
 - User authorization: selected-for-commit; latest explicit user request also authorizes subsequent push/PR for these five tasks in one branch per repository; no repeat SHA prompt required by the latest instruction.
 - Independent review: GO; independent final review matched exact candidate e8835a5138c61aa8de422e1f3417230e573995dd30b3a9e4ad0307df44f9da62 and independently reran exact pre-commit gate (40 files / 244 hunks), found no unresolved P0/P1/P2; scope is commit only.
 - Action conclusion: GO; blockers: none; commit only, exact paired push review follows content commit.
+
+- Content receipt: Root content committed cleanly with the reviewed fingerprint; paired Mobile content is `d3b3b597a4fc8e5a8caa6764685075d5a6f69bb9`, replacing the unpublished ledger-only-amended `653590daa8a4c55a8abb7421575f8e6d81036d21`. Mobile runtime fingerprint remains `9a595f77bdf9ba89a6078b9265e2266f8d943ba1f9cd7c73818cb858dae8d4ad`; exact paired range verification follows these content receipts. No push, PR, merge, deployment, OTA or production writes performed yet.
 
 ### Risks / Release Notes
 
