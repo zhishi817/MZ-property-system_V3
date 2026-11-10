@@ -277,6 +277,23 @@ export function isActiveCleaningTurnoverCandidate(task: any): boolean {
   return !['cancelled', 'canceled', 'superseded', 'deleted'].includes(executionState)
 }
 
+/** A physical key handover cannot consume an outstanding formal inspection. */
+export function inspectionSubmissionPendingAfterKeyHandover(task: any, handover: CleaningKeyHandoverProjection | null): boolean {
+  if (!isActiveCleaningTurnoverCandidate(task)) return false
+  if (!['checkout', 'checkin'].includes(cleaningInspectionTaskKind(task?.task_type))) return false
+  if (!['same_day', 'deferred'].includes(effectiveInspectionMode(task))) return false
+  if (isCheckinKeyHandoverTask(task)) return false
+  if (!resolveInspectionTaskAssignment(task).userId) return false
+  // Explicit completion or a reopened assignment must not be undone by an
+  // old upload snapshot. The handover projector resolves later submissions.
+  const status = String(task?.status || task?.raw_status || '').trim().toLowerCase()
+  if (!['in_progress', 'cleaning', 'cleaned', 'restock_pending', 'restocked', 'to_inspect', 'keys_hung'].includes(status)) return false
+  return handover?.source_task_id === String(task?.id || task?.source_id || task?.__raw_id || '').trim()
+    && handover?.confirmation_source === 'video'
+    && handover?.workflow_finalization_pending === true
+    && handover.missing_requirements.includes('inspection_photos')
+}
+
 export type CanonicalCleaningTurnoverPair = {
   checkout: any
   checkin: any

@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "crl": "CRL-20261110-001",
+  "repository": "root",
+  "title": "Synchronize main ancestry into Dev without application changes",
+  "request": "Create a temporary synchronization branch from current Dev, merge current main, and open a pull request targeting Dev to prepare PR #450; do not merge either PR or deploy. The user agreed to creating this synchronization branch and PR, including the necessary temporary-branch publication.",
+  "outcome": "The synchronization preserves the complete Dev application tree while bringing main ancestry into the candidate. The only proposed file differences are a short synchronization note and this incremental release record; Dev and main remain unchanged until a separately authorized merge.",
+  "implementation": [
+    "Start codex/sync-main-into-dev-20261110 from Dev 259b36c3acde2282c6fb50a4371a64f379a39cad in an isolated clean clone; preserve the original mixed development workspace.",
+    "Merge main c615e44b07207ba07df39cd0d8bf520b4e055c42 with the normal three-way strategy. Its seven main-only commits are historical Dev-to-main merge nodes, not additional application changes.",
+    "Before adding this record, both merge-tree and the actual merge index equal Dev tree 54a4e5141ea65b34218c15bf40a716cd0b8af63f with no conflicts or file changes.",
+    "Use the repository auditor's existing incremental registration format; preserve docs/change-release-ledger.md and every existing incremental record byte-for-byte. No audit gate, workflow, application source, or dependency is changed.",
+    "Add a concise history-synchronization note so the existing ledger gate can attribute a real documentation hunk; do not bypass or modify the gate for a zero-code merge."
+  ],
+  "files": [
+    "docs/change-release-ledger.d/CRL-20261110-001.json",
+    "docs/dev-main-history-sync-20261110.md"
+  ],
+  "impact_dependencies": [
+    "No API, business rule, role permission, page entry, database, migration, configuration, dependency, backend, web, or mobile application change.",
+    "No production API call, production data write, application bootstrap, deployment, or OTA publication is part of this task.",
+    "The candidate must be merged into Dev with a merge commit to retain main ancestry; squashing or rebasing this history-only synchronization would discard its purpose. That future merge requires separate authorization.",
+    "The existing CI classifier treats an incremental JSON record as non-ledger-only, so this PR runs the normal Fast Regression and isolated PostgreSQL quality layers."
+  ],
+  "validation": [
+    "git merge-tree --write-tree origin/Dev origin/main returned 54a4e5141ea65b34218c15bf40a716cd0b8af63f, identical to origin/Dev^{tree}.",
+    "git merge --no-ff --no-commit origin/main completed without conflict; git write-tree returned the identical Dev tree before this registration was added.",
+    "python3 scripts/audit_change_release_ledger.py passed against the freshly fetched Dev baseline before registration.",
+    "python3 scripts/tests/test_root_quality_workflow_contract.py passed all 10 tests; python3 scripts/tests/test_audit_change_release_ledger.py passed all 53 tests.",
+    "Application tests and production/device verification were not run locally because no application file changed; exact-head PR checks are to be reported separately.",
+    "Final staged coverage audit passed 2/2 paths; pre-commit gate GO; git diff --cached --check passed; all pre-existing files and ledger records are byte-identical to Dev.",
+    "Content merge commit 157915ba53b455bd3183fa8603834bb8ac4acadc has ordered parents Dev 259b36c3acde2282c6fb50a4371a64f379a39cad and main c615e44b07207ba07df39cd0d8bf520b4e055c42; both branches are verified ancestors. Its range adds only the two audit documents."
+  ],
+  "staged_hunks": [
+    {
+      "path": "docs/dev-main-history-sync-20261110.md",
+      "sha256": "91d2eb942f76c1c085214aac84c723cfeba06a5c2c57db2f579e03ea88239134"
+    }
+  ],
+  "risks": [
+    "The resulting commit tree is not byte-identical to Dev because two audit documents are added; all pre-existing files remain identical to Dev.",
+    "Temporary-branch pushes do not match the repository's push workflows. Dev pull requests trigger the read-only quality workflow and its isolated synthetic tests, not the scheduled production jobs.",
+    "Render read-only verification found all six Web/worker services have Pull Request Previews Off; no Blueprint instances exist, and production cron has no PR-preview option. No Render production-write path from PR creation was found.",
+    "No secret, authentication material, environment file, generated artifact, or production record is included. The original working tree is unchanged."
+  ],
+  "release_attempt": {
+    "id": "RA-20261110-001",
+    "intended_action": "push",
+    "branch": "codex/sync-main-into-dev-20261110",
+    "base_sha": "259b36c3acde2282c6fb50a4371a64f379a39cad",
+    "fetched_at": "2026-11-10T00:38:12Z",
+    "candidate_patch_sha256": "104616d344575861515a862cf23b010e0521ca1b327ac20b67852331bdcf86b6",
+    "commit_sha": "157915ba53b455bd3183fa8603834bb8ac4acadc",
+    "dependencies": "none",
+    "required_validation": "PASS; evidence: exact merge tree equality, clean source boundary, 10 workflow contract tests and 53 ledger tests; staged and range gates are reported separately",
+    "shared_hunk_review": "not applicable; evidence: no application hunks and no existing ledger files changed",
+    "generated_file_review": "not applicable; evidence: only two new audit documents, no generated paths",
+    "technical_state": "committed",
+    "user_authorization": "approved-for-push",
+    "independent_review": "GO; evidence: independent read-only commit review found no P0/P1/P2 findings; exact two-document diff, clean source boundary and pre-commit gate verified",
+    "action_conclusion": "GO",
+    "blockers": "none; remote publication and exact-head GitHub CI are not yet performed"
+  }
+}

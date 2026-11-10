@@ -26,6 +26,7 @@ export type DailyTaskExecutionVisibility = {
 
 export type DailyTaskExecutionVisibilityOptions = {
   includeManagerUnassignedOffline?: boolean
+  includeManagerUnassignedStayoverCleaning?: boolean
 }
 
 export type DailyTaskWorkRecordState = 'active' | 'pending_review' | 'completed' | 'cancelled' | 'rescheduled' | 'reassigned'
@@ -45,6 +46,41 @@ export type DailyTaskRoleRecordEvidence = {
   actorUserId: string | null
   actorName?: string | null
   workRecordState?: Extract<DailyTaskWorkRecordState, 'pending_review'>
+}
+
+/** Keep physical handover history without inventing a cleaning/inspection audit. */
+export function ordinaryKeyHandoverRecordEvidence(input: {
+  taskType?: unknown
+  inspectionMode?: unknown
+  inspectionScope?: unknown
+  executionState?: unknown
+  status?: unknown
+  handoverEvidence: DailyTaskRoleRecordEvidence[]
+  completedRoleEvidence: DailyTaskRoleRecordEvidence[]
+  activeInspectorId?: unknown
+  activeInspectionDate?: unknown
+}): DailyTaskRoleRecordEvidence[] {
+  if (!['checkout_clean', 'checkin_clean'].includes(normalized(input.taskType))) return []
+  if (normalized(input.inspectionMode) === 'self_complete') return []
+  if (normalized(input.taskType) === 'checkin_clean' && normalized(input.inspectionScope) === 'password_only') return []
+  if (['cancelled', 'canceled', 'superseded', 'deleted'].includes(normalized(input.executionState))) return []
+  if (['cancelled', 'canceled'].includes(normalized(input.status))) return []
+  const seen = new Set<string>()
+  return input.handoverEvidence.filter((evidence) => {
+    const actor = String(evidence.actorUserId || '').trim()
+    const date = dateOnly(evidence.recordDate)
+    if (!actor || !date || !String(evidence.performedAt || '').trim()) return false
+    // Same actor's active inspection already retains the physical fact; once
+    // formally submitted its real audit remains the single historical card.
+    if (actor === String(input.activeInspectorId || '').trim() && date === dateOnly(input.activeInspectionDate)) return false
+    if (input.completedRoleEvidence.some((completion) => (
+      String(completion.actorUserId || '').trim() === actor && dateOnly(completion.recordDate) === date
+    ))) return false
+    const key = `${actor}|${date}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 export function selfCompleteKeyHandoverRecordEvidence(input: {
@@ -192,6 +228,11 @@ export function isTurnoverDailyExecutionTask(task: DailyTaskExecutionCandidate) 
   return TURNOVER_TYPES.has(normalized(task.task_type)) || TURNOVER_TYPES.has(normalized(task.task_kind))
 }
 
+export function isStayoverDailyExecutionTask(task: DailyTaskExecutionCandidate) {
+  if (normalized(task.source_type) !== 'cleaning_tasks') return false
+  return normalized(task.task_type) === 'stayover_clean' || normalized(task.task_kind) === 'stayover_clean'
+}
+
 export function hasDailyTaskExecutor(task: DailyTaskExecutionCandidate) {
   const source = normalized(task.source_type)
   const kind = normalized(task.task_kind)
@@ -223,6 +264,9 @@ export function dailyTaskExecutionVisibility(
   }
   if (!scheduledDate(task)) return { visible: false, reason: 'unscheduled' }
   if (!isTurnoverDailyExecutionTask(task) && !hasDailyTaskExecutor(task)) {
+    if (options.includeManagerUnassignedStayoverCleaning === true && isStayoverDailyExecutionTask(task)) {
+      return { visible: true, reason: 'visible' }
+    }
     if (options.includeManagerUnassignedOffline === true && isOrdinaryOfflineDailyTask(task)) {
       return { visible: true, reason: 'visible' }
     }

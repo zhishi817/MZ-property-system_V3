@@ -133,9 +133,20 @@ assert.match(candidateRows, /evidence\.evidence_priority/)
 assert.match(candidateRows, /event\.task_id = \('cleaning_task:' \|\| t\.id::text\)/)
 assert.match(
   candidateRows,
-  /WHERE COALESCE\(candidate_cancellation\.is_deleted, false\) = false[\s\S]*?lower\(COALESCE\(t\.execution_state, ''\)\) <> 'superseded'[\s\S]*?OR candidate_id\.historical_evidence = true/,
+  /WHERE \(\s*COALESCE\(candidate_cancellation\.is_deleted, false\) = false[\s\S]*?lower\(COALESCE\(t\.execution_state, ''\)\) <> 'superseded'[\s\S]*?OR candidate_id\.historical_evidence = true/,
   'superseded rows may be read only when immutable historical evidence selected them',
 )
+assert.match(candidateRows, /OR \(\s*--[^\n]*\n\s*--[^\n]*\n\s*t\.execution_state = 'active'/,
+  'the deletion exception requires an explicitly active current task')
+assert.match(candidateRows, /reopened\.task_id = \('cleaning_task:' \|\| t\.id::text\)/)
+assert.match(candidateRows, /reopened\.source_type = 'cleaning_tasks'/)
+assert.match(candidateRows, /reopened\.sequence_no > candidate_cancellation\.latest_cancellation_sequence_no/)
+assert.match(candidateRows, /\(reopened\.occurred_at, reopened\.sequence_no\)\s*> \(candidate_cancellation\.occurred_at, candidate_cancellation\.sequence_no\)/)
+assert.match(candidateRows, /reopened\.payload#>>'\{patch,execution_state\}' = 'active'/)
+assert.match(candidateRows, /reopened\.payload#>'\{arrangement_revision,reasons\}' @> '\["management_reopened"\]'::jsonb/)
+assert.match(candidateRows, /reopened\.payload#>>'\{arrangement_revision,version\}' = 'mz031-v1'/)
+assert.match(candidateRows, /\{arrangement_revision,before,status\}[^\n]*IN \('cancelled', 'canceled'\)/)
+assert.match(candidateRows, /reopened\.payload#>>'\{arrangement_revision,after,status\}' = reopened\.payload#>>'\{patch,status\}'/)
 assert.match(route, /isActiveCleaningTurnoverCandidate\(row\)/, 'superseded historical rows must not re-enter live role groups')
 assert.match(
   route,

@@ -32,7 +32,7 @@
     "test:cleaning-media-reference": "ts-node-dev --transpile-only scripts/tests/test_cleaning_media_reference.ts",
     "test:immutable-media-upload": "ts-node-dev --transpile-only scripts/tests/test_immutable_media_upload_contract.ts",
     "test:work-task-actions": "ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts",
-    "test:daily-task-execution-visibility": "ts-node-dev --transpile-only scripts/tests/test_daily_task_execution_visibility.ts",
+    "test:daily-task-execution-visibility": "ts-node-dev --transpile-only scripts/tests/test_daily_task_execution_visibility.ts && npm run test:handover-visibility-routes",
     "test:password-only-task-reorder": "ts-node-dev --transpile-only scripts/tests/test_password_only_task_reorder.ts",
     "test:password-only-task-reorder:pg": "node -r ts-node/register/transpile-only scripts/tests/test_password_only_task_reorder_pg_integration.ts",
     "test:daily-task-execution-stats": "ts-node-dev --transpile-only scripts/tests/test_daily_task_execution_stats.ts",
@@ -102,7 +102,11 @@
     "test:phase5-release-contract": "ts-node-dev --transpile-only scripts/tests/test_phase5_release_contract.ts",
     "r2:orphan-audit": "ts-node-dev --transpile-only scripts/r2_orphan_audit.ts",
     "test:phase5-e2e": "ts-node-dev --transpile-only scripts/tests/phase5_e2e_acceptance.ts",
-    "import:customer-service-manual": "node scripts/import_customer_service_manual.js"
+    "import:customer-service-manual": "node scripts/import_customer_service_manual.js",
+    "test:handover-visibility-routes": "node -r ts-node/register/transpile-only scripts/tests/test_handover_visibility_routes.ts",
+    "test:property-feedback-history": "node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_history_policy.ts && node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_history_routes.ts && node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_history_media.ts && node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_access_contract.ts",
+    "test:web-task-capabilities": "ts-node-dev --transpile-only scripts/tests/test_web_task_capabilities.ts",
+    "test:mz100-notification-password-channels": "ts-node --transpile-only scripts/tests/test_mz100_notification_password_channels.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.670.0",

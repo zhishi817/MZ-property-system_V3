@@ -1,3 +1,4 @@
+import { lockPropertyFeedbackMutationSource } from '../lib/propertyFeedbackPolicy'
 import { Router } from 'express'
 import { z } from 'zod'
 import { requireAnyPerm, requirePerm } from '../auth'
@@ -278,6 +279,10 @@ router.post('/', requirePerm('cleaning.schedule.manage'), requireR5TaskRuntimeSc
     const client = await pgPool.connect()
     try {
       await client.query('BEGIN')
+      if (!await lockPropertyFeedbackMutationSource(client, sourceType, sourceId, String(user.sub || ''))) {
+        await client.query('ROLLBACK')
+        return res.status(409).json({ code: 'property_feedback_not_found' })
+      }
       await client.query(
         `INSERT INTO work_tasks(
           id, task_kind, source_type, source_id, property_id, title, summary,
@@ -378,6 +383,10 @@ router.patch('/:id', requirePerm('cleaning.schedule.manage'), requireR5TaskRunti
     let workRecordDate: string | null = null
     try {
       await client.query('BEGIN')
+      if (!await lockPropertyFeedbackMutationSource(client, sourceType, sourceId, String(user.sub || ''))) {
+        await client.query('ROLLBACK')
+        return res.status(409).json({ code: 'property_feedback_not_found' })
+      }
       const r1 = await client.query(sql, vals)
       row = r1?.rows?.[0] || null
       if (!row) {
@@ -587,6 +596,10 @@ router.post('/upsert-from-source', requirePerm('cleaning.schedule.manage'), requ
     const client = await pgPool.connect()
     try {
       await client.query('BEGIN')
+      if (!await lockPropertyFeedbackMutationSource(client, sourceType, sourceId, String(user.sub || ''))) {
+        await client.query('ROLLBACK')
+        return res.status(409).json({ code: 'property_feedback_not_found' })
+      }
       const currentResult = await client.query(
         `SELECT * FROM work_tasks WHERE source_type=$1 AND source_id=$2 LIMIT 1 FOR UPDATE`,
         [sourceType, sourceId],

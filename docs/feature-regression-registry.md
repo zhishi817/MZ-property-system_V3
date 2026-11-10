@@ -2,6 +2,56 @@
 
 本文件只保存当前有效的业务不变量、责任范围、测试映射和最近一次完整验证索引。
 
+## FR-046：房源反馈历史、费用隔离与不可逆业务锁
+
+- **维护责任范围：** backend / mobile
+- **最后审查日期：** 2026-11-07
+- **状态：** active
+
+### 业务保护规则
+
+- 问题反馈历史以当前授权清洁任务所关联的同一房源为边界；显式 `history_scope=property` 才解除原反馈 source_task_id 筛选，覆盖其他作者、其他日期、NULL 和过期投影来源。默认精确来源接口和全局媒体授权保持原边界。
+- 当前任务、房源及参与权限由服务端验证，历史照片只开放唯一精确关联的问题照片；财务凭证、外部维修、工作记录、日终、行李及歧义来源不得借此获得访问。
+- 创建人仅在尚未派工、完成或产生费用时修改或删除原反馈；管理员、客服、线下经理删除他人记录也受同一业务锁。创建人缺失时不以显示姓名认领；客服不因删除权限获得他人编辑权限。既有管理更正和维修执行人的完成证据权限独立保留。
+- 已有派工/完工历史、工作任务及公司/房源费用关联（含零额、作废和人工费用）都参与锁定；普通内容修改、类别移动、CRUD/库存删除不能绕过。源行先锁，再写工作任务或关联费用；清除当前字段前同步保存最小锁证据，删除后不能重新派工或补生费用。
+- 现场角色的反馈 DTO 只返回问题内容、照片、状态和能力，不返回金额、费用/发票说明或任意嵌套财务字段；不声称识别自由文本或照片像素中的金额。
+- 状态筛选先于分页；待复核独立于已解决，取消/已删不进正常历史；稳定时间、类型、ID 排序和 offset 翻页不允许已解决记录挤掉旧未解决记录。
+
+### 跨层检查
+
+- **Backend：** 当前任务授权、三类历史数据、能力/锁、DTO、媒体冲突、状态组、分页、事务顺序和历史费用。
+- **Client：** mobile/CRL-20261107-001 覆盖历史组、服务端能力、分页、照片上下文及修改后刷新。
+- **入口：** 问题反馈页历史；非 property-mode 旧入口保留精确 source 规则。
+- **一致性：** 客户端不依据作者姓名、金额空值或当前状态推导修改/删除权限。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 角色、费用、历史锁与同表写入口 | `backend/scripts/tests/test_property_feedback_history_policy.ts` | 三类角色/状态矩阵、永久审计锁、费用关联 SQL、CRUD/库存/工作任务源锁接线 | sufficient | `npm run test:property-feedback-history --prefix backend`（check:fast / check:backend） |
+| 真实路由处理器历史和操作 | `backend/scripts/tests/test_property_feedback_history_routes.ts` | 隔离适配器执行 GET/PATCH/DELETE/move，三类跨任务成功操作、拒绝矩阵、费用脱敏、180 条稳定分页 | sufficient | `npm run test:property-feedback-history --prefix backend`（check:fast / check:backend） |
+| 历史照片最小权限 | `backend/scripts/tests/test_property_feedback_history_media.ts` | 当前任务/同房源、NULL/过期来源、财务与跨来源拒绝 | sufficient | `npm run test:property-feedback-history --prefix backend`（check:fast / check:backend） |
+| 真 PostgreSQL 证据和并发 | `backend/scripts/tests/test_property_feedback_history_pg.ts` | 18 费用关联、36 历史费用审计、三类持久锁收据、12 派工/费用/删除并发顺序、18 旧引用覆盖/删除竞态、既有孤儿费用纠正 | not-wired | `MZ084_TEST_PG_EPHEMERAL=1 MZ084_TEST_PG_SOCKET=/tmp/mz084-pg-<fresh>/socket node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_history_pg.ts`（仅全新本地 socket 集群手动执行） |
+
+### 验证策略
+
+- 默认测试仅合成 fixtures、真实 handler + mock、静态路由契约，DATABASE_URL 为空；真实 PG 测试须显式全新 /tmp 集群，关闭 TCP，生成独立 schema 并清理/停服。
+- 配套 backend build/no-emit、既有媒体/维修工作流/费用/分派回归、ledger 和 registry audit。完整发布门和真机验证独立记录，不用局部测试代替。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261107-001
+- **Commit：** not committed
+- **日期：** 2026-11-07；本地 focused、backend build/no-emit 和隔离 PG 通过；发布、生产与真机未执行。
+
+### 相关 CRL
+
+- root/CRL-20261107-001、mobile/CRL-20261107-001；FR-010 保留完成证据和专用更正边界。
+
+### 非保护范围
+
+- 不回填生产数据，不新增 schema，不自动识别照片或自由文本金额；offset 翻页期间新增数据可能改变后续页位置，客户端按 ID 去重；实际设备与生产部署另行验证。
+
 ## FR-045：房东月报取消订单完全排除
 
 - **维护责任范围：** backend finance owner-statement projections / web owner monthly statement
@@ -205,7 +255,7 @@
 ## FR-040：挂钥匙事实与整项任务完成状态分离
 
 - **维护责任范围：** backend MZ App work tasks / paired mobile task list and detail
-- **最后审查日期：** 2026-11-04
+- **最后审查日期：** 2026-11-09
 - **状态：** active
 
 ### 业务保护规则
@@ -218,6 +268,9 @@
 - 唯一 canonical 周转在普通 `same_day` 退房检查已正式完成但仍待同一检查人挂钥匙、且 checkout 与活动入住源任务都仍明确分配给该检查人时，Root 必须只投影一张可执行 turnover 卡；完成记录仅作为准确 source 的 `phase_history` 保留，挂钥匙写动作、媒体和审计继续指向拥有正式检查证据的 checkout source。临时/手工 action grant 不算当前任务分配，历史 actor 也不能冒充 checkout 当前写权限。只有同业务日、同检查 actor、无改派/取消/延期关联且候选唯一时可归并；未分配、跨日、人员或来源冲突、多候选必须 fail-closed，不能为消除重复而隐藏无法安全替代的记录；MZ-075 延期检查展示合卡继续由独立可靠关联规则处理。
 - 清洁任务“删除”仍是数据库软取消并保留事件/审计；状态更新与明确 lifecycle 事件必须同事务，投影不以 `auto_sync_enabled` 猜测删除，删除项不得重新通过完成审计/媒体并集进入任务列表。没有明确取消状态的 `TASK_REMOVED`（例如 superseded）不得进入取消候选。移动端按最新产品规则统一隐藏所有业务取消/删除项，但正常完成记录继续保留。
 
+- 普通退房/入住视频挂钥匙执行人必须按准确 source、执行人和执行日保留只读挂钥匙执行历史，不以他人的清洁记录、空检查指派或 legacy restock 审计吞掉。该记录不冒充正式检查，不改变结算或媒体权限；同执行人同日已有当前角色可见的真实完成记录时去重，自完成和 password-only 继续独立规则。
+- 精确 source 当前视频仍明确缺少正式检查提交时，当前获派检查人保留可执行检查卡，独立挂钥匙事实不使卡片终止；正式提交后只保留准确历史。管理合卡只由活动子项决定当前执行语义，历史执行人只进入 phase_history，不抢占活动检查。
+
 ### 测试映射
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
@@ -225,6 +278,8 @@
 | 后端精确任务事实、待补资料、canonical 共享及删除隔离 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | MQ2212 式 `in_progress + finalization_pending` 输出独立事实；OA2804/UT2602 脱敏形态的视频先传、同 source 正式检查后传会只清除 `inspection_photos`，普通媒体及早于当前视频的旧提交不清除且清洁缺项仍保留；正式审计排除 MZ-073 legacy restock；缺 `app_submit_receipts` 时锁定 `42P01` 去回执分支重试的静态契约；取消、superseded、删除视频、URL-only、终态后重开/再终态均不提升；只允许单 source 或订单日期边界精确成立的一退一入 canonical 集合合并；MZ-057 两套脱敏实例形态把 `to_hang_keys` 记录安全嵌入同 actor 活动入住卡，改派/未分配/跨日/延期/取消/多候选全部 fail-closed；两套上传/删除 SSE 同步事实；软删除事务标记并从最终候选排除；原状态不被改写。MZ-107 新 CTE 与缺表回退尚无隔离 PostgreSQL 执行覆盖 | partial | `npm run test:cleaning-inspection-merge --prefix backend` |
 | 待挂钥匙操作来源与检查只读边界 | `backend/scripts/tests/test_work_task_actions.ts` | `to_hang_keys` 阶段检查提交入口只读、挂钥匙视频仍可执行；仅当 checkout 与 live check-in 均真实分配同一检查人时合卡，action、媒体和审计继续归拥有正式检查证据的 checkout source，不放宽后端鉴权 | partial | `npm run test:work-task-actions --prefix backend` |
 | 自完成已挂钥匙历史兜底与防误完成 | `backend/scripts/tests/test_daily_task_execution_visibility.ts` | 合成 BO1313/OR107 形态：活跃同源 `keys_hung` + 明确演员 + 无清洁完成审计只生成原业务日 `pending_review`；正式完成不重复；普通检查、续住、无演员、superseded 及其他终态 fail-closed；改派保留实际演员 | sufficient | `npm run test:daily-task-execution-visibility --prefix backend` |
+
+| 普通视频执行人历史与待检查真实路由 | `backend/scripts/tests/test_handover_visibility_routes.ts` | 脱敏前日清洁/次日他人挂视频、空检查指派、普通入住、actor 去重、角色变更、人工确认不重复、同属性不同 source、manager 活动语义不被历史抢占、单卡与 phase_history、pending 活动检查及正式提交后历史；实际 Express + SQL-shaped 内存 fixture，非真实 PostgreSQL | partial | `npm run test:handover-visibility-routes --prefix backend`（已由 daily-task-execution-visibility 接入 fast/full） |
 
 配对 Mobile 候选由 `mobile/CRL-20261020-006` 登记并执行本仓库之外的 Jest 覆盖：主标签显示已挂钥匙、资料待补独立显示、补品动作仍可用、取消/墓碑不提升。Root 的登记审计只引用本仓库内可执行的测试路径。
 
@@ -234,12 +289,13 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261104-004
+- **CRL：** root/CRL-20261109-001
 - **Commit：** not committed
-- **日期：** 2026-11-04；MZ-107 同 source 正式检查提交清除旧视频缺项的专项回归、工作任务动作回归和后端 TypeScript 编译通过；新 CTE/缺表回退仅有静态 SQL 契约，没有隔离 PostgreSQL 执行覆盖；未做生产回放、部署或真机验收。
+- **日期：** 2026-11-09；19 个实际 Express 内存夹具、actor/date 与 pending 边界、最终 Backend 完整质量门通过；Web 60 文件 / 332 测试及 lint/build 通过；独立复核的 3 个 P2 已纠正并复查。完整门仍 BLOCKED：未改动 Mobile 基线 884/885 通过，重启队列测试固定保留期限已过，干净基线复现，临时冻结时钟对照通过但不算完整门通过。实际 SQL 执行、浏览器和真机未验收；未提交、推送、部署。
 
 ### 相关 CRL
 
+- root/CRL-20261109-001：普通挂钥匙执行历史与正式检查未提交时的活动可见性。
 - root/CRL-20261020-007 / mobile/CRL-20261020-006：MZ-053 第 2 点本地配套实现。
 - root/CRL-20261024-009：MZ-057 待挂钥匙完成记录与同周转活动入住单卡恢复，保留准确历史与 fail-closed 边界。
 - root/CRL-20261024-004：MZ-077 自完成已挂钥匙任务的诚实只读历史兜底。
@@ -248,7 +304,7 @@
 
 ### 非保护范围
 
-- 不回填历史状态、不迁移数据库、不改变 `available_actions`、不扩大媒体权限；部署、OTA 与真机验收不在本地实现范围。
+- 不回填历史状态、不迁移数据库、不扩大参与权限或媒体权限；部署、OTA 与真机验收不在本地实现范围。
 
 ## FR-039：延期检查在入住变更后的唯一安排、实时归位与结算责任
 
@@ -470,13 +526,16 @@
 ## FR-035：日常任务执行列表权威可见性
 
 - **维护责任范围：** backend / web / paired mobile
-- **最后审查日期：** 2026-10-13
+- **最后审查日期：** 2026-11-03
 - **状态：** active
+- **候选发布门禁：** MZ-099 为本地跨端候选，尚未提交、推送或发布。
 
 ### 业务保护规则
 
 - 日常执行列表必须排除审核中和已关闭任务；来源审核事实优先于规范化的通用状态。
 - 普通线下任务按 `task_kind=offline` 与权威 `source_type` 分类，不按标题猜测。admin、offline_manager、customer_service 的 `all` 视图必须按所选日期显示普通线下任务的未指派、已指派、未完成和已完成状态；过去、当天和未来日期采用同一规则。
+- 已排期且仍有效的未分配 `stayover_clean` 是管理安排面的窄例外：Web Task Center 与 admin、offline_manager、customer_service 的 Mobile `all` 视图必须显示并允许进入既有安排流程；普通清洁员 `mine`、管理角色 `mine` 和仅开启普通未分配线下任务开关的投影仍不得看到。该例外不得通过把入住中清洁伪装成周转任务实现，也不得放宽维修、深清、日用品或其他未分配任务。
+- 未分配入住中清洁可保留持久化 `inspection_mode=self_complete` 业务事实，但 Web 卡片在真实清洁执行人产生前不得显示“自完成”；任何清洁任务在没有真实 assignee/cleaner/inspector 时不得因 `String(null)` 显示“钥匙未上传”。分配后沿用既有自完成与钥匙流程。
 - 合作执行角色只能取得分配给本人或本人作为手工参与者的任务，客户端不得通过 `view=all` 或通用日历权限扩大范围。
 - 维修、深清、日用品等房源跟进类型必须采用另一套 assignment-first/fail-closed 规则：未指派不进入 Mobile，指派后管理角色可见，合作方仍只看本人任务。Web 的可维护房源候选池不得混入普通线下任务。
 - 普通已完成线下任务和合法周转任务继续可见；列表与按日计数必须消费同一个可见性投影。
@@ -486,13 +545,15 @@
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
-| Root 权威状态/类型/分派/角色/日期矩阵 | `backend/scripts/tests/test_daily_task_execution_visibility.ts` | 三个管理角色、合作方 self 范围、普通线下与房源跟进分类、过去/当天/未来的未指派/已指派/未完成/已完成、严格 `view=all` 角色门禁 | sufficient | `npm run test:daily-task-execution-visibility --prefix backend` |
-| Root 列表与按日计数一致 | `backend/scripts/tests/test_daily_task_execution_stats.ts` | 管理视图的普通未指派线下任务同时进入列表与 offline 计数；房源跟进不混入线下计数 | sufficient | `npm run test:daily-task-execution-stats --prefix backend` |
+| Root 权威状态/类型/分派/角色/日期矩阵 | `backend/scripts/tests/test_daily_task_execution_visibility.ts` | 三个管理角色、合作方 self 范围、普通线下与房源跟进分类、未分配入住中清洁只进入 Web/manager-all、过去/当天/未来状态与严格 `view=all` 角色门禁 | sufficient | `npm run test:daily-task-execution-visibility --prefix backend` |
+| Root 列表与按日计数一致 | `backend/scripts/tests/test_daily_task_execution_stats.ts` | 管理视图的普通未指派线下任务与未分配入住中清洁同时进入列表/对应计数；cleaner mine 和房源跟进不扩大 | sufficient | `npm run test:daily-task-execution-stats --prefix backend` |
+| Web 未分配 self-complete 标签 | `backend/scripts/tests/test_web_task_capabilities.ts` | 未分配入住中清洁保留 self-complete 语义但隐藏标签；分配后恢复 | sufficient | `npm run test:web-task-capabilities --prefix backend` |
+| Web 钥匙责任参与人 | `frontend/src/lib/cleaningTaskUi.test.ts` | null 参与人不显示钥匙缺失，真实参与人显示 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/lib/cleaningTaskUi.test.ts` |
 | Mobile 权威投影与日期刷新 | `mz-cleaning-app-frontend/src/lib/dailyTaskExecutionVisibility.test.ts` | 三个管理角色严格门禁、管理 all 视图显示普通未指派线下任务、合作方 fail-closed 与日期/状态矩阵 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/dailyTaskExecutionVisibility.test.ts` |
 | Mobile 列表与计数投影一致 | `mz-cleaning-app-frontend/src/lib/dailyTaskPresentation.test.ts` | 管理 all 列表与按日计数共享同一可见性边界 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/dailyTaskPresentation.test.ts` |
 | Mobile 管理角色边界 | `mz-cleaning-app-frontend/src/lib/roles.test.ts` | 完整任务视图仅限三个明确管理角色 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/roles.test.ts` |
 | Mobile 增量同步与日期刷新 | `mz-cleaning-app-frontend/src/lib/workTasksStore.test.ts` | 重复刷新不累加、日期桶切换不串数据，SSE/本地 patch 保持相同投影 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand --no-cache src/lib/workTasksStore.test.ts` |
-| Web cleaning 真实映射与过滤 | `backend/scripts/tests/test_task_center_daily_projection.ts` | 无执行人周转保留并按房源/日期计一次，非周转未分配任务从 board 移除 | sufficient | `npm run test:task-center-daily-projection --prefix backend` |
+| Web cleaning 真实映射与过滤 | `backend/scripts/tests/test_task_center_daily_projection.ts` | 无执行人周转保留并按房源/日期计一次；未分配 stayover 可见且可安排；其他非周转未分配 cleaning 仍从 board 移除 | sufficient | `npm run test:task-center-daily-projection --prefix backend` |
 | Web 防御性显示 | `frontend/src/app/task-center/taskCenterDisplay.test.ts` | 房源跟进审核/关闭隐藏且合法执行项保留 | sufficient | `npm run test --prefix frontend -- --coverage.enabled=false src/app/task-center/taskCenterDisplay.test.ts` |
 
 ### 验证策略
@@ -509,6 +570,7 @@
 
 - root/CRL-20261010-001：整合 MZ-021 的权威执行可见性。
 - root/CRL-20261013-005 / mobile/CRL-20261013-006：MZ-033 按角色与所选日期恢复普通线下任务全状态，同时保留房源跟进 assignment-first 边界。
+- root/CRL-20261103-005 / mobile/CRL-20261103-006：MZ-099 仅为管理安排面恢复未分配入住中清洁，并修正未分配标签。
 
 ### 非保护范围
 
@@ -1576,10 +1638,13 @@
 - **入口：** Web 编辑保存、移动端通知列表、通知详情和重新进入任务。
 - **一致性：** 通知内容和收件人以服务端策略为准。
 
+- MZ-100：新消息的信息中心正文显示已保存的密码变更值，锁屏 Push 正文仍隐藏；服务器私有 `_inbox_body` 不得进入 Push data。历史隐藏消息不回填；收件人、角色权限、Badge、event_id/去重不变。
+
 ### 测试映射
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
+| MZ-100 信息中心与推送分离 | `backend/scripts/tests/test_mz100_notification_password_channels.ts` | 新建/更新/清空/无变化、历史兼容、私有正文隔离、各入口接线 | sufficient | `npm run test:mz100-notification-password-channels --prefix backend` |
 | 通知策略、角色组和未知事件 | `backend/scripts/tests/test_app_notification_policies.ts` | policy key、角色组、未知 kind | sufficient | `npm run test:app-notification-policies --prefix backend` |
 | 实际字段变化后的通知去重 | `backend/scripts/tests/test_task_assignment_canonical.ts` | 清洁任务更新、合并卡 group key、重复事件 | not-wired | `npx ts-node-dev --transpile-only backend/scripts/tests/test_task_assignment_canonical.ts` |
 | 同步时忽略占位或无效变化 | `backend/scripts/tests/test_cleaning_sync_v2.ts` | placeholder、历史字段继承和同步结果 | not-wired | `npx ts-node-dev --transpile-only backend/scripts/tests/test_cleaning_sync_v2.ts` |

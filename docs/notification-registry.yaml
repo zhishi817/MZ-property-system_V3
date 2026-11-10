@@ -1,14 +1,14 @@
 schema_version: 1
 
 metadata:
-  title: MZ personnel settlement notification registry
+  title: MZ scoped notification registry
   status: active_contract
-  coverage: personnel_settlement
-  note: This file records the personnel settlement notification used when finance returns a revised settlement to its owner.
+  coverage: personnel_settlement_and_cleaning_password_content
+  note: This partial registry records the confirmed settlement policy and observed existing cleaning password channels; it does not authorize recipient changes.
 
 global_contract:
   notification_writer: backend/src/services/notificationEvents.ts#emitNotificationEvent
-  recipient_authority: Backend resolves the exact settlement owner before Inbox and Queue writes.
+  recipient_authority: Backend resolves recipients using each existing policy before Inbox and Queue writes.
   delivery_contract: Inbox, badge and push use the same stored user_id and event_id; clients do not recalculate recipients.
 
 policies:
@@ -33,3 +33,30 @@ policies:
       event_id: personnel-settlement-confirmation-requested:{settlement_id}:{confirmation_revision}
       storage_unique: [user_id, event_id]
       revision_contract: One stable revision per finance return; retries reuse it, while a later returned revision creates a new revision. Initial partner submission does not emit this notification.
+
+  - id: NTF-MZ100-001
+    business_event: cleaning_task_password_requirements_changed
+    policy_key: task_requirements_changed
+    domain: cleaning
+    policy_owner: cleaning
+    status: observed_current
+    business_generator_state: multiple_existing_paths
+    business_generator_candidates:
+      - backend/src/modules/cleaning.ts#manager-fields-and-create
+      - backend/src/modules/mzapp.ts#manager-fields
+    notification_writer: backend/src/services/notificationEvents.ts#emitNotificationEvent
+    recipient_contract:
+      status: unchanged_observed_current
+      resolver: resolveAppNotificationPolicyRecipients-and-existing-current-task-scope-filters
+      exclusions: existing-actor-and-property-task-scope-filters
+      mobile_client_recipient_authorization: none
+    channels: { inbox: true, badge: unread_user_notifications, push: queued }
+    content_contract:
+      inbox: New events retain actual changed password values in server-only _inbox_body metadata and expose them as the authorized inbox body.
+      push: Existing redacted body is unchanged; private inbox metadata is removed before queue grouping and Expo delivery.
+      historical: Old redacted events remain unchanged; never reconstruct an event-time value from a current task.
+      scope: No recipient, role, event identity, navigation, badge, password write or propagation changes.
+      activation: Default off; set NOTIFICATION_INBOX_PASSWORD_VALUES_ENABLED=true only after every queue and Expo consumer runs sanitizer-capable code.
+      rollback: Retain inbox-metadata stripping in queue and Expo adapter when rolling back producers; do not deploy a pre-MZ100 worker while private metadata exists.
+    navigation: { action: open_task, entity: cleaning_task }
+    dedupe: { storage_unique: [user_id, event_id], event_id: unchanged }

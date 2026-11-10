@@ -1,3 +1,4 @@
+import { notificationInboxContent, notificationPushContent } from '../lib/notificationChannelContent'
 import { Router } from 'express'
 import { requireAnyPerm, requirePerm } from '../auth'
 import { hasPg, pgInsert, pgPool, pgSelect } from '../dbAdapter'
@@ -240,8 +241,7 @@ router.get('/inbox', async (req, res) => {
       entity_id: String(x.entity_id || ''),
       changes: Array.isArray(x.changes) ? x.changes.map((v: any) => String(v || '').trim()).filter(Boolean) : [],
       title: String(x.title || ''),
-      body: String(x.body || ''),
-      data: x.data || {},
+      ...notificationInboxContent(x.body, x.data),
       priority: String(x.priority || 'low'),
       created_at: x.created_at ? String(x.created_at) : null,
       read_at: x.read_at ? String(x.read_at) : null,
@@ -319,7 +319,7 @@ export async function notifyExpoAll(params: { exclude_user_id?: string; title: s
     ? await pgPool.query(`SELECT token FROM expo_push_tokens WHERE user_id <> $1`, [exclude])
     : await pgPool.query(`SELECT token FROM expo_push_tokens`)
   const tokens = (rows?.rows || []).map((x: any) => String(x.token || '').trim()).filter(Boolean)
-  return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {}, priority: params.priority })
+  return await sendExpoPush(tokens, { title: params.title, ...notificationPushContent(params.body, params.data), priority: params.priority })
 }
 
 export async function notifyExpoUsers(params: { user_ids: string[]; title: string; body: string; data?: any; priority?: AppNotificationPriority }) {
@@ -330,7 +330,7 @@ export async function notifyExpoUsers(params: { user_ids: string[]; title: strin
   if (!ids.length) return { sent: 0, failed: 0 }
   const rows = await pgPool.query(`SELECT token FROM expo_push_tokens WHERE user_id = ANY($1::text[])`, [ids])
   const tokens = (rows?.rows || []).map((x: any) => String(x.token || '').trim()).filter(Boolean)
-  return await sendExpoPush(tokens, { title: params.title, body: params.body, data: params.data || {}, priority: params.priority })
+  return await sendExpoPush(tokens, { title: params.title, ...notificationPushContent(params.body, params.data), priority: params.priority })
 }
 
 export async function listUserIdsByRoles(roles0: string[], opts?: { excludeRoles?: string[] }) {

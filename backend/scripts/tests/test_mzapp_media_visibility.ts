@@ -432,57 +432,57 @@ async function main() {
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'creator-1', role: 'cleaner', roles: ['cleaner'] }, 'daily_necessities', { created_by_user_id: 'creator-1' }),
-    { can_edit_content: true, can_edit_completion_content: false, can_correct_completion: false, can_delete: true, can_move_category: false },
+    { can_edit_content: true, can_edit_completion_content: false, can_correct_completion: false, can_delete: true, can_move_category: false, mutation_locked: false },
     'the true submitter can only edit/delete their own non-workflow feedback record',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'other-1', role: 'cleaner', roles: ['cleaner'] }, 'daily_necessities', { created_by_user_id: 'creator-1' }),
-    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false },
+    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false, mutation_locked: false },
     'a non-owner cannot mutate another user feedback record',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'manager-1', role: 'offline_manager', roles: ['offline_manager'] }, 'deep_cleaning', { created_by_user_id: null }),
-    { can_edit_content: true, can_edit_completion_content: false, can_correct_completion: false, can_delete: true, can_move_category: true },
+    { can_edit_content: true, can_edit_completion_content: false, can_correct_completion: false, can_delete: true, can_move_category: true, mutation_locked: false },
     'offline managers can manage legacy records but legacy rows remain ordinary-user read-only',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'creator-1', role: 'cleaner', roles: ['cleaner'] }, 'maintenance', { created_by_user_id: 'creator-1', status: 'in_progress' }),
-    { can_edit_content: true, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false },
-    'a submitter can edit their report but does not inherit completion-evidence permission',
+    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false, mutation_locked: true },
+    'a submitter cannot edit their original report after work starts',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'customer-service-1', role: 'customer_service', roles: ['customer_service'] }, 'maintenance', { created_by_user_id: 'creator-1', status: 'pending_review' }),
-    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: false, can_delete: true, can_move_category: false },
-    'customer service managers can directly soft-delete a maintenance record without reopening its workflow',
+    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false, mutation_locked: true },
+    'customer service cannot delete a record that has reached pending review',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'executor-1', role: 'maintenance_staff', roles: ['maintenance_staff'] }, 'maintenance', { created_by_user_id: 'creator-1', assignee_id: 'executor-1', status: 'assigned' }),
-    { can_edit_content: false, can_edit_completion_content: true, can_correct_completion: false, can_delete: false, can_move_category: false },
+    { can_edit_content: false, can_edit_completion_content: true, can_correct_completion: false, can_delete: false, can_move_category: false, mutation_locked: true },
     'the real assigned executor can supplement completion evidence without becoming the report editor',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'other-1', role: 'maintenance_staff', roles: ['maintenance_staff'] }, 'maintenance', { created_by_user_id: 'creator-1', assignee_id: 'executor-1', status: 'assigned' }),
-    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false },
+    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false, mutation_locked: true },
     'an unassigned user cannot edit either the report or its completion evidence',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'manager-1', role: 'maintenance_manager', roles: ['maintenance_manager'] }, 'maintenance', { created_by_user_id: 'creator-1', assignee_id: 'executor-1', status: 'pending_review' }, { canManageMaintenanceWorkflow: true }),
-    { can_edit_content: false, can_edit_completion_content: true, can_correct_completion: false, can_delete: false, can_move_category: false },
+    { can_edit_content: false, can_edit_completion_content: true, can_correct_completion: false, can_delete: false, can_move_category: false, mutation_locked: true },
     'a maintenance workflow manager can supplement pending-review evidence through the dedicated capability',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'admin-1', role: 'admin', roles: ['admin'] }, 'maintenance', { created_by_user_id: 'creator-1', assignee_id: 'executor-1', status: 'closed', review_status: 'approved' }),
-    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: true, can_delete: true, can_move_category: false },
+    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: true, can_delete: false, can_move_category: false, mutation_locked: true },
     'an admin corrects closed completion evidence only through the audited correction capability',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'executor-1', role: 'maintenance_staff', roles: ['maintenance_staff'] }, 'maintenance', { created_by_user_id: 'creator-1', assignee_id: 'executor-1', status: 'closed', review_status: 'approved' }),
-    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false },
+    { can_edit_content: false, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false, mutation_locked: true },
     'an assigned executor cannot correct a closed maintenance record',
   )
   assert.deepEqual(
     propertyFeedbackCapabilities({ sub: 'manager-1', role: 'offline_manager', roles: ['offline_manager'] }, 'maintenance', { created_by_user_id: 'creator-1', assignee_id: 'executor-1', status: 'cancelled' }),
-    { can_edit_content: true, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false },
+    { can_edit_content: true, can_edit_completion_content: false, can_correct_completion: false, can_delete: false, can_move_category: false, mutation_locked: true },
     'cancelled maintenance never exposes completion-evidence mutation',
   )
   assert.deepEqual(

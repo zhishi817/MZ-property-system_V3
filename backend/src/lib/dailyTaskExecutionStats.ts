@@ -67,6 +67,7 @@ export function projectDailyTaskStats(
   options: {
     includeTaskCenterManagementOnlyOffline?: boolean
     includeManagerUnassignedOffline?: boolean
+    includeManagerUnassignedStayoverCleaning?: boolean
   } = {},
 ): DailyTaskStatsProjection {
   const workRecordState = dailyTaskWorkRecordProjection(task).work_record_state
@@ -83,6 +84,7 @@ export function projectDailyTaskStats(
   }
   const executionVisible = dailyTaskExecutionVisibility(task, {
     includeManagerUnassignedOffline: options.includeManagerUnassignedOffline,
+    includeManagerUnassignedStayoverCleaning: options.includeManagerUnassignedStayoverCleaning,
   }).visible
   const managementOnlyOffline = options.includeTaskCenterManagementOnlyOffline === true
     && isTaskCenterManagementOnlyOfflineTask(task)
