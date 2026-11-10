@@ -28,7 +28,8 @@
     "python3 scripts/audit_change_release_ledger.py passed against the freshly fetched Dev baseline before registration.",
     "python3 scripts/tests/test_root_quality_workflow_contract.py passed all 10 tests; python3 scripts/tests/test_audit_change_release_ledger.py passed all 53 tests.",
     "Application tests and production/device verification were not run locally because no application file changed; exact-head PR checks are to be reported separately.",
-    "Final staged coverage audit passed 2/2 paths; pre-commit gate GO; git diff --cached --check passed; all pre-existing files and ledger records are byte-identical to Dev."
+    "Final staged coverage audit passed 2/2 paths; pre-commit gate GO; git diff --cached --check passed; all pre-existing files and ledger records are byte-identical to Dev.",
+    "Content merge commit 157915ba53b455bd3183fa8603834bb8ac4acadc has ordered parents Dev 259b36c3acde2282c6fb50a4371a64f379a39cad and main c615e44b07207ba07df39cd0d8bf520b4e055c42; both branches are verified ancestors. Its range adds only the two audit documents."
   ],
   "staged_hunks": [
     {
@@ -44,20 +45,20 @@
   ],
   "release_attempt": {
     "id": "RA-20261110-001",
-    "intended_action": "commit",
+    "intended_action": "push",
     "branch": "codex/sync-main-into-dev-20261110",
     "base_sha": "259b36c3acde2282c6fb50a4371a64f379a39cad",
     "fetched_at": "2026-11-10T00:38:12Z",
     "candidate_patch_sha256": "104616d344575861515a862cf23b010e0521ca1b327ac20b67852331bdcf86b6",
-    "commit_sha": "not committed",
+    "commit_sha": "157915ba53b455bd3183fa8603834bb8ac4acadc",
     "dependencies": "none",
     "required_validation": "PASS; evidence: exact merge tree equality, clean source boundary, 10 workflow contract tests and 53 ledger tests; staged and range gates are reported separately",
     "shared_hunk_review": "not applicable; evidence: no application hunks and no existing ledger files changed",
     "generated_file_review": "not applicable; evidence: only two new audit documents, no generated paths",
-    "technical_state": "verified",
-    "user_authorization": "selected-for-commit",
+    "technical_state": "committed",
+    "user_authorization": "approved-for-push",
     "independent_review": "GO; evidence: independent read-only commit review found no P0/P1/P2 findings; exact two-document diff, clean source boundary and pre-commit gate verified",
     "action_conclusion": "GO",
-    "blockers": "none for commit; publication requires exact committed-range verification"
+    "blockers": "none; remote publication and exact-head GitHub CI are not yet performed"
   }
 }
