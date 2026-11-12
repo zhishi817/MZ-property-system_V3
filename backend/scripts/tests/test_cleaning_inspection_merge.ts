@@ -1525,6 +1525,25 @@ function testOrdinarySelfCompleteDoesNotCreateInspectorTask() {
   assert.equal(out, null)
 }
 
+function testPendingDecisionUsesTaskDateOnlyInManagementPool() {
+  for (const taskDate of ['2026-11-08', '2026-11-09', '2026-11-11']) {
+    const input = { inspectionMode: 'pending_decision' as const, taskDate, dateFrom: taskDate, dateTo: taskDate, status: 'pending' }
+    assert.equal(mobileInspectionProjectionDate(input), null, 'personal projection remains unchanged')
+    assert.equal(mobileInspectionProjectionDate({ ...input, includeManagerPendingDecision: false }), null)
+    assert.equal(mobileInspectionProjectionDate({ ...input, includeManagerPendingDecision: true }), taskDate)
+    assert.equal(mobileInspectionProjectionDate({ ...input, includeManagerPendingDecision: true, inspectionDueDate: '2026-11-30' }), taskDate, 'a stale due date cannot replace the source task date')
+  }
+  const input = { inspectionMode: 'pending_decision' as const, taskDate: '2026-11-09', dateFrom: '2026-11-09', dateTo: '2026-11-09', includeManagerPendingDecision: true }
+  for (const patch of [{ taskDate: null }, { taskDate: '' }, { taskDate: 'invalid' }, { taskDate: '2026-11-08' }, { taskDate: '2026-11-10' }, { dateFrom: '' }, { dateTo: '' }]) {
+    assert.equal(mobileInspectionProjectionDate({ ...input, ...patch }), null, 'no fabricated or out-of-range dates')
+  }
+  assert.equal(mobileInspectionProjectionDate({ ...input, inspectionMode: 'same_day' }), input.taskDate)
+  assert.equal(mobileInspectionProjectionDate({ ...input, inspectionMode: 'deferred', inspectionDueDate: null }), null)
+  assert.equal(mobileInspectionProjectionDate({ ...input, inspectionMode: 'deferred', inspectionDueDate: '2026-11-10' }), null)
+  assert.equal(mobileInspectionProjectionDate({ ...input, inspectionMode: 'self_complete', status: 'pending' }), null)
+  assert.equal(mobileInspectionProjectionDate({ ...input, inspectionMode: 'checked_done' }), null)
+}
+
 function testPasswordOnlyCannotUseSelfCompleteOrCheckedDone() {
   const normalizedTurnoverScope = normalizeTurnoverInspectionScope({
     inspectionScope: 'password_only',
@@ -2468,6 +2487,7 @@ testFo1602HistoricalInspectionStaysSeparateFromLegitimateTurnoverMerge()
 testBoardSavePreservesDeferredDate()
 testKeysHungSelfCompleteProjectsToOriginalTaskDate()
 testOrdinarySelfCompleteDoesNotCreateInspectorTask()
+testPendingDecisionUsesTaskDateOnlyInManagementPool()
 testPasswordOnlyCannotUseSelfCompleteOrCheckedDone()
 testKeyHandoverFactStaysSeparateFromWorkflowFinalization()
 testManualCheckinLinkMigrationIsGuardedAndTransactional()

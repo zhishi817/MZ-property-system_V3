@@ -10389,16 +10389,16 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             const executorTerminal = ['cleaned', 'restock_pending', 'restocked', 'ready', 'inspected', 'keys_hung', 'done', 'completed', 'pending_review', 'review_pending', 'awaiting_review', 'closed'].includes(raw_status)
               || !!row.lockbox_video_url
             const cancelled = raw_status === 'cancelled' || raw_status === 'canceled'
-            if (isCheckinSiteExecution && !suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate(row) && !executorTerminal && !cancelled && taskDate >= dateFrom && taskDate <= dateTo && effectiveExecutorId && (allowAllCleaningTasks || effectiveExecutorId === userId)) {
-              const k = `${taskDate}|${rowBusinessIdentity}|${effectiveExecutorId}`
+            if (isCheckinSiteExecution && !suppressStandaloneCheckin && isActiveCleaningTurnoverCandidate(row) && !executorTerminal && !cancelled && taskDate >= dateFrom && taskDate <= dateTo && (effectiveExecutorId || managerCanSeeAllCleaningTaskPool) && (allowAllCleaningTasks || effectiveExecutorId === userId)) {
+              const k = `${taskDate}|${rowBusinessIdentity}|${effectiveExecutorId || 'unassigned'}`
               const arr = executorGroups.get(k) || []
               arr.push({
                 ...base,
-                __assignee_executor: effectiveExecutorId,
+                __assignee_executor: effectiveExecutorId || null,
                 // A legacy inspector fallback or a one-off manual action grant can
                 // make this execution visible/actionable, but only the persisted
                 // source assignee owns its list position.
-                __executor_reorderable: String(row.assignee_id || '').trim() === effectiveExecutorId,
+                __executor_reorderable: !!effectiveExecutorId && String(row.assignee_id || '').trim() === effectiveExecutorId,
               })
               executorGroups.set(k, arr)
             }
@@ -10453,6 +10453,7 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
             inspectionMode,
             inspectionDueDate,
             taskDate,
+            includeManagerPendingDecision: managerCanSeeAllCleaningTaskPool && isCheckinTask,
             dateFrom,
             dateTo,
             status: raw_status,
@@ -11228,8 +11229,8 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
 
         for (const [k, rows] of executorGroups) {
           const parts = k.split('|')
-          const assigneeId = parts[2] || ''
-          if (!assigneeId) continue
+          const assigneeId = parts[2] === 'unassigned' ? '' : (parts[2] || '')
+          if (!assigneeId && !managerCanSeeAllCleaningTaskPool) continue
           out.push(buildMerged('executor', rows, assigneeId))
         }
 

@@ -37,6 +37,7 @@ db.pgPool = {
     if (/^SELECT id FROM roles WHERE name=/.test(sql)) return result([{ id: params[0] }])
     if (/^SELECT permission_code FROM role_permissions/.test(sql)) {
       const roles = Array.isArray(params[0]) ? params[0] : []
+      if (roles.includes('custom_scheduler')) return result([{ permission_code: 'cleaning.schedule.manage' }])
       return result(roles.some((role: string) => ['cleaning_inspector', 'admin'].includes(role))
         ? [{ permission_code: 'cleaning_app.inspect.finish' }]
         : [])
@@ -92,11 +93,101 @@ async function main() {
   const failures: string[] = []; let passed = 0
   try {
     const address = server.address(); assert.ok(address && typeof address !== 'string')
-    const list = async (id: string, role: string): Promise<Row[]> => {
-      const response = await fetch(`http://127.0.0.1:${address.port}/mzapp/work-tasks?date_from=${day}&date_to=${day}${role === 'admin' ? '&view=all' : ''}`, { headers: { 'x-test-user': id, 'x-test-role': role } })
+    const list = async (id: string, role: string, view = role === 'admin' ? 'all' : 'mine', date = day): Promise<Row[]> => {
+      const response = await fetch(`http://127.0.0.1:${address.port}/mzapp/work-tasks?date_from=${date}&date_to=${date}&view=${view}`, { headers: { 'x-test-user': id, 'x-test-role': role } })
       const body: any = await response.json(); assert.equal(response.status, 200, JSON.stringify(body)); assert.ok(Array.isArray(body)); return body
     }
     const test = async (name: string, run: () => Promise<void>) => { try { await run(); passed++; console.log(`PASS ${name}`) } catch (error: any) { failures.push(`${name}: ${error.message}`); console.error(`FAIL ${name}: ${error.message}`) } }
+    const setPendingFixture = (taskType: string, assigned: boolean) => setFixture({
+      id: `pending-${taskType}`, task_type: taskType, status: 'pending',
+      inspection_mode: taskType === 'stayover_clean' ? 'self_complete' : 'pending_decision',
+      cleaner_id: assigned && taskType !== 'checkin_clean' ? 'cleaner' : null,
+      cleaner_name: null, inspector_id: assigned && taskType === 'checkin_clean' ? 'inspector' : null,
+      inspector_name: null, assignee_id: null,
+      cleaner_record_at: null, cleaner_record_date: null, cleaner_record_actor_user_id: null,
+      has_cleaner_completion_evidence: false,
+      lockbox_video_url: null, has_current_lockbox_video: false, lockbox_record_at: null,
+      lockbox_record_actor_user_id: null, lockbox_audit_action: null,
+      lockbox_audit_performed_at: null, lockbox_audit_metadata: {},
+    })
+    for (const role of ['admin', 'offline_manager', 'customer_service']) {
+      for (const type of ['checkout_clean', 'checkin_clean', 'stayover_clean']) {
+        for (const assigned of [false, true]) await test(`${role} all shows ${assigned ? 'assigned' : 'unassigned'} ${type} before inspection decision`, async () => {
+          setPendingFixture(type, assigned)
+          const rows = await list('manager', role, 'all')
+          assert.equal(rows.length, 1, 'one daily card, including a pending-decision check-in')
+          assert.equal(live(rows).length, 1)
+          assert.equal(rows[0].scheduled_date, day)
+          assert.equal(rows[0].source_type, 'cleaning_tasks')
+          if (type === 'checkout_clean') {
+            assert.equal(rows[0].execution_role, 'cleaning', 'pending checkout retains its existing cleaner phase')
+            assert.deepEqual(rows[0].inspection_task_ids || [], [], 'display fix must not invent a checkout inspection phase')
+          }
+          assert.equal(rows[0].available_actions.some((action: Row) => action.id === 'submit_inspection' && action.enabled === true), false, 'display cannot grant inspection execution')
+          assert.equal(fixture[0].status, 'pending', 'GET must not promote source status')
+          assert.equal(fixture[0].inspection_mode, type === 'stayover_clean' ? 'self_complete' : 'pending_decision')
+        })
+      }
+    }
+    for (const role of ['admin', 'offline_manager', 'customer_service', 'cleaner', 'cleaning_inspector', 'cleaner_inspector']) {
+      await test(`${role} mine does not acquire unassigned pending-decision checkin`, async () => {
+        setPendingFixture('checkin_clean', false)
+        assert.deepEqual(await list('outsider', role, 'mine'), [])
+      })
+    }
+    for (const role of ['cleaner', 'cleaning_inspector', 'cleaner_inspector']) await test(`${role} cannot request manager pending-decision projection`, async () => {
+      setPendingFixture('checkin_clean', true)
+      assert.deepEqual(await list('outsider', role, 'all'), [])
+    })
+    for (const status of ['cancelled', 'canceled', 'inspected', 'completed', 'keys_hung']) await test(`pending-decision ${status} does not become active`, async () => {
+      setPendingFixture('checkin_clean', false); fixture[0].status = status
+      assert.equal(live(await list('manager', 'admin', 'all')).length, 0)
+    })
+    await test('pending-decision task stays on its own day', async () => {
+      setPendingFixture('checkin_clean', false)
+      assert.deepEqual(await list('manager', 'admin', 'all', '2026-11-10'), [])
+    })
+    await test('existing schedule-management permission retains cleaning pool access', async () => {
+      setPendingFixture('checkin_clean', false)
+      assert.equal((await list('scheduler', 'custom_scheduler', 'all')).length, 1)
+      assert.deepEqual(await list('scheduler', 'custom_scheduler', 'mine'), [])
+    })
+    for (const assigned of [false, true]) {
+      for (const role of ['admin', 'offline_manager', 'customer_service']) await test(`${role} all shows ${assigned ? 'assigned' : 'unassigned'} password-only checkin`, async () => {
+        setPendingFixture('checkin_clean', false)
+        fixture[0].inspection_scope = 'password_only'
+        fixture[0].inspection_mode = 'same_day'
+        fixture[0].assignee_id = assigned ? 'executor' : null
+        const rows = await list('manager', role, 'all')
+        assert.equal(rows.length, 1)
+        assert.equal(rows[0].scheduled_date, day)
+        assert.equal(rows[0].execution_role, 'execution')
+        assert.equal(rows[0].assignee_id, assigned ? 'executor' : null)
+        if (!assigned) assert.equal(rows[0].executor_reorderable, false)
+        assert.equal(rows[0].available_actions.some((action: Row) => ['submit_inspection', 'upload_access_video', 'set_lock_password', 'complete_task'].includes(action.id) && action.enabled === true), false, 'unrelated manager visibility grants no execution')
+        assert.deepEqual(await list('outsider', 'cleaner', 'all'), [])
+        assert.deepEqual(await list('manager', role, 'mine'), [])
+      })
+    }
+    for (const executionState of ['cancelled', 'deleted', 'superseded']) await test(`pending-decision ${executionState} source remains excluded`, async () => {
+      setPendingFixture('checkin_clean', false); fixture[0].execution_state = executionState
+      assert.equal(live(await list('manager', 'admin', 'all')).length, 0)
+    })
+    await test('pending-decision linked turnover remains one card and count after repeat refresh', async () => {
+      setPendingFixture('checkout_clean', false)
+      const checkout = { ...fixture[0] }
+      setPendingFixture('checkin_clean', false)
+      fixture = [checkout, { ...fixture[0], linked_checkout_task_id: checkout.id }]
+      const rows = await list('manager', 'admin', 'all')
+      assert.equal(rows.length, 1)
+      assert.deepEqual(rows[0].source_ids.slice().sort(), fixture.map(row => row.id).sort())
+      assert.equal(rows[0].daily_stats_group, 'turnover')
+      assert.ok(rows[0].daily_stats_key)
+      const refreshed = await list('manager', 'admin', 'all')
+      assert.equal(refreshed.length, 1)
+      assert.equal(refreshed[0].id, rows[0].id)
+      assert.equal(refreshed[0].daily_stats_key, rows[0].daily_stats_key)
+    })
     await test('cleaner personal history retains no video permission', async () => {
       setFixture(); const rows = await list('cleaner', 'cleaner')
       assert.equal(history(rows).length, 1); assert.equal(live(rows).length, 0)
