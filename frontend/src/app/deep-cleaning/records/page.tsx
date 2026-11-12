@@ -1,6 +1,6 @@
 "use client"
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { App, Button, Card, DatePicker, Descriptions, Divider, Drawer, Form, Grid, Image, Input, InputNumber, Modal, Progress, Select, Space, Switch, Table, Tag, TimePicker, Typography, Upload } from 'antd'
+import { Alert, App, Button, Card, DatePicker, Descriptions, Divider, Drawer, Form, Grid, Image, Input, InputNumber, Modal, Progress, Select, Space, Switch, Table, Tag, TimePicker, Typography, Upload } from 'antd'
 import type { UploadFile, UploadProps } from 'antd'
 import dayjs from 'dayjs'
 import { CheckCircleOutlined, EnvironmentOutlined, InfoCircleOutlined, PictureOutlined, ShareAltOutlined } from '@ant-design/icons'
@@ -8,6 +8,8 @@ import { API_BASE, apiCreate, apiDelete, apiUpdate, authHeaders, getJSON } from 
 import { hasPerm } from '../../../lib/auth'
 import { downloadNamedBlob } from '../../../lib/download'
 import { sortProperties } from '../../../lib/properties'
+import DeepCleaningMedia from '../../../components/DeepCleaningMedia'
+import { DEEP_CLEANING_AREAS, deepCleaningAreas, deepCleaningDetails, deepCleaningSummary, deepCleaningDisplayCost, deepCleaningMediaReferences, deepCleaningDate, deepCleaningDateBound } from '../../../lib/deepCleaningRecordDisplay'
 import { runWorkRecordPdfJob } from '../../../lib/workRecordPdfJobs'
 
 type DeepCleaningRecord = {
@@ -62,7 +64,7 @@ function safeJsonParse(v: any) {
 }
 
 function toUploadFileList(urls: string[] | undefined): UploadFile[] {
-  return (Array.isArray(urls) ? urls : []).filter(Boolean).map((u, idx) => ({
+  return deepCleaningMediaReferences(urls).map((u, idx) => ({
     uid: `${idx}-${u}`,
     name: String(u).split('/').pop() || `file-${idx + 1}`,
     status: 'done',
@@ -70,22 +72,8 @@ function toUploadFileList(urls: string[] | undefined): UploadFile[] {
   }))
 }
 
-function isImageUrl(u: string) {
-  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(u || '')
-}
-
-function summaryFromDetails(details: any): string {
-  const v = safeJsonParse(details)
-  if (!v) return ''
-  if (typeof v === 'string') return v
-  if (Array.isArray(v)) {
-    const parts = v.map((x: any) => String(x?.content || x?.item || x?.desc || '').trim()).filter(Boolean)
-    return parts.join('\n')
-  }
-  return String(v || '')
-}
-
 function fmtMinutes(m?: any): string {
+  if (m === null || m === undefined || m === '') return '-'
   const n = Number(m)
   if (!Number.isFinite(n) || n < 0) return '-'
   const h = Math.floor(n / 60)
@@ -156,6 +144,7 @@ export default function DeepCleaningRecordsPage() {
   const [list, setList] = useState<DeepCleaningRecord[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [listError, setListError] = useState('')
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [pdfPreview, setPdfPreview] = useState<{ open: boolean; url: string; title: string; showChinese: boolean; blob: Blob | null; row: DeepCleaningRecord | null; loading: boolean }>({ open: false, url: '', title: '', showChinese: false, blob: null, row: null, loading: false })
   const [pdfJobUi, setPdfJobUi] = useState<{ open: boolean; stage: string; detail: string; progress: number; timeout: boolean }>({ open: false, stage: '', detail: '', progress: 0, timeout: false })
@@ -175,6 +164,7 @@ export default function DeepCleaningRecordsPage() {
   const [editing, setEditing] = useState<DeepCleaningRecord | null>(null)
   const [savingEdit, setSavingEdit] = useState(false)
   const [viewing, setViewing] = useState<DeepCleaningRecord | null>(null)
+  const [mediaPreview, setMediaPreview] = useState<string | null>(null)
 
   const [createForm] = Form.useForm()
   const [editForm] = Form.useForm()
@@ -195,7 +185,7 @@ export default function DeepCleaningRecordsPage() {
     { value: 'completed', label: '已完成' },
     { value: 'canceled', label: '已取消' },
   ]
-  const catOptions = ['入户走廊','客厅','厨房','卧室','阳台','浴室','全屋','其他'].map(x => ({ value: x, label: x }))
+  const catOptions = DEEP_CLEANING_AREAS.map(x => ({ value: x, label: x }))
   const urgencyOptions = [
     { value: 'low', label: '低' },
     { value: 'normal', label: '中' },
@@ -269,6 +259,13 @@ export default function DeepCleaningRecordsPage() {
   const makeUploadProps = (setFiles: (v: UploadFile[])=>void): UploadProps => ({
     multiple: true,
     accept: 'image/*,video/*',
+    // Never replace file.url: save payloads retain the original stored reference.
+    itemRender: (_origin, file, _files, actions) => <Space>
+      <Button type="link" disabled={!file.url} onClick={() => setMediaPreview(file.url || null)}>{file.name}</Button>
+      {file.status === 'uploading' ? <span>上传中 {Math.round(file.percent || 0)}%</span> : null}
+      {file.status === 'error' ? <span>上传失败</span> : null}
+      <Button size="small" onClick={actions.remove}>删除</Button>
+    </Space>,
     customRequest: async (options) => {
       const { file, onSuccess, onError } = options as any
       try {
@@ -301,47 +298,51 @@ export default function DeepCleaningRecordsPage() {
       setUserOptions(opts)
     } catch { setUserOptions([]) }
   }
-  async function loadList(reset?: boolean) {
-    const showLoading = !list?.length
-    if (showLoading) setLoading(true)
+  async function loadList(reset = false) {
+    if (reset && page !== 1) { setPage(1); return }
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    setLoading(true)
+    setListError('')
     try {
-      try { abortRef.current?.abort() } catch {}
-      const controller = new AbortController()
-      abortRef.current = controller
-      const params: Record<string, any> = {
-        withTotal: '1',
-        limit: String(pageSize),
-        offset: String(Math.max(0, (page - 1) * pageSize)),
+      const params: Record<string, string> = {
+        withTotal: '1', limit: String(pageSize),
+        offset: String(Math.max(0, ((reset ? 1 : page) - 1) * pageSize)),
       }
       if (filterPropertyId) params.property_id = filterPropertyId
       if (filterStatus) params.status = filterStatus
-      if (filterCat) params.category = filterCat
+      if (filterCat) params.area = filterCat
       if (filterPayMethod) params.pay_method = filterPayMethod
-      if (dateRange?.[0]) params.completed_at_from = dayjs(dateRange[0]).startOf('day').toISOString()
-      if (dateRange?.[1]) params.completed_at_to = dayjs(dateRange[1]).endOf('day').toISOString()
-      const qs = new URLSearchParams(params as any).toString()
-      const res = await fetch(`${API_BASE}/crud/property_deep_cleaning?${qs}`, { cache: 'no-store', headers: authHeaders(), signal: controller.signal })
+      if (dateRange?.[0]) params.record_date_from = deepCleaningDateBound(dateRange[0])
+      if (dateRange?.[1]) params.record_date_to = deepCleaningDateBound(dateRange[1], true)
+      const res = await fetch(`${API_BASE}/crud/property_deep_cleaning?${new URLSearchParams(params)}`, { cache: 'no-store', headers: authHeaders(), signal: controller.signal })
+      if (controller.signal.aborted) return
       if (res.status === 401) { window.location.href = '/login'; return }
-      const data = await res.json().catch(()=>[])
-      const items = Array.isArray(data) ? data : []
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (controller.signal.aborted) return
+      if (!Array.isArray(data)) throw new Error('invalid_list_response')
       const tot = Number(res.headers.get('x-total-count') || 0)
-      if (Number.isFinite(tot) && tot >= 0) setTotal(tot)
-      setList(items)
-      if (reset) setPage(1)
+      const nextTotal = Number.isFinite(tot) && tot >= 0 ? tot : 0
+      setTotal(nextTotal)
+      const lastPage = Math.max(1, Math.ceil(nextTotal / pageSize))
+      if (page > lastPage) { setPage(lastPage); return }
+      setList(data)
     } catch {
-      setList([])
-      setTotal(0)
+      if (controller.signal.aborted) return
+      setList([]); setTotal(0)
+      setListError('记录加载失败，请重试。')
     } finally {
-      if (showLoading) setLoading(false)
+      if (!controller.signal.aborted) setLoading(false)
     }
   }
 
-  useEffect(() => { loadProps(); loadUsers(); loadList(true) }, [])
+  useEffect(() => { loadProps(); loadUsers() }, [])
   useEffect(() => {
-    const t = setTimeout(() => { setPage(1); loadList(true) }, 250)
-    return () => clearTimeout(t)
-  }, [filterPropertyId, filterStatus, filterCat, filterPayMethod, dateRange, pageSize])
-  useEffect(() => { loadList(false) }, [page])
+    const t = setTimeout(() => { void loadList() }, 150)
+    return () => { clearTimeout(t); abortRef.current?.abort() }
+  }, [filterPropertyId, filterStatus, filterCat, filterPayMethod, dateRange, pageSize, page])
 
   const rows = useMemo(() => {
     const byId: Record<string, any> = Object.fromEntries((props || []).map(p => [String(p.id), p]))
@@ -432,7 +433,7 @@ export default function DeepCleaningRecordsPage() {
       completed_at: r.completed_at ? dayjs(r.completed_at) : null,
       started_time: r.started_at ? dayjs(r.started_at) : null,
       ended_time: r.ended_at ? dayjs(r.ended_at) : null,
-      duration_minutes: (r as any).duration_minutes !== undefined ? Number((r as any).duration_minutes || 0) : undefined,
+      duration_minutes: r.duration_minutes !== undefined && r.duration_minutes !== null ? Number(r.duration_minutes) : undefined,
       category: r.category || '',
       details: typeof r.details === 'string' ? r.details : (r.details ? JSON.stringify(r.details) : ''),
       invoice_description_en: r.invoice_description_en || '',
@@ -440,7 +441,7 @@ export default function DeepCleaningRecordsPage() {
       repair_notes: r.repair_notes || '',
       checklist,
       consumables,
-      labor_cost: (r as any).labor_cost !== undefined ? Number((r as any).labor_cost || 0) : undefined,
+      labor_cost: r.labor_cost !== undefined && r.labor_cost !== null ? Number(r.labor_cost) : undefined,
       pay_method: r.pay_method || 'company_pay',
       gst_type: r.gst_type || 'GST_INCLUDED_10',
       review_status: r.review_status || 'pending',
@@ -669,23 +670,24 @@ export default function DeepCleaningRecordsPage() {
   const columns: any[] = [
     { title:'房号', dataIndex:'code', width: 120, ellipsis: true, fixed: 'left' as const },
     { title:'工单号', dataIndex:'work_no', width: 160, render: (_: any, r: any) => String((r as any)?.work_no || (r as any)?.id || '') },
-    { title:'清洁日期', dataIndex:'completed_at', width: 120, render: (_: any, r: any) => {
+    { title:'记录日期', dataIndex:'completed_at', width: 120, render: (_: any, r: any) => {
       const v = (r as any)?.completed_at || (r as any)?.occurred_at
-      return v ? dayjs(v).format('YYYY-MM-DD') : '-'
+      return deepCleaningDate(v)
     } },
+    { title:'问题描述', width: 260, ellipsis: true, render: (_: any, r: DeepCleaningRecord) => deepCleaningSummary(r) || '-' },
+    { title:'提交人员', dataIndex:'submitter_name', width: 160, ellipsis: true, render:(v:string, r:any)=> String(v || (r as any)?.created_by || '-') },
     { title:'清洁人员', dataIndex:'worker_name', width: 140, ellipsis: true, render:(v:string)=> String(v || '-') },
-    { title:'提交时间', dataIndex:'submitted_at', width: 160, render:(v:string, r: any)=> (v || (r as any)?.created_at) ? dayjs(v || (r as any)?.created_at).format('YYYY-MM-DD HH:mm') : '-' },
+    { title:'提交时间', dataIndex:'submitted_at', width: 160, render:(v:string, r: any)=> deepCleaningDate(v || r.created_at, 'YYYY-MM-DD HH:mm') },
     { title:'总费用', dataIndex:'total_cost', width: 120, render: (_: any, r: any) => {
       const v = (r as any)?.total_cost
-      const fallback = computeTotalCost((r as any)?.labor_cost, (r as any)?.consumables)
+      const fallback = deepCleaningDisplayCost(r)
       return fmtAmount(v !== undefined && v !== null ? v : fallback)
     } },
     { title:'扣款方式', dataIndex:'pay_method', width: 140, render: (v: any) => payMethodLabel(v) },
     { title:'GST', dataIndex:'gst_type', width: 140, render: (v: any) => gstTypeLabel(v) },
-    { title:'区域', dataIndex:'category', width: 120 },
+    { title:'区域', width: 140, render: (_: any, r: DeepCleaningRecord) => deepCleaningAreas(r) || '-' },
     { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
     { title:'审核', dataIndex:'review_status', width: 120, render:(s:string)=> reviewTag(s) },
-    { title:'提交人员', dataIndex:'submitter_name', width: 160, ellipsis: true, render:(v:string, r:any)=> String(v || (r as any)?.created_by || '-') },
     { title:'操作', width: 320, fixed: 'right' as const, render: (_:any, r:DeepCleaningRecord) => (
       <Space wrap>
         <Button onClick={()=>setViewing(r)}>详情</Button>
@@ -699,6 +701,7 @@ export default function DeepCleaningRecordsPage() {
 
   return (
     <Space direction="vertical" style={{ width:'100%' }}>
+      {process.env.NODE_ENV === 'development' && process.env.NEXT_PUBLIC_DEEP_CLEANING_PREVIEW === 'synthetic' ? <Alert type="info" showIcon message="开发预览：仅使用模拟记录与示例图片，不连接生产数据库；保存、上传、删除及导出已由预览服务禁用。" /> : null}
       <Card title="深度清洁记录" extra={
         <Button type="primary" onClick={openCreate} disabled={!hasPerm('property_deep_cleaning.write')}>新增深度清洁</Button>
       }>
@@ -708,19 +711,19 @@ export default function DeepCleaningRecordsPage() {
             allowClear
             options={propOptions}
             value={filterPropertyId}
-            onChange={v=>setFilterPropertyId(v)}
+            onChange={v=>{ setFilterPropertyId(v); setPage(1) }}
             style={{ width: isMobile ? '100%' : 180 }}
             showSearch
             optionFilterProp="label"
             filterOption={(input, option) => String((option as any)?.label ?? '').toLowerCase().includes(String(input || '').toLowerCase())}
           />
-          <Select placeholder="状态" allowClear options={statusOptions} value={filterStatus} onChange={v=>setFilterStatus(v)} style={{ width: isMobile ? '100%' : 160 }} />
-          <Select placeholder="区域" allowClear options={catOptions} value={filterCat} onChange={v=>setFilterCat(v)} style={{ width: isMobile ? '100%' : 160 }} />
+          <Select placeholder="状态" allowClear options={statusOptions} value={filterStatus} onChange={v=>{ setFilterStatus(v); setPage(1) }} style={{ width: isMobile ? '100%' : 160 }} />
+          <Select placeholder="区域" allowClear options={catOptions} value={filterCat} onChange={v=>{ setFilterCat(v); setPage(1) }} style={{ width: isMobile ? '100%' : 160 }} />
           <Select
             placeholder="扣款方式"
             allowClear
             value={filterPayMethod}
-            onChange={v => setFilterPayMethod(v)}
+            onChange={v => { setFilterPayMethod(v); setPage(1) }}
             style={{ width: isMobile ? '100%' : 180 }}
             options={[
               { value: 'rent_deduction', label: payMethodLabel('rent_deduction') },
@@ -730,13 +733,15 @@ export default function DeepCleaningRecordsPage() {
               { value: 'other_pay', label: payMethodLabel('other_pay') },
             ]}
           />
-          <DatePicker.RangePicker value={dateRange as any} onChange={v=>setDateRange(v as any)} allowClear style={{ width: isMobile ? '100%' : undefined }} />
+          <DatePicker.RangePicker value={dateRange as any} placeholder={['记录开始日期', '记录结束日期']} onChange={v=>{ setDateRange(v as any); setPage(1) }} allowClear style={{ width: isMobile ? '100%' : undefined }} />
           <Button onClick={()=>{
             setFilterPropertyId(undefined); setFilterStatus(undefined); setFilterCat(undefined); setFilterPayMethod(undefined); setDateRange(null)
             setPage(1)
-            setTimeout(()=>loadList(true), 0)
+
           }}>重置</Button>
         </Space>
+        <Typography.Text type="secondary">记录日期：完成日期优先，未完成时为记录发生日期；按墨尔本时间显示，最新提交优先。</Typography.Text>
+        {listError ? <Alert type="error" showIcon message={listError} action={<Button onClick={() => loadList()}>重试</Button>} /> : null}
         <div style={{ width:'100%', overflowX:'auto' }}>
           <Table
             rowKey={r=>String((r as any).id)}
@@ -756,14 +761,17 @@ export default function DeepCleaningRecordsPage() {
               pageSize,
               total,
               showSizeChanger: true,
-              onChange: (p, ps) => { setPage(p); setPageSize(ps) }
+              onChange: (p, ps) => { setPage(ps !== pageSize ? 1 : p); setPageSize(ps) }
             }}
-            scroll={{ x: 1600 }}
+            scroll={{ x: 2060 }}
             columns={columns as any}
           />
         </div>
       </Card>
 
+      <Modal open={!!mediaPreview} onCancel={() => setMediaPreview(null)} footer={null} title="材料预览" destroyOnClose>
+        {mediaPreview ? <DeepCleaningMedia references={[mediaPreview]} /> : null}
+      </Modal>
       <Modal open={createOpen} onCancel={()=>setCreateOpen(false)} onOk={createSubmit} title="新增深度清洁" okText="保存" width={isMobile ? '100%' : 780}>
         <Form form={createForm} layout="vertical">
           <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
@@ -949,6 +957,7 @@ export default function DeepCleaningRecordsPage() {
 
       <Drawer
         open={!!editing}
+        destroyOnClose
         onClose={() => setEditing(null)}
         title="编辑深度清洁"
         width={isMobile ? '100%' : 860}
@@ -981,7 +990,7 @@ export default function DeepCleaningRecordsPage() {
             <Form.Item name="completed_at" label="完成时间">
               <DatePicker showTime style={{ width:'100%' }} />
             </Form.Item>
-            <Form.Item name="category" label="区域">
+            <Form.Item name="category" label="区域" extra={!editing?.category && editing && deepCleaningAreas(editing) ? `原反馈区域：${deepCleaningAreas(editing)}；此处保留原执行区域设置。` : undefined}>
               <Select options={catOptions} />
             </Form.Item>
           </div>
@@ -1021,18 +1030,21 @@ export default function DeepCleaningRecordsPage() {
             <Space direction="vertical" style={{ width:'100%' }}>
               <div>
                 <div style={{ marginBottom: 6, fontWeight: 600 }}>清洁前（图片/视频）</div>
+                <DeepCleaningMedia references={editBeforeFiles.map(file => file.url).filter(Boolean)} />
                 <Upload {...makeUploadProps(setEditBeforeFiles)} fileList={editBeforeFiles} listType="picture">
                   <Button>上传</Button>
                 </Upload>
               </div>
               <div>
                 <div style={{ marginBottom: 6, fontWeight: 600 }}>清洁后（图片/视频）</div>
+                <DeepCleaningMedia references={editAfterFiles.map(file => file.url).filter(Boolean)} />
                 <Upload {...makeUploadProps(setEditAfterFiles)} fileList={editAfterFiles} listType="picture">
                   <Button>上传</Button>
                 </Upload>
               </div>
               <div>
                 <div style={{ marginBottom: 6, fontWeight: 600 }}>附件</div>
+                <DeepCleaningMedia references={editAttachFiles.map(file => file.url).filter(Boolean)} />
                 <Upload {...makeUploadProps(setEditAttachFiles)} fileList={editAttachFiles}>
                   <Button>上传</Button>
                 </Upload>
@@ -1118,7 +1130,7 @@ export default function DeepCleaningRecordsPage() {
                 {() => {
                   const labor = editForm.getFieldValue('labor_cost')
                   const cons = editForm.getFieldValue('consumables')
-                  return <span>{fmtAmount(computeTotalCost(labor, cons))}</span>
+                  return <span>{fmtAmount(deepCleaningDisplayCost({ labor_cost: labor, consumables: cons }))}</span>
                 }}
               </Form.Item>
             </Form.Item>
@@ -1200,6 +1212,7 @@ export default function DeepCleaningRecordsPage() {
 
       <Drawer
         open={!!viewing}
+        destroyOnClose
         onClose={()=>setViewing(null)}
         placement="right"
         width={isMobile ? 420 : 780}
@@ -1216,11 +1229,13 @@ export default function DeepCleaningRecordsPage() {
               <Descriptions.Item label="工单号">{String(viewing?.work_no || viewing?.id || '-')}</Descriptions.Item>
               <Descriptions.Item label="状态">{statusTag(viewing?.status)}</Descriptions.Item>
               <Descriptions.Item label="房号">{String(viewing?.code || viewing?.property_code || viewing?.property_id || '-')}</Descriptions.Item>
-              <Descriptions.Item label="区域">{String(viewing?.category || '-')}</Descriptions.Item>
-              <Descriptions.Item label="清洁日期">{viewing?.occurred_at ? dayjs(viewing.occurred_at).format('YYYY-MM-DD') : '-'}</Descriptions.Item>
-              <Descriptions.Item label="清洁人员">{String(viewing?.worker_name || viewing?.submitter_name || viewing?.created_by || '-')}</Descriptions.Item>
-              <Descriptions.Item label="提交时间">{(viewing?.submitted_at || viewing?.created_at) ? dayjs(viewing?.submitted_at || viewing?.created_at).format('YYYY-MM-DD HH:mm') : '-'}</Descriptions.Item>
-              <Descriptions.Item label="总费用">{fmtAmount(viewing?.total_cost !== undefined && viewing?.total_cost !== null ? viewing?.total_cost : computeTotalCost((viewing as any)?.labor_cost, (viewing as any)?.consumables))}</Descriptions.Item>
+              <Descriptions.Item label="区域">{deepCleaningAreas(viewing) || '-'}</Descriptions.Item>
+              <Descriptions.Item label="记录日期">{deepCleaningDate(viewing.completed_at || viewing.occurred_at)}</Descriptions.Item>
+              <Descriptions.Item label="清洁人员">{String(viewing?.worker_name || '-')}</Descriptions.Item>
+              <Descriptions.Item label="提交人员">{String(viewing.submitter_name || viewing.created_by || '-')}</Descriptions.Item>
+              <Descriptions.Item label="完成时间">{deepCleaningDate(viewing.completed_at, 'YYYY-MM-DD HH:mm')}</Descriptions.Item>
+              <Descriptions.Item label="提交时间">{deepCleaningDate(viewing.submitted_at || viewing.created_at, 'YYYY-MM-DD HH:mm')}</Descriptions.Item>
+              <Descriptions.Item label="总费用">{fmtAmount(deepCleaningDisplayCost(viewing))}</Descriptions.Item>
               <Descriptions.Item label="扣款方式">{payMethodLabel((viewing as any)?.pay_method)}</Descriptions.Item>
               <Descriptions.Item label="GST">{gstTypeLabel((viewing as any)?.gst_type)}</Descriptions.Item>
             </Descriptions>
@@ -1228,13 +1243,14 @@ export default function DeepCleaningRecordsPage() {
             <Divider orientation="left">清洁项目</Divider>
             <Descriptions bordered column={2} labelStyle={{ width: '120px' }}>
             <Descriptions.Item label="项目描述" span={2} style={{ whiteSpace: 'pre-wrap' }}>
-                {String(viewing?.project_desc || summaryFromDetails(viewing?.details) || viewing?.details || '') || '-'}
+                {String(viewing?.project_desc || '-')}
               </Descriptions.Item>
+              <Descriptions.Item label="问题描述" span={2} style={{ whiteSpace: 'pre-wrap' }}>{deepCleaningDetails(viewing.details) || '-'}</Descriptions.Item>
               <Descriptions.Item label="开票英文描述" span={2} style={{ whiteSpace: 'pre-wrap' }}>
                 {String(viewing?.invoice_description_en || '-')}
               </Descriptions.Item>
-              <Descriptions.Item label="开始时间">{viewing?.started_at ? dayjs(viewing.started_at).format('HH:mm') : '-'}</Descriptions.Item>
-              <Descriptions.Item label="结束时间">{viewing?.ended_at ? dayjs(viewing.ended_at).format('HH:mm') : '-'}</Descriptions.Item>
+              <Descriptions.Item label="开始时间">{deepCleaningDate(viewing.started_at, 'HH:mm')}</Descriptions.Item>
+              <Descriptions.Item label="结束时间">{deepCleaningDate(viewing.ended_at, 'HH:mm')}</Descriptions.Item>
               <Descriptions.Item label="清洁时长">{fmtMinutes(viewing?.duration_minutes)}</Descriptions.Item>
               <Descriptions.Item label="审核">{reviewTag(viewing?.review_status)}</Descriptions.Item>
               <Descriptions.Item label="备注" span={2} style={{ whiteSpace: 'pre-wrap' }}>{String(viewing?.notes || '-')}</Descriptions.Item>
@@ -1243,66 +1259,22 @@ export default function DeepCleaningRecordsPage() {
             <Divider orientation="left">清洁前照片</Divider>
             <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
               <Descriptions.Item label="照片">
-                {(() => {
-                  const arr = Array.isArray(viewing?.photo_urls) ? viewing!.photo_urls! : []
-                  if (!arr.length) return '-'
-                  const images = arr.filter(isImageUrl)
-                  const files = arr.filter(u => !isImageUrl(u))
-                  return (
-                    <Space direction="vertical" style={{ width: '100%' }} size={8}>
-                      {images.length ? (
-                        <Image.PreviewGroup>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-                            {images.map((u, i) => (
-                              <Image key={`${u}-${i}`} src={u} width="100%" height={140} style={{ objectFit: 'cover', borderRadius: 8 }} />
-                            ))}
-                          </div>
-                        </Image.PreviewGroup>
-                      ) : null}
-                      {files.length ? (
-                        <Space direction="vertical" size={4}>
-                          {files.map((u, i) => (
-                            <a key={`${u}-${i}`} href={u} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>
-                          ))}
-                        </Space>
-                      ) : null}
-                    </Space>
-                  )
-                })()}
+                <DeepCleaningMedia references={viewing.photo_urls} />
               </Descriptions.Item>
             </Descriptions>
 
             <Divider orientation="left">清洁后照片</Divider>
             <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
               <Descriptions.Item label="照片">
-                {(() => {
-                  const arr = Array.isArray(viewing?.repair_photo_urls) ? viewing!.repair_photo_urls! : []
-                  if (!arr.length) return '-'
-                  const images = arr.filter(isImageUrl)
-                  const files = arr.filter(u => !isImageUrl(u))
-                  return (
-                    <Space direction="vertical" style={{ width: '100%' }} size={8}>
-                      {images.length ? (
-                        <Image.PreviewGroup>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-                            {images.map((u, i) => (
-                              <Image key={`${u}-${i}`} src={u} width="100%" height={140} style={{ objectFit: 'cover', borderRadius: 8 }} />
-                            ))}
-                          </div>
-                        </Image.PreviewGroup>
-                      ) : null}
-                      {files.length ? (
-                        <Space direction="vertical" size={4}>
-                          {files.map((u, i) => (
-                            <a key={`${u}-${i}`} href={u} target="_blank" rel="noreferrer">{u.split('/').pop() || 'file'}</a>
-                          ))}
-                        </Space>
-                      ) : null}
-                    </Space>
-                  )
-                })()}
+                <DeepCleaningMedia references={viewing.repair_photo_urls} />
               </Descriptions.Item>
             </Descriptions>
+
+            {(() => {
+              const shown = new Set([...deepCleaningMediaReferences(viewing.photo_urls), ...deepCleaningMediaReferences(viewing.repair_photo_urls)])
+              const attachments = deepCleaningMediaReferences(viewing.attachment_urls).filter(ref => !shown.has(ref))
+              return attachments.length ? <><Divider orientation="left">附件</Divider><DeepCleaningMedia references={attachments} /></> : null
+            })()}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
               <Button icon={<ShareAltOutlined />} onClick={() => shareLink(viewing)}>分享</Button>

@@ -741,6 +741,20 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
                 continue
               }
             }
+            // The list shows completion date when available, otherwise report date.
+            // Keep completed_at_* and occurred_at_* callers on their original semantics.
+            if (resource === 'property_deep_cleaning' && (k === 'record_date_from' || k === 'record_date_to')) {
+              values.push((filters as any)[k])
+              parts.push(`COALESCE("completed_at", "occurred_at") ${k.endsWith('_from') ? '>=' : '<='} $${values.length}`)
+              continue
+            }
+            if (resource === 'property_deep_cleaning' && k === 'area') {
+              values.push((filters as any)[k])
+              // Mobile reports store selected areas as 、-separated tokens, not category.
+              // Exact tokens avoid treating free-form historical descriptions as areas.
+              parts.push(`("category" = $${values.length} OR (NULLIF(btrim("category"), '') IS NULL AND EXISTS (SELECT 1 FROM unnest(string_to_array(COALESCE("project_desc", ''), '、')) AS selected_area(value) WHERE btrim(selected_area.value) = $${values.length}) AND NOT EXISTS (SELECT 1 FROM unnest(string_to_array(COALESCE("project_desc", ''), '、')) AS selected_area(value) WHERE btrim(selected_area.value) NOT IN ('入户走廊','客厅','厨房','卧室','阳台','浴室','全屋','其他'))))`)
+              continue
+            }
             if (k.endsWith('_from')) {
               const col = k.slice(0, -5)
               if (/^[a-zA-Z0-9_]+$/.test(col)) {
@@ -784,72 +798,15 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         } else if (resource === 'property_maintenance') {
           orderBy = ' ORDER BY occurred_at DESC NULLS LAST, id ASC'
         } else if (resource === 'property_deep_cleaning') {
-          orderBy = ' ORDER BY occurred_at DESC NULLS LAST, id ASC'
+          orderBy = ' ORDER BY COALESCE(submitted_at, created_at, occurred_at) DESC NULLS LAST, id ASC'
         }
         if (pgPool) {
           try {
             if (resource === 'property_maintenance') {
               await assertPropertyMaintenanceSchema()
             }
-            if (resource === 'property_deep_cleaning' && !pdfRenderReadOnly) {
-              try {
-                await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
-                  id text PRIMARY KEY,
-                  property_id text REFERENCES properties(id) ON DELETE SET NULL,
-                  occurred_at date NOT NULL,
-                  worker_name text,
-                  project_desc text,
-                  started_at timestamptz,
-                  ended_at timestamptz,
-                  duration_minutes integer,
-                  details text,
-                  notes text,
-                  created_by text,
-                  photo_urls jsonb,
-                  property_code text,
-                  work_no text,
-                  category text,
-                  status text,
-                  urgency text,
-                  submitted_at timestamptz,
-                  submitter_name text,
-                  assignee_id text,
-                  eta date,
-                  completed_at timestamptz,
-                  repair_notes text,
-                  repair_photo_urls jsonb,
-                  attachment_urls jsonb,
-                  checklist jsonb,
-                  consumables jsonb,
-                  labor_minutes integer,
-                  labor_cost numeric,
-                  review_status text,
-                  reviewed_by text,
-                  reviewed_at timestamptz,
-                  review_notes text,
-                  created_at timestamptz DEFAULT now(),
-                  updated_at timestamptz
-                );`)
-                await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_property_id ON property_deep_cleaning(property_id);')
-                await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_status ON property_deep_cleaning(status);')
-                await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_category ON property_deep_cleaning(category);')
-                await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_occurred_at ON property_deep_cleaning(occurred_at);')
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_desc text;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS started_at timestamptz;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS ended_at timestamptz;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS duration_minutes integer;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS checklist jsonb;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS consumables jsonb;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS pay_method text;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS gst_type text;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS total_cost numeric;`)
-                await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS invoice_description_en text;`)
-                await pgPool.query('CREATE INDEX IF NOT EXISTS idx_property_deep_cleaning_property_occurred ON property_deep_cleaning(property_id, occurred_at);')
-              } catch {}
-            }
+            // Read requests must not create or alter deep-cleaning schema.
+            // Schema provisioning remains the responsibility of explicit migrations.
             const w2 = (() => {
               if ((resource !== 'property_maintenance' && resource !== 'property_deep_cleaning') || !q) return w
               const like = `%${q.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`
@@ -1164,6 +1121,15 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
         if (pdfRenderReadOnly) {
           return res.status(503).json({ code: 'pdf_render_data_unavailable', source: resource })
         }
+        if (resource === 'property_deep_cleaning') {
+          const schemaNotReady = ['42P01', '42703'].includes(String(e?.code || ''))
+            || /(?:relation|column) .*does not exist/i.test(String(e?.message || ''))
+          // A PostgreSQL outage must not masquerade as a successful empty list
+          // from the unrelated in-memory fallback store.
+          return res.status(503).json({
+            code: schemaNotReady ? 'property_deep_cleaning_schema_not_ready' : 'property_deep_cleaning_data_unavailable',
+          })
+        }
       }
     }
     // Supabase branch removed
@@ -1173,6 +1139,18 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
       if (k === 'created_by_any') {
         const actorKeys = Array.isArray(v) ? v.map((x: any) => String(x || '').trim()).filter(Boolean) : []
         return canReadPropertyExpenseRowByPeerRole(r, actorKeys)
+      }
+      if (resource === 'property_deep_cleaning' && k === 'area') {
+        const areas = String(r?.project_desc || '').split('、').map(area => area.trim())
+        const knownAreas = ['入户走廊', '客厅', '厨房', '卧室', '阳台', '浴室', '全屋', '其他']
+        return r?.category === v || (!String(r?.category || '').trim() && areas.every(area => knownAreas.includes(area)) && areas.includes(String(v)))
+      }
+      if (resource === 'property_deep_cleaning' && (k === 'record_date_from' || k === 'record_date_to')) {
+        const date = r?.completed_at ?? r?.occurred_at
+        if (!date) return false
+        const time = new Date(date).getTime()
+        const bound = new Date(String(v)).getTime()
+        return k.endsWith('_from') ? time >= bound : time <= bound
       }
       return (r?.[k]) == v
     }))
@@ -1254,8 +1232,10 @@ router.get('/:resource', requireResourcePerm('view'), async (req, res) => {
       })
     } else if (resource === 'property_deep_cleaning') {
       filtered = filtered.sort((a: any, b: any) => {
-        const ao = a?.occurred_at ? new Date(a.occurred_at).getTime() : Number.NEGATIVE_INFINITY
-        const bo = b?.occurred_at ? new Date(b.occurred_at).getTime() : Number.NEGATIVE_INFINITY
+        const dateA = a?.submitted_at ?? a?.created_at ?? a?.occurred_at
+        const dateB = b?.submitted_at ?? b?.created_at ?? b?.occurred_at
+        const ao = dateA ? new Date(dateA).getTime() : Number.NEGATIVE_INFINITY
+        const bo = dateB ? new Date(dateB).getTime() : Number.NEGATIVE_INFINITY
         if (ao !== bo) return bo - ao
         return String(a?.id || '').localeCompare(String(b?.id || ''))
       })

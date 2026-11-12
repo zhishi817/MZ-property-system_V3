@@ -1,7 +1,7 @@
 import { hasPg, pgPool } from '../dbAdapter'
 import type { WorkTaskActionId } from './workTaskActions'
 import crypto from 'crypto'
-import { inspectionSubmissionAuditWhereSql } from './cleaningCompletionEvidence'
+import { inspectionSubmissionAuditWhereSql, legacyCompletionPhotoSaveAuditWhereSql } from './cleaningCompletionEvidence'
 
 export type WorkTaskActionAuditInput = {
   sourceType: string
@@ -350,7 +350,11 @@ export async function assertCleaningTaskRoleRecordMutable(input: {
         AND audit.source_id::text = $1::text
         AND audit.performed_as_action = ANY($2::text[])
         AND COALESCE(NULLIF(audit.actor_user_id::text, ''), audit.performed_by_user_id::text) = $3::text
-        AND (${input.actionId === 'submit_inspection' ? inspectionSubmissionAuditWhereSql('audit') : 'TRUE'})
+        AND (${input.actionId === 'submit_inspection'
+          ? inspectionSubmissionAuditWhereSql('audit')
+          : input.actionId === 'complete_cleaning'
+            ? `NOT ${legacyCompletionPhotoSaveAuditWhereSql('audit')}`
+            : 'TRUE'})
       LIMIT 1`,
     [taskId, terminalActions, actorUserId],
   )

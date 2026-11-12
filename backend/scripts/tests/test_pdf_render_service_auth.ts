@@ -187,7 +187,8 @@ async function main() {
   assert.match(managementFeeRules, /42P01[^\n]+!options\?\.requireExistingTable/)
 
   const crudModule = fs.readFileSync(path.join(backendRoot, 'src/modules/crud.ts'), 'utf8')
-  assert.match(crudModule, /resource === 'property_deep_cleaning' && !pdfRenderReadOnly/)
+  const crudListRoute = crudModule.slice(crudModule.indexOf("router.get('/:resource',"), crudModule.indexOf("router.get('/:resource/:id',"))
+  assert.doesNotMatch(crudListRoute, /(?:CREATE TABLE(?: IF NOT EXISTS)?|ALTER TABLE) property_deep_cleaning/)
   assert.match(crudModule, /if \(pdfRenderReadOnly\) throw e/)
   assert.match(crudModule, /if \(!pdfRenderReadOnly && toFixWorkNo\.length\)/)
   assert.match(crudModule, /if \(!pdfRenderReadOnly && toFixMeta\.length\)/)

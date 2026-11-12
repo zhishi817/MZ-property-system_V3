@@ -13,7 +13,7 @@ function makeExecutor(
   guestArrivalSkipAudit = false,
   cleaningReady = true,
   lockboxVideoSaved = false,
-  priorRoleAudits: Array<{ action: string; actor: string; taskId?: string; route?: string }> = [],
+  priorRoleAudits: Array<{ action: string; actor: string; taskId?: string; route?: string; step?: string }> = [],
 ) {
   const queries: string[] = []
   const insertedAudits: any[] = []
@@ -64,10 +64,12 @@ function makeExecutor(
         const actor = String(params[2] || '')
         const taskId = String(params[0] || '')
         const excludesLegacyRestock = sql.includes("metadata->>'route'") && sql.includes('mzapp.cleaning_tasks.restock_proof')
+        const excludesPhotoSave = sql.includes('cleaning_app.tasks.completion_photos') && sql.includes('completion_photos_saved')
         const matched = priorRoleAudits.some((audit) => actions.includes(audit.action)
           && audit.actor === actor
           && (!audit.taskId || audit.taskId === taskId)
-          && !(excludesLegacyRestock && audit.action === 'submit_inspection' && audit.route === 'mzapp.cleaning_tasks.restock_proof'))
+          && !(excludesLegacyRestock && audit.action === 'submit_inspection' && audit.route === 'mzapp.cleaning_tasks.restock_proof')
+          && !(excludesPhotoSave && audit.route === 'cleaning_app.tasks.completion_photos' && audit.step === 'completion_photos_saved'))
         return {
           rows: matched ? [{ ok: 1 }] : [],
           rowCount: matched ? 1 : 0,
@@ -126,6 +128,18 @@ async function main() {
     actorUserId: 'cleaner-1',
     statusBefore: 'cleaned',
   }, makeExecutor({ ...task, status: 'cleaned' }, []) as any), /work_record_read_only/)
+  for (const legacy of [{ route: 'cleaning_app.tasks.completion_photos', step: 'completion_photos_saved' }]) {
+    const photoOnly = makeExecutor({ ...task, status: 'assigned', task_type: 'stayover_clean' }, [], false, true, false,
+      [{ action: 'complete_cleaning', actor: 'cleaner-1', ...legacy }])
+    await assertCleaningTaskRoleRecordMutable({ taskId: 'task-guard', actionId: 'complete_cleaning', actorUserId: 'cleaner-1', statusBefore: 'assigned' }, photoOnly as any)
+    assert.equal(photoOnly.queries.some(sql => /UPDATE|INSERT|DELETE/.test(sql)), false, 'legacy compatibility must not rewrite audit data')
+  }
+  const genuineCompletion = makeExecutor({ ...task, status: 'assigned' }, [], false, true, false,
+    [{ action: 'complete_cleaning', actor: 'cleaner-1', route: 'cleaning_app.tasks.self_complete' }])
+  await assert.rejects(() => assertCleaningTaskRoleRecordMutable({ taskId: 'task-guard', actionId: 'complete_cleaning', actorUserId: 'cleaner-1', statusBefore: 'assigned' }, genuineCompletion as any), /work_record_read_only/)
+  const unknownCompletion = makeExecutor({ ...task, status: 'assigned' }, [], false, true, false,
+    [{ action: 'complete_cleaning', actor: 'cleaner-1' }])
+  await assert.rejects(() => assertCleaningTaskRoleRecordMutable({ taskId: 'task-guard', actionId: 'complete_cleaning', actorUserId: 'cleaner-1', statusBefore: 'assigned' }, unknownCompletion as any), /work_record_read_only/)
   const noPhotos = makeExecutor(task, [])
   const blocked = await applyCleaningTaskActionTransition({
     taskId: 'task-guard',

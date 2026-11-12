@@ -28,7 +28,7 @@ async function run() {
     'MZ-092 deferred inspection takeover must continue to exclude password-only work',
   )
   assert.match(mzapp, /const executorTerminal = \[[\s\S]*?'done', 'completed'[\s\S]*?\]\.includes\(raw_status\)/, 'terminal password-only sources must not remain in the active executor projection')
-  assert.match(mzapp, /__executor_reorderable: String\(row\.assignee_id \|\| ''\)\.trim\(\) === effectiveExecutorId/, 'legacy inspector fallback and manual action grants must stay visible without receiving reorder ownership')
+  assert.match(mzapp, /__executor_reorderable: !!effectiveExecutorId && String\(row\.assignee_id \|\| ''\)\.trim\(\) === effectiveExecutorId/, 'unassigned, legacy inspector fallback and manual action grants must stay visible without receiving reorder ownership')
   assert.match(mzapp, /executor_reorderable: roleKind === 'executor'[\s\S]*?!isWorkRecordGroup[\s\S]*?__executor_reorderable === true/, 'the public projection must expose an explicit source-assignee reorder capability')
 
   const queries: Array<{ sql: string; params: any[] }> = []
