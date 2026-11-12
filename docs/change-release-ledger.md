@@ -140,13 +140,17 @@
 - Required validation: PASS; final isolated check:release exit 0, check:fast exit 0, backend no-emit exit 0, Web 62 files / 357 tests and build PASS, paired Mobile full 88 suites / 908 tests. Fresh identity-checked local PostgreSQL actual-route regression PASS and instance stopped. No Mobile Node preload was used in the final full run.
 - Shared-hunk review: PASS; exact source manifests, exclusive files and additive shared-file union inspected; no unselected candidate changes.
 - Generated-file review: PASS; no environment files, credentials, production records, dist, node_modules, build cache or test logs staged.
-- Technical state: committed
+- Technical state: pushed
 - User authorization: approved-for-push; latest explicit user request “112/113/114 先提交推送创建PR吧” covers these selected CRLs and this single temporary branch per repository, including ledger-only receipts. No merge/deployment/OTA/production writes.
 - Independent review: GO; independent paired technical push/PR review directly verified Root base cb0425fdeae33baa790b7d9d381e8153719770fa/content 7e074ceb5bc8d65b87b8bce369dfed0bb0f0893d/head 55096067675dc5080bdc8ca8be64865d865024b3 and Mobile base c5b87b5b38e602e5d852971a6455a828c90ad170/content 01fd8873bf6ebb6af2a1624160ca9a9f01cad638/head f192e7d71984d1c7ac0f269f50f1426bfe278055, both exact fingerprints, ancestry, CRL scope and clean state; no unresolved P0/P1/P2.
 - Action conclusion: GO; blockers: none for ordinary branch push and Draft PR targeting Dev. Pure ledger receipts are re-audited; content fingerprint must stay unchanged.
 
 - Cross-repository dependency verification: PASS by direct independent inspection of both exact repositories and their matching complete local regression/static-contract evidence. Both single-repository tools return NOT VERIFIED only because they cannot inspect the counterpart; no local blocker or other missing evidence. This separate paired GO does not relabel those tool results.
 - Publication order: Mobile matching branch first, then Root branch/PR, so Root CI cannot silently select baseline Mobile Dev. Remote exact-ref Phase 4 run will be tracked separately; no merge/deploy/OTA authorized.
+
+- First remote publication evidence (2026-11-12 UTC): ordinary push to `origin/codex/mz-112-113-114-20261112` succeeded and independent `git ls-remote` matched `c5733024deac785d72009b333a8695fb2f010329`. The matching Mobile branch was present before Root PR creation.
+- PR evidence: https://github.com/zhishi817/MZ-property-system_V3/pull/452; created Draft targeting `Dev`, paired PR https://github.com/zhishi817/mz-cleaning-app-frontend/pull/80. Remote checks pending; no remote CI-pass or ready-to-merge claim.
+- Delivery boundary: not merged; no backend deployment, OTA, EAS, production data/API action, migration or backfill. Device/production acceptance not run. This ledger-only receipt preserves the independently reviewed content fingerprint and is audited before ordinary push.
 
 ### Risks / Release Notes
 
