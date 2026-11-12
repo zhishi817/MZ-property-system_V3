@@ -125,6 +125,29 @@
 
 - Content receipt: committed cleanly with the independently reviewed non-ledger fingerprint. Not pushed; PR not created; not merged; not deployed; OTA not published; device/production verification not run.
 
+#### RA-20261112-MZ112-113-114-ROOT-PUSH
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261110-004`, `CRL-20261110-003`, `CRL-20261110-002`
+- Selected CRL identities: `root/CRL-20261110-004`, `root/CRL-20261110-003`, `root/CRL-20261110-002`
+- Intended action: `push`
+- Branch: `codex/mz-112-113-114-20261112`
+- Base: `origin/Dev@cb0425fdeae33baa790b7d9d381e8153719770fa`; fetched at `2026-11-12T02:49:24Z` (unchanged from initial fetch)
+- Candidate patch SHA-256: `7eab9bee4fabb92bf880a84211f3e002f9604fe272e1a45b6c8147cfa893d67a`
+- Commit SHA: `7e074ceb5bc8d65b87b8bce369dfed0bb0f0893d`; reviewed candidate content commit
+- Dependencies: `mobile/CRL-20261110-001@01fd8873bf6ebb6af2a1624160ca9a9f01cad638`
+- Cross-repository candidate pairing: exact content SHAs are now bound above; both final full gates and static contract match the reviewed content. Independent paired committed-range review follows before any push.
+- Required validation: PASS; final isolated check:release exit 0, check:fast exit 0, backend no-emit exit 0, Web 62 files / 357 tests and build PASS, paired Mobile full 88 suites / 908 tests. Fresh identity-checked local PostgreSQL actual-route regression PASS and instance stopped. No Mobile Node preload was used in the final full run.
+- Shared-hunk review: PASS; exact source manifests, exclusive files and additive shared-file union inspected; no unselected candidate changes.
+- Generated-file review: PASS; no environment files, credentials, production records, dist, node_modules, build cache or test logs staged.
+- Technical state: committed
+- User authorization: approved-for-push; latest explicit user request “112/113/114 先提交推送创建PR吧” covers these selected CRLs and this single temporary branch per repository, including ledger-only receipts. No merge/deployment/OTA/production writes.
+- Independent review: GO; independent paired technical push/PR review directly verified Root base cb0425fdeae33baa790b7d9d381e8153719770fa/content 7e074ceb5bc8d65b87b8bce369dfed0bb0f0893d/head 55096067675dc5080bdc8ca8be64865d865024b3 and Mobile base c5b87b5b38e602e5d852971a6455a828c90ad170/content 01fd8873bf6ebb6af2a1624160ca9a9f01cad638/head f192e7d71984d1c7ac0f269f50f1426bfe278055, both exact fingerprints, ancestry, CRL scope and clean state; no unresolved P0/P1/P2.
+- Action conclusion: GO; blockers: none for ordinary branch push and Draft PR targeting Dev. Pure ledger receipts are re-audited; content fingerprint must stay unchanged.
+
+- Cross-repository dependency verification: PASS by direct independent inspection of both exact repositories and their matching complete local regression/static-contract evidence. Both single-repository tools return NOT VERIFIED only because they cannot inspect the counterpart; no local blocker or other missing evidence. This separate paired GO does not relabel those tool results.
+- Publication order: Mobile matching branch first, then Root branch/PR, so Root CI cannot silently select baseline Mobile Dev. Remote exact-ref Phase 4 run will be tracked separately; no merge/deploy/OTA authorized.
+
 ### Risks / Release Notes
 
 - Potential blast radius of common mutation guard covered by existing cleaning/inspection/key/video regressions; no other branch changes. No new per-area maxima invented.
