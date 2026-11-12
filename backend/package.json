@@ -104,9 +104,13 @@
     "test:phase5-e2e": "ts-node-dev --transpile-only scripts/tests/phase5_e2e_acceptance.ts",
     "import:customer-service-manual": "node scripts/import_customer_service_manual.js",
     "test:handover-visibility-routes": "node -r ts-node/register/transpile-only scripts/tests/test_handover_visibility_routes.ts",
-    "test:property-feedback-history": "node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_history_policy.ts && node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_history_routes.ts && node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_history_media.ts && node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_access_contract.ts",
+    "test:property-feedback-history": "node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_history_policy.ts && node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_history_routes.ts && node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_history_media.ts && node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_access_contract.ts && npm run test:deep-cleaning-list-filters && npm run test:property-feedback-r2-media",
     "test:web-task-capabilities": "ts-node-dev --transpile-only scripts/tests/test_web_task_capabilities.ts",
-    "test:mz100-notification-password-channels": "ts-node --transpile-only scripts/tests/test_mz100_notification_password_channels.ts"
+    "test:mz100-notification-password-channels": "ts-node --transpile-only scripts/tests/test_mz100_notification_password_channels.ts",
+    "test:property-feedback-r2-media": "node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_r2_media_routes.ts",
+    "test:deep-cleaning-list-filters": "node -r ts-node/register/transpile-only scripts/tests/test_deep_cleaning_list_filters.ts",
+    "test:mz114-completion-contract": "node -r ts-node/register/transpile-only scripts/tests/test_mz114_completion_contract.ts",
+    "test:mz114-stayover:pg": "node -r ts-node/register/transpile-only scripts/tests/test_mz114_stayover_completion_pg.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.670.0",

@@ -6,6 +6,8 @@
 
 ## 当前策略
 
+- 入住中完成照片的对象上传、业务关联、正式完成是三个独立阶段。尚未关联的远端对象不得作为预览依据；保留本地证据及上传身份供业务保存重试，缺失本地预览须明确提示，不得绕过私有图片权限。已保存/历史照片继续走认证读取。MZ-114 的诊断与兼容边界见 `docs/mz114-stayover-photo-diagnosis.md`。
+
 - `cleaning/`、`mzapp/`、`maintenance/`、`deep-cleaning/`、`expenses/`、`invoice-files/`、`guest-site/`、`property-guides/`、`inventory/`、`key-items/`、`onboarding/`、`pdf-jobs/` 和 `landlord-documents/` 默认视为业务媒体前缀。
 - 默认没有可自动删除的临时前缀；孤儿对象首先只生成 dry-run 报告。
 - 引用扫描读取公开表中名称包含 URL、照片、媒体、文件、图片、视频、附件、证明或文档语义的文本/JSON/JSONB 字段，并过滤密码、token、secret、auth 等敏感字段。

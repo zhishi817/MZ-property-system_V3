@@ -930,6 +930,7 @@ export function mobileInspectionProjectionDate(params: {
   inspectionMode: InspectionMode
   inspectionDueDate?: any
   taskDate?: any
+  includeManagerPendingDecision?: boolean
   dateFrom: string
   dateTo: string
   status?: any
@@ -945,6 +946,9 @@ export function mobileInspectionProjectionDate(params: {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return null
   if (taskDate < from || taskDate > to) return null
   if (params.inspectionMode === 'same_day') return taskDate
+  // A missing inspection decision must not erase a scheduled task from the
+  // management pool. This is a display date, not an execution permission.
+  if (params.inspectionMode === 'pending_decision' && params.includeManagerPendingDecision === true) return taskDate
 
   const status = String(params.status || '').trim().toLowerCase()
   if (params.inspectionMode === 'self_complete' && status === 'keys_hung') return taskDate

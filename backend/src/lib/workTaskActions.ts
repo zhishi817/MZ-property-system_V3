@@ -5,6 +5,7 @@ export type WorkTaskActionId =
   | 'upload_key_photo'
   | 'fill_supplies'
   | 'record_restock_proof'
+  | 'record_completion_photos'
   | 'submit_inspection'
   | 'upload_access_video'
   | 'complete_cleaning'

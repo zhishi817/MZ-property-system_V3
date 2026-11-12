@@ -14,6 +14,7 @@ import { buildCleaningTaskVisibilityHints, emitWorkTaskEvent } from '../services
 import { effectiveInspectionMode, isCleaningTaskInspectionSubmitParticipant, isInspectionFinishedStatus, projectCleaningKeyHandover } from '../lib/cleaningInspection'
 import { CLEANING_IMAGE_FORMAT_ERROR, encodeCleaningImageToJpeg, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
+import { completionPhotoLimitViolation } from '../lib/cleaningCompletionPhotoLimits'
 import { currentOfflineTaskPhotoKeyFromReference, currentMzappTaskPhotoKeyFromReference, isLegacyMzappTaskPhotoPublicUrl, offlineTaskPhotoReferenceVariants, normalizeMzappTaskPhotoKey } from '../lib/mzappTaskPhotoReference'
 import {
   buildIdempotencyPayloadHash,
@@ -2030,14 +2031,6 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
     const submitId = String(parsed.data.submit_id || '').trim()
     const stepKey = String(parsed.data.step_key || '').trim()
     const payloadHash = buildIdempotencyPayloadHash(parsed.data)
-    const limits: Record<string, number> = { toilet: 9, living: 3, sofa: 2, bedroom: 8, kitchen: 2, vacuum_used: 1, shower_drain: 1, remote_tv: 1, remote_ac: 1, remote_controls: 3 }
-    const byArea = new Map<string, number>()
-    for (const it of parsed.data.items) {
-      const a = String(it.area)
-      byArea.set(a, (byArea.get(a) || 0) + 1)
-      const lim = limits[a] ?? 1
-      if ((byArea.get(a) || 0) > lim) return res.status(400).json({ message: '超出数量限制', area: a, limit: lim })
-    }
     if (hasPg) {
       const { pgPool } = require('../dbAdapter')
       if (!pgPool) return res.status(500).json({ message: 'pg not available' })
@@ -2080,6 +2073,9 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
           }
         }
 
+        const limitViolation = completionPhotoLimitViolation(parsed.data.items, task.task_type)
+        if (limitViolation) return { kind: 'limit' as const, ...limitViolation }
+
         await assertCleaningTaskRoleRecordMutable({
           taskId: String(id),
           actionId: 'complete_cleaning',
@@ -2101,7 +2097,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
         const actionAudit = await recordWorkTaskActionAudit({
           sourceType: 'cleaning_tasks',
           sourceId: String(id),
-          performedAsAction: 'complete_cleaning',
+          performedAsAction: 'record_completion_photos',
           actorUserId: actionActor.actorUserId,
           performedByUserId: actionActor.performedByUserId,
           performedByName: actionActor.performedByName,
@@ -2128,6 +2124,7 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
       if (transactionResult.kind === 'forbidden') return res.status(403).json({ message: 'forbidden' })
       if (transactionResult.kind === 'conflict') return res.status(409).json({ message: 'idempotency_conflict', submit_id: submitId, step_key: stepKey })
       if (transactionResult.kind === 'replay') return res.status(200).json(transactionResult.responseBody)
+      if (transactionResult.kind === 'limit') return res.status(400).json({ message: '超出数量限制', area: transactionResult.area, limit: transactionResult.limit })
       try { broadcastCleaningEvent({ event: 'completion_photos_saved', task_id: id }) } catch {}
       try {
         const operationId = require('uuid').v4()
@@ -2156,6 +2153,8 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
       } catch {}
       return res.status(201).json(transactionResult.responseBody)
     }
+    const limitViolation = completionPhotoLimitViolation(parsed.data.items, null)
+    if (limitViolation) return res.status(400).json({ message: '超出数量限制', ...limitViolation })
     return res.status(201).json({ ok: true })
   } catch (e: any) {
     if (Number(e?.statusCode || 0) === 409) {
@@ -3300,6 +3299,13 @@ export function feedbackMediaUrlArray(raw: any): string[] {
   }
 }
 
+// Canonical mzapp references are usable only in the currently configured namespace.
+// Do not decode escaped path segments or silently fall back to a different bucket.
+function currentFeedbackR2Key(value: string): string | null {
+  if (!/^r2:\/\//i.test(value) || /[%\s]/.test(value)) return null
+  return currentMzappTaskPhotoKeyFromReference(value)
+}
+
 export function feedbackMediaRowReferencesKey(row: any, key: string): boolean {
   const projectItems = (() => {
     const raw = row?.project_items
@@ -3320,7 +3326,9 @@ export function feedbackMediaRowReferencesKey(row: any, key: string): boolean {
   ]
   return references.some((reference) => {
     const normalized = String(reference || '').trim()
-    return normalized === key || r2KeyFromUrl(normalized) === key
+    return /^r2:\/\//i.test(normalized)
+      ? currentFeedbackR2Key(normalized) === key
+      : normalized === key || r2KeyFromUrl(normalized) === key
   })
 }
 
@@ -3832,6 +3840,9 @@ router.get(
       )) {
         return res.status(403).json({ message: 'forbidden_media' })
       }
+      if ([requestedKey, sourceUrl].some(reference => /^r2:/i.test(reference) && !currentFeedbackR2Key(reference))) {
+        return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
+      }
       const requestedKeyCurrentKey = currentMzappTaskPhotoKeyFromReference(requestedKey)
       const sourceUrlCurrentKey = currentMzappTaskPhotoKeyFromReference(sourceUrl)
       const requestedKeyHasQueryOrFragment = /^https?:\/\//i.test(requestedKey) && /[?#]/.test(requestedKey)
@@ -4035,7 +4046,9 @@ router.get(
         return res.status(200).send(responseBody)
       }
       if (!hasR2) return res.status(404).json({ message: 'r2_not_configured' })
-      const key = String(requestedKey || r2KeyFromUrl(sourceUrl) || '').trim()
+      // Keep the already validated canonical reference after the offline-task gate.
+      // Feedback rows still require their exact reference and existing authorization.
+      const key = String(currentFeedbackR2Key(requestedKey) || requestedKey || currentFeedbackR2Key(sourceUrl) || r2KeyFromUrl(sourceUrl) || '').trim()
       if (!isPropertyFeedbackMediaKey(key)) {
         return res.status(403).json({ message: 'forbidden_key' })
       }

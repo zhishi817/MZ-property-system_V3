@@ -2,6 +2,96 @@
 
 本文件只保存当前有效的业务不变量、责任范围、测试映射和最近一次完整验证索引。
 
+## FR-048：入住中完成照片关联、多浴室与正式完成保护
+
+- **维护责任范围：** backend completion photo save / formal self-complete and paired mobile completion draft
+- **最后审查日期：** 2026-11-10
+- **状态：** active
+
+### 业务保护规则
+
+- 入住中下水口至少一张，允许多个浴室分别拍照；例外由行锁内服务端task_type决定，不接受客户端自行声明。其他区域与任务类型规则不擅改。
+- 文件上传不等于业务关联；未关联草稿保留本地预览与远端上传身份，缺少本地预览明确提示，不能绕过私有图片403。已确认保存或当前同任务/同区域读取确认的照片仍使用认证远端预览。
+- 照片保存写record_completion_photos非终态动作；正式完成仍由self-complete转换状态。旧complete_cleaning审计仅在精确照片route、step及前后状态不变时兼容，不删除审计。
+- 真实完成、未知来源审计、取消、陌生人及跨任务请求继续拒绝。照片、审计与回执必须同一事务；幂等重放不能重复改写照片。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 任务类型数量与非终态保存 | `backend/scripts/tests/test_mz114_completion_contract.ts` | 多浴室、其他区域/任务上限不变、行锁/权限/回执及真实完成边界 | sufficient | `npm run test:mz114-completion-contract --prefix backend`（check:fast / check:backend） |
+| 旧误记与真实终态 | `backend/scripts/tests/test_cleaning_task_transition_guard.ts` | 已知照片保存恢复、未知/真实完成、既有检查/挂钥匙保护 | sufficient | `npm run test:cleaning-task-transition-guard --prefix backend`（check:backend） |
+| 真实接口SQL事务 | `backend/scripts/tests/test_mz114_stayover_completion_pg.ts` | 多张保存再完成、精确旧审计、403/400/409、幂等与回滚 | not-wired | `npm run test:mz114-stayover:pg --prefix backend`（仅全新已核验本机PG及测试显式安全变量） |
+| 未关联本地预览与缺失文件 | `mz-cleaning-app-frontend/src/screens/tasks/CleaningSelfCompleteScreen.test.tsx` | 失败重进、多张、已确认切远端、缺失本地不访问私有对象 | sufficient | `npm run test --prefix mz-cleaning-app-frontend -- --runInBand CleaningSelfCompleteScreen` |
+
+### 验证策略
+
+- 默认契约在空数据库配置、外网禁用条件下运行。PG测试只允许新建临时目录、随机本机端口和独立合成数据库，写前验证实例身份；不访问生产。
+- 配套Mobile全量门、Root完整backend门、独立审查及CRL审计分别记录，局部通过不能代替全量或真机证据。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261110-004、mobile/CRL-20261110-001
+- **Commit：** not committed
+- **日期：** 2026-11-10；定向契约、真实本机PostgreSQL接口、完整后端门及配套Mobile禁网全量门通过，最终源代码审查无未解决P0/P1/P2；真实设备和发布未验证，详见CRL。
+
+### 相关 CRL
+
+- root/CRL-20261110-004、mobile/CRL-20261110-001。
+
+### 非保护范围
+
+- 不修改其他区域业务上限、不扩展媒体权限、不回填生产数据或恢复对象；真机、相机、硬件弱网与发布需独立验证。
+
+## FR-047：网页深度清洁反馈显示与只读查询一致性
+
+- **维护责任范围：** backend / web
+- **最后审查日期：** 2026-11-10
+- **状态：** active
+
+### 业务保护规则
+
+- 移动反馈区域不遮盖真实问题；历史网页项目描述独立保留，提交人不冒充清洁执行人，未知金额/时长不冒充零。
+- 记录日期采用完成日期优先、发生日期回退；墨尔本时区显示与筛选日界限一致。区域精确匹配，不能误匹配自由文本；最新提交顺序含确定性 ID 次序，筛选先于分页。
+- 深清 GET 零 DDL，配置数据库不可用或 schema 不足必须明确失败，不回退虚假空成功。
+- 扩展名缺失、裸 key、历史 HTTP/HEIC 和当前 namespace R2 照片沿用认证代理；错误 namespace、遍历、权限不足、关联歧义和离线任务冲突拒绝。私有照片失败不回退公开地址；原 HTTP 非图片链接不附加授权头。
+- 详情和编辑读取照片；编辑材料 URL 保持原存储引用，不持久化 blob URL。关闭/切换取消旧请求、释放 blob；图片错误可重试，旧响应不覆盖新引用。列表 HTTP 错误明确显示并可重试，筛选/分页取消旧请求。
+
+### 跨层检查
+
+- **Backend：** 真实路由处理器的隔离适配器、参数化 SQL、NULL/历史记录、日界限、权限及失败状态。
+- **Client：** 详情/编辑材料、摘要、人员事实、日期、筛选、分页、加载失败、关闭/重入。
+- **入口：** 深清列表与详情/编辑抽屉；分享页和 PDF 不在范围。
+- **一致性：** 不从区域、作者显示名或图片路径推导权限，保留既有后台动作门。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 列表筛选、排序与零写失败关闭 | `backend/scripts/tests/test_deep_cleaning_list_filters.ts` | 实际 GET、SQL 参数、墨尔本日界限、NULL/旧数据、分页、缺 schema/连接失败与旧参数兼容 | sufficient | `npm run test:property-feedback-history --prefix backend`（check:fast / check:backend） |
+| R2 当前 namespace 与关联权限 | `backend/scripts/tests/test_property_feedback_r2_media_routes.ts` | 实际媒体路由、合法历史引用、错误 namespace/遍历/查询参数、拒绝角色、歧义和离线冲突 | sufficient | `npm run test:property-feedback-history --prefix backend`（check:fast / check:backend） |
+| 显示/时间/媒体请求与页面接线 | `frontend/src/lib/deepCleaningRecordDisplay.test.ts` | 新旧内容、零/缺失、墨尔本冬夏时间、历史类型、认证和失败、详情/编辑原引用 | sufficient | `npm run test --prefix frontend`（check:fast / check:frontend） |
+| 图片生命周期 | `frontend/src/components/DeepCleaningMedia.test.ts` | 组件 hook harness：取消、卸载、旧响应、401/403/404、解码失败、重试和原 HTTP 文件链接 | partial | `npm run test --prefix frontend`（check:fast / check:frontend）；真实 DOM lightbox 用 CUA 补充 |
+
+### 验证策略
+
+- 单测合成记录和隔离适配器，不连接真实数据库或对象存储；仅使用 localhost 样例 API 进行真实 Next 页面 CUA。后端 SQL 另有显式 READ ONLY 精确筛选检查，不声称已覆盖全量生产接口。
+- 完整生产发布需要独立发布门禁、授权与真实角色回归。本地构建/图片样例不证明生产照片全集或编辑写入链路。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261110-003
+- **Commit：** not committed
+- **日期：** 2026-11-10；本地 focused 路由/媒体/显示/组件测试通过，最终 lint/build/浏览器与审计证据见 CRL；生产/device 未运行。
+
+### 相关 CRL
+
+- root/CRL-20261110-003；FR-046 保留移动端房源历史与业务锁，FR-010 保留既有媒体授权。
+
+### 非保护范围
+
+- 无生产数据修改、schema 迁移、费用回填、权限扩展、手机发布、Share/PDF 页面或私有视频权限改动。
+
 ## FR-046：房源反馈历史、费用隔离与不可逆业务锁
 
 - **维护责任范围：** backend / mobile
@@ -526,9 +616,9 @@
 ## FR-035：日常任务执行列表权威可见性
 
 - **维护责任范围：** backend / web / paired mobile
-- **最后审查日期：** 2026-11-03
+- **最后审查日期：** 2026-11-10
 - **状态：** active
-- **候选发布门禁：** MZ-099 为本地跨端候选，尚未提交、推送或发布。
+- **候选发布门禁：** 当前新增 `root/CRL-20261110-002` 仅为本地候选，尚未提交、推送或发布；MZ-099 相关基线与本次候选分开记录。
 
 ### 业务保护规则
 
@@ -540,11 +630,14 @@
 - 维修、深清、日用品等房源跟进类型必须采用另一套 assignment-first/fail-closed 规则：未指派不进入 Mobile，指派后管理角色可见，合作方仍只看本人任务。Web 的可维护房源候选池不得混入普通线下任务。
 - 普通已完成线下任务和合法周转任务继续可见；列表与按日计数必须消费同一个可见性投影。
 - 审核和历史记录不删除，只从执行列表移除；客户端不得自行放宽服务端投影。
+- 既有清洁管理 `all` 池内，退房、入住、入住中清洁不能仅因未分配而消失；`pending_decision` 入住的管理检查投影沿用真实任务日，不得因未决定检查方式而漏卡；退房保持原清洁阶段，不新增待决定检查阶段。仅改密码入住也允许空执行人的管理展示，但不得据此授予执行或本人排序。默认个人投影、员工权限、延期日优先级和失效/终态筛选保持不变。
 
 ### 测试映射
 
 | 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
 |---|---|---|---|---|
+| 管理全部任务日期与分配边界 | `backend/scripts/tests/test_handover_visibility_routes.ts` | 三个管理角色、退房/入住/入住中清洁已分配及未分配、pending-decision、仅改密码、原 schedule 权限、mine/员工 all、无执行权限与终态/取消/失效；真实 SQL CTE 与真机不在此内存 HTTP 测试范围 | sufficient | `npm run test:daily-task-execution-visibility --prefix backend` |
+| 待决定检查的管理日期 | `backend/scripts/tests/test_cleaning_inspection_merge.ts` | 默认关闭、管理 opt-in、过去/当日/未来、空/无效/范围外日期、旧 due-date 不覆盖、同日/延期/self-complete/checked-done 不变 | sufficient | `npm run test:cleaning-inspection-merge --prefix backend` |
 | Root 权威状态/类型/分派/角色/日期矩阵 | `backend/scripts/tests/test_daily_task_execution_visibility.ts` | 三个管理角色、合作方 self 范围、普通线下与房源跟进分类、未分配入住中清洁只进入 Web/manager-all、过去/当天/未来状态与严格 `view=all` 角色门禁 | sufficient | `npm run test:daily-task-execution-visibility --prefix backend` |
 | Root 列表与按日计数一致 | `backend/scripts/tests/test_daily_task_execution_stats.ts` | 管理视图的普通未指派线下任务与未分配入住中清洁同时进入列表/对应计数；cleaner mine 和房源跟进不扩大 | sufficient | `npm run test:daily-task-execution-stats --prefix backend` |
 | Web 未分配 self-complete 标签 | `backend/scripts/tests/test_web_task_capabilities.ts` | 未分配入住中清洁保留 self-complete 语义但隐藏标签；分配后恢复 | sufficient | `npm run test:web-task-capabilities --prefix backend` |
@@ -562,15 +655,16 @@
 
 ### 最后验证
 
-- **CRL：** root/CRL-20261013-005 / mobile/CRL-20261013-006
+- **CRL：** root/CRL-20261110-002
 - **Commit：** not committed
-- **日期：** 2026-10-13
+- **日期：** 2026-11-10
 
 ### 相关 CRL
 
 - root/CRL-20261010-001：整合 MZ-021 的权威执行可见性。
 - root/CRL-20261013-005 / mobile/CRL-20261013-006：MZ-033 按角色与所选日期恢复普通线下任务全状态，同时保留房源跟进 assignment-first 边界。
 - root/CRL-20261103-005 / mobile/CRL-20261103-006：MZ-099 仅为管理安排面恢复未分配入住中清洁，并修正未分配标签。
+- root/CRL-20261110-002（MZ-112）：补齐管理全部池内 pending-decision 入住和未分配仅改密码入住的日期/分配投影。
 
 ### 非保护范围
 

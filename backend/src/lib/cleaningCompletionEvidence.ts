@@ -53,6 +53,17 @@ export function inspectionSubmissionAuditWhereSql(alias: string) {
   )`
 }
 
+/** Only the known legacy photo-save shape may bypass the mutation lock. */
+export function legacyCompletionPhotoSaveAuditWhereSql(alias: string) {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(alias)) throw new Error('invalid_sql_alias')
+  return `(
+    ${alias}.performed_as_action = 'complete_cleaning'
+    AND lower(COALESCE(${alias}.metadata->>'route', '')) = 'cleaning_app.tasks.completion_photos'
+    AND lower(COALESCE(${alias}.metadata->>'step', '')) = 'completion_photos_saved'
+    AND lower(COALESCE(${alias}.status_before, '')) = lower(COALESCE(${alias}.status_after, ''))
+  )`
+}
+
 export function cleaningCompletionAuditWhereSql(alias: string) {
   if (!/^[a-z_][a-z0-9_]*$/i.test(alias)) throw new Error('invalid_sql_alias')
   const completedStatuses = CLEANING_COMPLETION_AUDIT_STATUSES.map((status) => `'${status}'`).join(', ')
