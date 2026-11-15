@@ -1,3 +1,5 @@
+import { deepCleaningWorkflowResponse } from '../lib/deepCleaningWorkflow'
+import { recordedCaptureTime } from '../lib/cleaningMediaWatermark'
 import { propertyFeedbackMutationLocked, enrichPropertyFeedbackLocks } from '../lib/propertyFeedbackPolicy'
 import { Router } from 'express'
 import { z } from 'zod'
@@ -3872,12 +3874,11 @@ router.post('/cleaning-tasks/:id/inspection-photos', async (req, res) => {
         const uuid = require('uuid')
         for (const it of parsed.data.items) {
           const type = `inspection_${it.area}`
-          const cap = String(it.captured_at || '').trim()
-          const capturedAt = cap ? new Date(cap) : new Date()
+          const capturedAt = recordedCaptureTime(it.captured_at)
           await client.query(
             `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
              VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-            [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), userId],
+            [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt, userId],
           )
         }
       }
@@ -7252,6 +7253,9 @@ router.post('/work-tasks/:id/mark', requireR5TaskRuntimeSchema, async (req, res)
     const r0 = await pgPool.query('SELECT * FROM work_tasks WHERE id=$1 LIMIT 1', [id])
     const row = r0?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'not found' })
+    if (String(row.source_type || '').trim() === 'property_deep_cleaning') {
+      return res.status(409).json({ code: 'deep_cleaning_workflow_action_required' })
+    }
     if (['property_maintenance', 'external_maintenance_orders'].includes(String(row.source_type || '').trim())) {
       return res.status(409).json({ code: 'maintenance_workflow_action_required' })
     }
@@ -7548,6 +7552,9 @@ router.post('/work-tasks/:id/completion-photos', requireR5TaskRuntimeSchema, asy
     )
     const row = current?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'task not found' })
+    if (String(row.source_type || '').trim() === 'property_deep_cleaning') {
+      return res.status(409).json({ code: 'deep_cleaning_workflow_action_required' })
+    }
     if (['property_maintenance', 'external_maintenance_orders'].includes(String(row.source_type || '').trim())) {
       return res.status(409).json({ code: 'maintenance_workflow_action_required' })
     }
@@ -7924,6 +7931,9 @@ router.patch('/work-tasks/:id/photos', requireR5TaskRuntimeSchema, async (req, r
     )
     const row = current?.rows?.[0] || null
     if (!row) return res.status(404).json({ message: 'task not found' })
+    if (String(row.source_type || '').trim() === 'property_deep_cleaning') {
+      return res.status(409).json({ code: 'deep_cleaning_workflow_action_required' })
+    }
     if (dailyTaskWorkRecordProjection(row).work_record_state !== 'active') {
       return res.status(409).json({ code: 'work_record_read_only', message: 'work_record_read_only' })
     }
@@ -8335,6 +8345,9 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           p.wifi_ssid AS property_wifi_ssid,
           p.wifi_password AS property_wifi_password,
           p.router_location AS property_router_location,
+          pdc.photo_urls AS deep_cleaning_before_photo_urls,
+          pdc.repair_photo_urls AS deep_cleaning_after_photo_urls,
+          pdc.assignee_id AS deep_cleaning_assignee_id,
           pm.photo_urls AS maintenance_before_photo_urls,
           pm.status AS maintenance_source_status,
           pm.review_status AS maintenance_source_review_status,
@@ -8655,11 +8668,16 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
           execution_semantics: 'work_task',
           urgency: String(x.task_kind || '').toLowerCase() === 'offline' ? null : normUrgency(x.urgency),
           sort_index: workTaskSortNumber(x.sort_index),
-          photo_urls: isReassignedRecord ? [] : normalizeWorkTaskPhotoUrls(x.photo_urls),
+          photo_urls: isReassignedRecord ? [] : normalizeWorkTaskPhotoUrls(String(x.source_type || '') === 'property_deep_cleaning' ? x.deep_cleaning_before_photo_urls : x.photo_urls),
+          ...(String(x.source_type || '') === 'property_deep_cleaning' ? {
+            deep_cleaning_source_status: sourceRecordStatus,
+            deep_cleaning_source_review_status: sourceRecordReviewStatus,
+            deep_cleaning_source_assignee_id: x.deep_cleaning_assignee_id,
+          } : {}),
           maintenance_before_photo_urls: String(x.source_type || '') === 'property_maintenance'
             ? normalizeWorkTaskPhotoUrls(x.maintenance_before_photo_urls)
             : [],
-          completion_photo_urls: isReassignedRecord ? priorExecutionPhotoUrls : completionPhotoUrls,
+          completion_photo_urls: isReassignedRecord ? priorExecutionPhotoUrls : String(x.source_type || '') === 'property_deep_cleaning' ? normalizeWorkTaskPhotoUrls(x.deep_cleaning_after_photo_urls) : completionPhotoUrls,
           completion_note: isReassignedRecord
             ? null
             : (x.completion_note == null ? null : String(x.completion_note || '')),
@@ -11963,10 +11981,22 @@ router.get('/work-tasks', requireR5TaskRuntimeSchema, async (req, res) => {
       const maintenanceWorkflow = isWorkRecord && maintenanceWorkflow0
         ? { ...maintenanceWorkflow0, available_actions: [] }
         : maintenanceWorkflow0
+      const deepCleaningWorkflow = String(taskWithParticipants.source_type || '') === 'property_deep_cleaning'
+        ? deepCleaningWorkflowResponse({
+            ...taskWithParticipants,
+            status: taskWithParticipants.deep_cleaning_source_status ?? taskWithParticipants.status,
+            review_status: taskWithParticipants.deep_cleaning_source_review_status,
+            assignee_id: taskWithParticipants.deep_cleaning_source_assignee_id ?? taskWithParticipants.assignee_id,
+          }, user, false)
+        : null
       return {
         ...responseTask,
         ...payload,
         ...(maintenanceWorkflow ? { maintenance_workflow: maintenanceWorkflow } : {}),
+        ...(deepCleaningWorkflow ? { deep_cleaning_workflow: {
+          status: deepCleaningWorkflow.workflow_status,
+          available_actions: deepCleaningWorkflow.available_actions,
+        } } : {}),
       }
     })
 
@@ -12940,7 +12970,7 @@ function propertyFeedbackKindLabel(kind: PropertyFeedbackNotificationKind) {
   return '维修'
 }
 
-async function notifyPropertyFeedbackCreated(params: {
+export async function notifyPropertyFeedbackCreated(params: {
   id: string
   kind: PropertyFeedbackNotificationKind
   propertyId: string
@@ -14612,6 +14642,9 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
   const propertyHistory = String(req.query.history_scope || '') === 'property'
   const viewerSourceTaskId = propertyHistory ? String(req.query.source_task_id || '').trim() : undefined
   if (kind !== 'maintenance' && kind !== 'deep_cleaning' && kind !== 'daily_necessities') return res.status(400).json({ message: 'invalid kind' })
+  if (kind === 'deep_cleaning' && ['status', 'review_status', 'assignee_id', 'completed_at', 'labor_cost', 'total_cost', 'pay_method', 'gst_type'].some((key) => Object.prototype.hasOwnProperty.call(req.body || {}, key))) {
+    return res.status(409).json({ code: 'deep_cleaning_workflow_action_required' })
+  }
   const parsed = feedbackPatchSchema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json(parsed.error.format())
   if (!hasOnlyPropertyFeedbackContentFields(kind, parsed.data)) return res.status(400).json({ code: 'feedback_content_fields_only' })
@@ -14720,11 +14753,10 @@ router.patch('/property-feedbacks/:kind/:id', async (req, res) => {
         const nextInvoiceDescriptionEn = parsed.data.invoice_description_en !== undefined ? String(parsed.data.invoice_description_en || '').trim() : String(row.invoice_description_en || '').trim()
         const nextMedia = parsed.data.media_urls !== undefined ? normalizeUrlArray(parsed.data.media_urls) : normalizeUrlArray(row.photo_urls)
         const nextRepairMedia = parsed.data.repair_photo_urls !== undefined ? normalizeUrlArray(parsed.data.repair_photo_urls) : normalizeUrlArray(row.repair_photo_urls)
-        const currentResolved = mapWorkStatus(row.status) === 'resolved'
-        const markCompleted = currentResolved || nextRepairMedia.length > 0
-        const nextStatus = markCompleted ? 'completed' : String(row.status || '').trim() || 'pending'
-        const nextReviewStatus = markCompleted ? 'pending' : (row.review_status ? String(row.review_status) : null)
-        const nextCompletedAt = markCompleted ? (row.completed_at || new Date().toISOString()) : null
+        // Content-only edits never complete, reopen or reset review of a source record.
+        const nextStatus = row.status
+        const nextReviewStatus = row.review_status
+        const nextCompletedAt = row.completed_at
         if (!nextAreas.length || !nextDetail) throw new PropertyFeedbackMutationError(400, 'missing_deep_cleaning_fields')
         const beforeType = await getColumnType('property_deep_cleaning', 'photo_urls')
         const attachmentType = await getColumnType('property_deep_cleaning', 'attachment_urls')
@@ -14935,48 +14967,16 @@ async function persistFeedbackProjects(
       })
     }
   } else {
-    const beforeType = await getColumnType(sourceTable, 'photo_urls')
-    const afterType = await getColumnType(sourceTable, 'repair_photo_urls')
-    const beforeExpr = beforeType === 'text[]' ? '$7::text[]' : '$7::jsonb'
-    const afterExpr = afterType === 'text[]' ? '$8::text[]' : '$8::jsonb'
+    // Project names/details are editable, but project aggregation is not a
+    // completion or review action. Keep canonical evidence and lifecycle intact.
     await queryClient.query(
       `UPDATE property_deep_cleaning
           SET project_items = $2::jsonb,
               project_desc = COALESCE(NULLIF($3, ''), project_desc),
-              started_at = $4::timestamptz,
-              ended_at = $5::timestamptz,
-              duration_minutes = $6,
-              photo_urls = ${beforeExpr},
-              repair_photo_urls = ${afterExpr},
-              repair_notes = $9,
-              status = $10,
-              completed_at = $11::timestamptz,
-              review_status = $12,
               updated_at = now()
         WHERE id = $1`,
-      [
-        row.id,
-        projectJson,
-        summary.project_desc || '',
-        summary.started_at,
-        summary.ended_at,
-        summary.duration_minutes,
-        beforeType === 'text[]' ? summary.photo_urls : beforeJson,
-        afterType === 'text[]' ? summary.repair_photo_urls : afterJson,
-        String(row?.repair_notes || '').trim() || null,
-        status,
-        completedAt,
-        reviewStatus,
-      ],
+      [row.id, projectJson, summary.project_desc || ''],
     )
-  }
-  if (kind !== 'maintenance') {
-    await syncFeedbackWorkTask(kind, String(row.id), status, queryClient, {
-      actorUserId: options?.actorUserId || null,
-      completedAt,
-      completionPhotoUrls: summary.repair_photo_urls,
-      completionNote: String(row?.repair_notes || '').trim() || null,
-    })
   }
   const loaded = await loadPropertyFeedbackRow(kind, String(row.id), queryClient)
   if (ownsTransaction) await client.query('COMMIT')
@@ -15111,6 +15111,7 @@ router.post('/property-feedbacks/:kind/:id/projects/:projectId/complete', async 
   if (!user) return res.status(401).json({ message: 'unauthorized' })
   if (!isPropertyFeedbackManager(user)) return res.status(403).json({ code: 'forbidden_property_feedback_workflow' })
   const kind = String(req.params.kind || '').trim() as FeedbackKind
+  if (String(kind) === 'deep_cleaning') return res.status(409).json({ code: 'deep_cleaning_workflow_action_required' })
   const id = String(req.params.id || '').trim()
   const projectId = String(req.params.projectId || '').trim()
   if (kind !== 'maintenance' && kind !== 'deep_cleaning') return res.status(400).json({ message: 'invalid kind' })

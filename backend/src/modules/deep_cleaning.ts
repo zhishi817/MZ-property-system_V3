@@ -13,7 +13,10 @@ import { schedulePdfJobsKick } from '../services/pdfJobsWorker'
 import { generateWorkRecordPdf } from '../lib/workRecordPdf'
 import { WORK_RECORD_PDF_TEMPLATE_VERSION } from '../lib/workRecordPdfTemplate'
 
+import { deepCleaningWorkflowRouter } from './deep_cleaning_workflow'
+
 export const router = Router()
+router.use(deepCleaningWorkflowRouter)
 const upload = multer({ storage: multer.memoryStorage() })
 
 function sha256Hex(input: string) {
@@ -120,34 +123,8 @@ router.post('/upload', requireAnyPerm(['property_deep_cleaning.write','rbac.mana
   }
 })
 
-router.patch('/review/:id', requireAnyPerm(['property_deep_cleaning.audit','rbac.manage']), async (req, res) => {
-  const { id } = req.params as any
-  if (!id) return res.status(400).json({ message: 'missing id' })
-  try {
-    if (!hasPg || !pgPool) return res.status(500).json({ message: 'no database configured' })
-    await ensurePropertyDeepCleaningTable()
-    const user = (req as any).user || {}
-    const body = req.body || {}
-    const review_status = String(body.review_status || '').trim()
-    const review_notes = body.review_notes !== undefined ? String(body.review_notes || '') : undefined
-    if (!['pending', 'approved', 'rejected'].includes(review_status)) return res.status(400).json({ message: 'invalid review_status' })
-    const reviewed_at = review_status === 'pending' ? null : new Date().toISOString()
-    const reviewed_by = String(user.username || user.sub || '')
-    const patch: Record<string, any> = { review_status, reviewed_at, reviewed_by }
-    if (review_notes !== undefined) patch.review_notes = review_notes
-    patch.updated_at = new Date().toISOString()
-    const keys = Object.keys(patch)
-    const set = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ')
-    const values = keys.map((k) => patch[k])
-    const sql = `UPDATE property_deep_cleaning SET ${set} WHERE id = $${keys.length + 1} RETURNING *`
-    const r = await pgPool.query(sql, [...values, id])
-    const row = r.rows?.[0] || null
-    if (!row) return res.status(404).json({ message: 'not found' })
-    return res.json(row)
-  } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'review failed' })
-  }
-})
+// Legacy approval was not atomic and accepted non-admin audit permission.
+router.patch('/review/:id', (_req, res) => res.status(409).json({ code: 'deep_cleaning_workflow_action_required' }))
 
 router.post('/share-link/:id', requireAnyPerm(['property_deep_cleaning.view','property_deep_cleaning.write','rbac.manage']), async (req, res) => {
   const { id } = req.params as any

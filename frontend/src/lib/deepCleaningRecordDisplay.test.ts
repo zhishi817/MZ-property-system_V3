@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { deepCleaningAreas, deepCleaningDetails, deepCleaningDisplayCost, deepCleaningMediaReferences, deepCleaningMediaRequest, deepCleaningNonImageLink, deepCleaningDate, deepCleaningDateBound, deepCleaningSummary, loadDeepCleaningMedia } from './deepCleaningRecordDisplay'
+import { deepCleaningSubmitterEditPatch, deepCleaningSubmitterDisplay, deepCleaningAreas, deepCleaningDetails, deepCleaningDisplayCost, deepCleaningMediaReferences, deepCleaningMediaRequest, deepCleaningNonImageLink, deepCleaningDate, deepCleaningDateBound, deepCleaningSummary, loadDeepCleaningMedia } from './deepCleaningRecordDisplay'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
@@ -100,13 +100,13 @@ describe('deep cleaning authenticated media', () => {
 describe('deep cleaning page wiring contract', () => {
   const page = readFileSync(new URL('../app/deep-cleaning/records/page.tsx', import.meta.url), 'utf8')
   it('renders before/after/attachment media and issue text independently of project description', () => {
-    expect(page).toContain('<DeepCleaningMedia references={viewing.photo_urls}')
-    expect(page).toContain('<DeepCleaningMedia references={viewing.repair_photo_urls}')
-    expect(page).toContain('deepCleaningMediaReferences(viewing.attachment_urls).filter(ref => !shown.has(ref))')
+    expect(page).toContain('<DeepCleaningMedia context={viewing} references={viewing.photo_urls}')
+    expect(page).toContain('<DeepCleaningMedia context={viewing} references={viewing.repair_photo_urls}')
+    expect(page).toContain('deepCleaningVisibleAttachments(viewing.attachment_urls, viewing.photo_urls, viewing.repair_photo_urls)')
     expect(page).toContain('deepCleaningDetails(viewing.details)')
-    expect(page).toContain('setMediaPreview(file.url || null)')
-    expect(page).toContain('references={editBeforeFiles.map(file => file.url).filter(Boolean)}')
-    expect(page).toContain('references={editAfterFiles.map(file => file.url).filter(Boolean)}')
+    expect(page).toContain("localUploadPreviewUrls.current.get(file.url || '')")
+    expect(page).toContain('references={editBeforeFiles.filter(file => !file.originFileObj).map(file => file.url).filter(Boolean)}')
+    expect(page).toContain('references={editAfterFiles.filter(file => !file.originFileObj).map(file => file.url).filter(Boolean)}')
     expect(page).not.toContain('worker_name || viewing?.submitter_name')
     expect(page).toContain("if (m === null || m === undefined || m === '') return '-'")
   })
@@ -120,5 +120,74 @@ describe('deep cleaning page wiring contract', () => {
     expect(page).toContain("hasPerm('property_deep_cleaning.write')")
     expect(page).toContain("hasPerm('property_deep_cleaning.delete')")
     expect(page).toContain('if (!controller.signal.aborted) setLoading(false)')
+  })
+})
+
+describe('deep cleaning authoritative media context', () => {
+  it('adds only server-provided work task context to private key and canonical R2 requests', () => {
+    const context = { media_access_work_task_id: 'authoritative-id' }
+    for (const reference of ['mzapp/a.jpg', 'deep-cleaning/a.jpg', 'r2://fixture/mzapp/a.jpg']) {
+      const request = deepCleaningMediaRequest(reference, context)!
+      expect(request.url).toContain('work_task_id=authoritative-id')
+      expect(request.url).not.toContain('source_id=')
+      expect(request.url).not.toContain('property_id=')
+    }
+    expect(deepCleaningMediaRequest('mzapp/a.jpg', {})!.url).not.toContain('work_task_id=')
+    expect(deepCleaningMediaRequest('https://example.invalid/a.jpg', context)).toEqual({ url: 'https://example.invalid/a.jpg', authenticated: false })
+  })
+})
+
+it('keeps unsaved ordinary uploads local without changing remote save references or upload permissions', () => {
+  const page = readFileSync(new URL('../app/deep-cleaning/records/page.tsx', import.meta.url), 'utf8')
+  expect(page).toContain("file.originFileObj ? localUploadPreviewUrls.current.get(file.url || '') || null : file.url || null")
+  expect(page).toContain('editAttachFiles.filter(file => !file.originFileObj).map(file => file.url)')
+  expect(page).toContain('makeUploadProps(setEditBeforeFiles, false, editing)')
+  expect(page).toContain('makeUploadProps(setEditAfterFiles, false, editing)')
+  expect(page).toContain('makeUploadProps(setEditAttachFiles, false, editing).itemRender?.(node, file, files, actions)')
+  expect(page).toContain('photo_urls: deepCleaningMediaReferences(editBeforeFiles.map(')
+  expect(page).toContain('attachment_urls: deepCleaningMediaReferences(editAttachFiles.map(')
+})
+
+it('uses explicit deep record context only without a projection and never guesses or falls back from a task ID', () => {
+  const reference = 'r2://fixture/mzapp/a.jpg'
+  const recordOnly = deepCleaningMediaRequest(reference, { id: 'actual-record', media_access_work_task_id: null })!
+  expect(recordOnly.url).toContain('deep_record_id=actual-record')
+  expect(recordOnly.url).not.toContain('work_task_id=')
+  const projected = deepCleaningMediaRequest(reference, { id: 'actual-record', media_access_work_task_id: 'actual-task' })!
+  expect(projected.url).toContain('work_task_id=actual-task')
+  expect(projected.url).not.toContain('deep_record_id=')
+  expect(deepCleaningMediaRequest(reference)!.url).not.toContain('deep_record_id=')
+})
+
+describe('reliable deep cleaning submitter display', () => {
+  it('preserves explicit and historical names before verified creator fallback', () => {
+    expect(deepCleaningSubmitterDisplay({ submitter_name: '历史提交者', submitter_display_name: '创建账号', submitter_display_source: 'created_by' })).toBe('历史提交者')
+    for (const source of ['created_by_user_id', 'created_by']) expect(deepCleaningSubmitterDisplay({ submitter_name: '', submitter_display_name: '核验创建账号', submitter_display_source: source })).toBe('核验创建账号')
+  })
+  it('does not guess a submitter from unverified identifiers, workers, or display names', () => {
+    expect(deepCleaningSubmitterDisplay({ submitter_display_name: '无来源姓名', submitter_display_source: 'unknown' })).toBe('未记录')
+    expect(deepCleaningSubmitterDisplay({ created_by: 'actor-id', worker_name: '执行人' } as any)).toBe('未记录')
+    expect(deepCleaningSubmitterDisplay(null)).toBe('未记录')
+  })
+  it('keeps derived display out of ordinary edit form initialization and save payload', () => {
+    const page = readFileSync(new URL('../app/deep-cleaning/records/page.tsx', import.meta.url), 'utf8')
+    expect(page).toContain("submitter_name: r.submitter_name || ''")
+    expect(page).toContain("submitter_name: String(v.submitter_name || '').trim()")
+    expect(page).not.toContain('viewing.submitter_name || viewing.created_by')
+    expect(page).toContain('deepCleaningSubmitterDisplay(viewing)')
+  })
+})
+
+describe('non-destructive submitter edit payload', () => {
+  it('omits unchanged unknown, verified-fallback and existing historical names', () => {
+    for (const original of [null, undefined, '']) expect(deepCleaningSubmitterEditPatch(original, '')).toEqual({})
+    expect(deepCleaningSubmitterEditPatch(' 历史姓名 ', ' 历史姓名 ')).toEqual({})
+    expect(deepCleaningSubmitterEditPatch('原提交人', '原提交人')).toEqual({})
+  })
+  it('sends a trimmed name only on explicit change or clear', () => {
+    expect(deepCleaningSubmitterEditPatch(null, ' 新选择 ')).toEqual({ submitter_name: '新选择' })
+    expect(deepCleaningSubmitterEditPatch('旧姓名', '新姓名')).toEqual({ submitter_name: '新姓名' })
+    expect(deepCleaningSubmitterEditPatch('旧姓名', undefined)).toEqual({ submitter_name: '' })
+    expect(deepCleaningSubmitterEditPatch('旧姓名', '')).toEqual({ submitter_name: '' })
   })
 })

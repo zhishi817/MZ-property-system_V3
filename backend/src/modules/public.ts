@@ -3,7 +3,7 @@ import multer from 'multer'
 import path from 'path'
 import { hasR2, r2GetObjectByKey, r2KeyFromUrl, r2Upload } from '../r2'
 import { v4 as uuidv4 } from 'uuid'
-import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate } from '../dbAdapter'
+import { hasPg, pgPool, pgSelect, pgInsert, pgUpdate, pgRunInTransaction } from '../dbAdapter'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import { addAudit } from '../store'
@@ -284,33 +284,13 @@ async function getOrInitMaintenanceShareAccess(): Promise<{ area: string; passwo
 }
 
 async function getOrInitDeepCleaningShareAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
-  try {
-    if (hasPg) {
-      await ensurePublicAccessTable()
-      const rows = await pgSelect('public_access', '*', { area: 'deep_cleaning_share' }) as any[]
-      const existing = rows && rows[0]
-      if (existing) return existing
-      const hash = await bcrypt.hash(DEFAULT_PUBLIC_DEEP_CLEANING_SHARE_PASSWORD, 10)
-      const row = await pgInsert('public_access', { area: 'deep_cleaning_share', password_hash: hash })
-      return row as any
-    }
-  } catch {}
-  return null
+  if (!hasPg || !pgPool) return null
+  return (await pgPool.query('SELECT area,password_hash,password_updated_at FROM public_access WHERE area=$1',['deep_cleaning_share'])).rows[0] || null
 }
 
 async function getOrInitDeepCleaningUploadAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
-  try {
-    if (hasPg) {
-      await ensurePublicAccessTable()
-      const rows = await pgSelect('public_access', '*', { area: 'deep_cleaning_upload' }) as any[]
-      const existing = rows && rows[0]
-      if (existing) return existing
-      const hash = await bcrypt.hash(DEFAULT_PUBLIC_DEEP_CLEANING_UPLOAD_PASSWORD, 10)
-      const row = await pgInsert('public_access', { area: 'deep_cleaning_upload', password_hash: hash })
-      return row as any
-    }
-  } catch {}
-  return null
+  if (!hasPg || !pgPool) return null
+  return (await pgPool.query('SELECT area,password_hash,password_updated_at FROM public_access WHERE area=$1',['deep_cleaning_upload'])).rows[0] || null
 }
 
 async function getOrInitCompanyExpenseAccess(): Promise<{ area: string; password_hash: string; password_updated_at: string } | null> {
@@ -476,73 +456,10 @@ function safeDateToIso(v: any): string | null {
 }
 
 async function ensureDeepCleaningShareLinksTable() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS deep_cleaning_share_links (
-    token_hash text PRIMARY KEY,
-    deep_cleaning_id text NOT NULL REFERENCES property_deep_cleaning(id) ON DELETE CASCADE,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz NOT NULL,
-    revoked_at timestamptz
-  );`)
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_deep_cleaning_share_mid ON deep_cleaning_share_links(deep_cleaning_id);')
-  await pgPool.query('CREATE INDEX IF NOT EXISTS idx_deep_cleaning_share_expires ON deep_cleaning_share_links(expires_at);')
+  if (pgPool) await pgPool.query('SELECT token_hash,deep_cleaning_id,revoked_at,expires_at FROM deep_cleaning_share_links LIMIT 0')
 }
-
 async function ensurePropertyDeepCleaningShareColumns() {
-  if (!pgPool) return
-  await pgPool.query(`CREATE TABLE IF NOT EXISTS property_deep_cleaning (
-    id text PRIMARY KEY,
-    property_id text REFERENCES properties(id) ON DELETE SET NULL,
-    occurred_at date NOT NULL,
-    worker_name text,
-    project_desc text,
-    started_at timestamptz,
-    ended_at timestamptz,
-    duration_minutes integer,
-    details text,
-    notes text,
-    created_by text,
-    photo_urls jsonb,
-    property_code text,
-    work_no text,
-    category text,
-    status text,
-    urgency text,
-    submitted_at timestamptz,
-    submitter_name text,
-    assignee_id text,
-    eta date,
-    completed_at timestamptz,
-    repair_notes text,
-    repair_photo_urls jsonb,
-    attachment_urls jsonb,
-    checklist jsonb,
-    consumables jsonb,
-    labor_minutes integer,
-    labor_cost numeric,
-    review_status text,
-    reviewed_by text,
-    reviewed_at timestamptz,
-    review_notes text,
-    created_at timestamptz DEFAULT now(),
-    updated_at timestamptz
-  );`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS project_desc text;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS started_at timestamptz;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS ended_at timestamptz;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS duration_minutes integer;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS photo_urls jsonb;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS repair_photo_urls jsonb;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS attachment_urls jsonb;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS checklist jsonb;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS consumables jsonb;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS pay_method text;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS gst_type text;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS total_cost numeric;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_status text;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_by text;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;`)
-  await pgPool.query(`ALTER TABLE property_deep_cleaning ADD COLUMN IF NOT EXISTS review_notes text;`)
+  if (pgPool) await pgPool.query('SELECT id,status,review_status,total_cost,photo_urls,repair_photo_urls,attachment_urls FROM property_deep_cleaning LIMIT 0')
 }
 
 async function ensureRepairOrdersTable() {
@@ -1280,7 +1197,7 @@ router.post('/deep-cleaning-upload/login', async (req, res) => {
     const token = jwt.sign({ scope: 'deep_cleaning_upload' }, SECRET, { expiresIn: '12h' })
     return res.json({ token })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'login failed' })
+    return res.status(['42P01','42703'].includes(e?.code) ? 503 : 500).json({ code: ['42P01','42703'].includes(e?.code) ? 'deep_cleaning_schema_not_ready' : undefined, message: e?.message || 'login failed' })
   }
 })
 
@@ -1305,7 +1222,7 @@ router.post('/deep-cleaning-upload/upload', upload.single('file'), async (req, r
     const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     return res.status(201).json({ url })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'upload failed' })
+    return res.status(['42P01','42703'].includes(e?.code) ? 503 : 500).json({ code: ['42P01','42703'].includes(e?.code) ? 'deep_cleaning_schema_not_ready' : undefined, message: e?.message || 'upload failed' })
   }
 })
 
@@ -1331,16 +1248,20 @@ router.post('/deep-cleaning-upload/submit', async (req, res) => {
     const pwdAt = new Date(access.password_updated_at).getTime()
     if (iatSec < pwdAt) return res.status(401).json({ message: 'token invalidated' })
     await ensurePropertyDeepCleaningShareColumns()
+    const mediaColumns=(await pgPool.query(`SELECT column_name,data_type,udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='property_deep_cleaning' AND column_name IN ('photo_urls','repair_photo_urls')`)).rows
+    const castFor=(name:string)=>{const col=mediaColumns.find((c:any)=>c.column_name===name);if(col?.udt_name==='_text')return 'text[]';if(col?.data_type==='jsonb')return 'jsonb';const e:any=new Error('deep_cleaning_media_schema_not_ready');e.code='42703';throw e}
+    const preCast=castFor('photo_urls'),postCast=castFor('repair_photo_urls')
     const sql = `INSERT INTO property_deep_cleaning (
       id, property_id, occurred_at, worker_name, project_desc, started_at, ended_at, duration_minutes,
       details, notes, created_by, photo_urls, repair_photo_urls, property_code, work_no, category, status, urgency,
       submitted_at, submitter_name, completed_at, review_status, checklist, consumables
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,
-      $9::text,$10,$11,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18,
+      $9::text,$10,$11,$12::${preCast},$13::${postCast},$14,$15,$16,$17,$18,
       $19,$20,$21,$22,$23::jsonb,$24::jsonb
     )`
     const nowIso = new Date().toISOString()
+    const batchResult = await pgRunInTransaction(async client => {
     let created = 0
     const ids: string[] = []
     for (const d of detailsArr) {
@@ -1365,7 +1286,7 @@ router.post('/deep-cleaning-upload/submit', async (req, res) => {
       const detailsText = JSON.stringify([{ content: project_desc }])
       const id = uuidv4()
       const workNo = await generateDeepCleaningWorkNo()
-      await pgPool.query(sql, [
+      await client.query(sql, [
         id,
         property_id || null,
         occurred_at || new Date().toISOString().slice(0, 10),
@@ -1377,8 +1298,8 @@ router.post('/deep-cleaning-upload/submit', async (req, res) => {
         detailsText,
         mergedNotes,
         null,
-        JSON.stringify(before || []),
-        JSON.stringify(after || []),
+        preCast === 'jsonb' ? JSON.stringify(before || []) : before || [],
+        postCast === 'jsonb' ? JSON.stringify(after || []) : after || [],
         null,
         workNo,
         null,
@@ -1391,14 +1312,18 @@ router.post('/deep-cleaning-upload/submit', async (req, res) => {
         JSON.stringify([]),
         JSON.stringify([]),
       ])
-      addAudit('property_deep_cleaning', id, 'create', null, { id })
+      await client.query(`INSERT INTO audit_logs(id,entity,entity_id,action,after_json,created_at) VALUES($1,'property_deep_cleaning',$2,'create',$3::jsonb,now())`,[uuidv4(),id,JSON.stringify({id})])
       created += 1
       ids.push(id)
     }
+    return {created,ids}
+    })
+    if (!batchResult) return res.status(503).json({code:'pg_required'})
+    const {created,ids}=batchResult
     if (!created) return res.status(400).json({ message: 'missing project fields' })
     return res.status(201).json({ ok: true, created, ids })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'submit failed' })
+    return res.status(['42P01','42703'].includes(e?.code) ? 503 : 500).json({ code: ['42P01','42703'].includes(e?.code) ? 'deep_cleaning_schema_not_ready' : undefined, message: e?.message || 'submit failed' })
   }
 })
 
@@ -1507,7 +1432,7 @@ router.get('/deep-cleaning-share/:token', async (req, res) => {
     const code = propCode || String(row?.property_code || '').trim()
     return res.json({ ...row, property_code: code || row?.property_code, code: code || row?.code })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'get failed' })
+    return res.status(['42P01','42703'].includes(e?.code) ? 503 : 500).json({ code: ['42P01','42703'].includes(e?.code) ? 'deep_cleaning_schema_not_ready' : undefined, message: e?.message || 'get failed' })
   }
 })
 
@@ -1548,7 +1473,7 @@ router.post('/deep-cleaning-share/login', async (req, res) => {
     const deep_cleaning = { ...row, property_code: code || row?.property_code, code: code || row?.code }
     return res.json({ token: shareToken, deep_cleaning })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'login failed' })
+    return res.status(['42P01','42703'].includes(e?.code) ? 503 : 500).json({ code: ['42P01','42703'].includes(e?.code) ? 'deep_cleaning_schema_not_ready' : undefined, message: e?.message || 'login failed' })
   }
 })
 
@@ -1573,7 +1498,7 @@ router.post('/deep-cleaning-share/upload', upload.single('file'), async (req, re
     const url = await r2Upload(key, img.contentType || req.file.mimetype || 'application/octet-stream', img.buffer)
     return res.status(201).json({ url })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'upload failed' })
+    return res.status(['42P01','42703'].includes(e?.code) ? 503 : 500).json({ code: ['42P01','42703'].includes(e?.code) ? 'deep_cleaning_schema_not_ready' : undefined, message: e?.message || 'upload failed' })
   }
 })
 
@@ -1603,48 +1528,39 @@ router.patch('/deep-cleaning-share/:token', async (req, res) => {
     if (String(v.deep_cleaning_id || '') !== deepCleaningId) return res.status(401).json({ message: 'unauthorized' })
     await ensurePropertyDeepCleaningShareColumns()
     const body = req.body || {}
-    const allowed = [
-      'status','urgency','assignee_id','eta','completed_at',
-      'details','notes','repair_notes','photo_urls','repair_photo_urls','attachment_urls',
-      'checklist','consumables','labor_minutes','labor_cost',
-      'pay_method','gst_type',
-    ]
-    const payload: any = {}
-    for (const k of allowed) {
-      if (body[k] !== undefined) payload[k] = body[k]
-    }
-    const beforeRows = await pgSelect('property_deep_cleaning', '*', { id: deepCleaningId }) as any[]
-    const before = beforeRows && beforeRows[0]
-    if (Object.prototype.hasOwnProperty.call(payload, 'pay_method')) {
-      const v2 = String(payload.pay_method || '').trim()
-      payload.pay_method = v2 ? v2 : null
-    }
-    if (Object.prototype.hasOwnProperty.call(payload, 'gst_type')) {
-      const v2 = String(payload.gst_type || '').trim()
-      payload.gst_type = v2 ? v2 : null
-    }
-    const touchedCost = Object.prototype.hasOwnProperty.call(payload, 'labor_cost') || Object.prototype.hasOwnProperty.call(payload, 'consumables')
-    const touchedMeta = Object.prototype.hasOwnProperty.call(payload, 'pay_method') || Object.prototype.hasOwnProperty.call(payload, 'gst_type')
-    const needRecalc = before && (touchedCost || (touchedMeta && ((before as any).total_cost === null || (before as any).total_cost === undefined)))
-    if (needRecalc) {
-      const parseConsumables = (raw: any) => {
-        let v2: any = raw
-        if (typeof v2 === 'string') { try { v2 = JSON.parse(v2) } catch { v2 = [] } }
-        return Array.isArray(v2) ? v2 : []
+    const updated = await pgRunInTransaction(async client => {
+      const before = (await client.query('SELECT * FROM property_deep_cleaning WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[deepCleaningId])).rows[0]
+      if (!before) { const e:any=new Error('not found');e.status=404;throw e }
+      const deny = () => {const e:any=new Error('deep_cleaning_admin_review_required');e.status=409;throw e}
+      const equal = (a:any,b:any) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null) || (['string','number'].includes(typeof a) && ['string','number'].includes(typeof b) && String(a) === String(b)) || ((a == null || a === '') && (b == null || b === ''))
+      const decimal = (value:any) => { const text=String(value ?? '').trim(); if (!/^[+-]?\d+(?:\.\d+)?$/.test(text)) return null; const [whole,fraction='']=text.replace(/^[+]/,'').split('.'); return `${whole.replace(/^(-?)0+(?=\d)/,'$1')}.${fraction.replace(/0+$/,'')}` }
+      for (const key of ['assignee_id','eta','completed_at','labor_cost','total_cost','consumables','pay_method','gst_type','review_status','reviewed_by','reviewed_at','review_notes','property_id','occurred_at']) {
+        const moneyEqual = ['labor_cost','total_cost'].includes(key) && decimal(body[key]) !== null && decimal(body[key]) === decimal(before[key])
+        if (body[key] !== undefined && !moneyEqual && !equal(body[key],before[key])) deny()
       }
-      const labor = Object.prototype.hasOwnProperty.call(payload, 'labor_cost') ? Number(payload.labor_cost || 0) : Number((before as any).labor_cost || 0)
-      const arr = parseConsumables(Object.prototype.hasOwnProperty.call(payload, 'consumables') ? payload.consumables : (before as any).consumables)
-      const sum = arr.reduce((s: number, x: any) => {
-        const n = Number(x?.cost || 0)
-        return s + (Number.isFinite(n) ? n : 0)
-      }, 0)
-      payload.total_cost = Math.round(((Number.isFinite(labor) ? labor : 0) + sum + Number.EPSILON) * 100) / 100
-    }
-    const updated = await pgUpdate('property_deep_cleaning', deepCleaningId, payload)
-    addAudit('property_deep_cleaning', deepCleaningId, 'update', before, updated)
+      const payload:any = {}
+      for (const key of ['urgency','details','notes','repair_notes','photo_urls','repair_photo_urls','attachment_urls','checklist','labor_minutes']) if (body[key] !== undefined) payload[key]=body[key]
+      if (body.status !== undefined && body.status !== before.status) {
+        if (before.review_status === 'approved' || !['completed','done','ready','pending_review','review_pending'].includes(body.status)) deny()
+        const photos=payload.repair_photo_urls ?? before.repair_photo_urls
+        if (!Array.isArray(photos) || !photos.length) {const e:any=new Error('deep_cleaning_completion_photo_required');e.status=400;throw e}
+        payload.status='pending_review';payload.review_status='pending';payload.completed_at=before.completed_at || new Date().toISOString()
+      }
+      const keys=Object.keys(payload)
+      if (!keys.length) return before
+      const cols=(await client.query(`SELECT column_name,data_type,udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='property_deep_cleaning' AND column_name = ANY($1::text[])`,[keys])).rows
+      const jsonKeys=new Set(['photo_urls','repair_photo_urls','attachment_urls','checklist'])
+      const isArray=(key:string)=>cols.some((c:any)=>c.column_name===key && c.udt_name==='_text')
+      const sets=keys.map((key,i)=>`"${key}"=$${i+1}${jsonKeys.has(key) ? isArray(key) ? '::text[]' : '::jsonb' : ''}`)
+      const values=keys.map(key=>jsonKeys.has(key)&&!isArray(key)?JSON.stringify(payload[key]):payload[key])
+      const row=(await client.query(`UPDATE property_deep_cleaning SET ${sets.join(',')},updated_at=now() WHERE id=$${keys.length+1} RETURNING *`,[...values,deepCleaningId])).rows[0]
+      await client.query(`UPDATE work_tasks SET summary=$2,photo_urls=$3::jsonb,completion_photo_urls=$4::jsonb,completion_note=$5,status=CASE WHEN $6 THEN 'pending_review' ELSE status END,updated_at=now() WHERE source_type='property_deep_cleaning' AND source_id=$1`,[deepCleaningId,row.project_desc || row.details,JSON.stringify(row.photo_urls || []),JSON.stringify(row.repair_photo_urls || []),row.repair_notes,payload.status==='pending_review'])
+      await client.query(`INSERT INTO audit_logs(id,entity,entity_id,action,before_json,after_json,created_at) VALUES($1,'property_deep_cleaning',$2,'share_evidence_update',$3::jsonb,$4::jsonb,now())`,[uuidv4(),deepCleaningId,JSON.stringify(before),JSON.stringify(row)])
+      return row
+    })
     return res.json(updated || { ok: true })
   } catch (e: any) {
-    return res.status(500).json({ message: e?.message || 'update failed' })
+    return res.status(e?.status || (['42P01','42703'].includes(e?.code) ? 503 : 500)).json({ code: ['42P01','42703'].includes(e?.code) ? 'deep_cleaning_schema_not_ready' : e?.message || 'update failed', message:e?.message || 'update failed' })
   }
 })
 

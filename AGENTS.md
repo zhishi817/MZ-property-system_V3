@@ -119,3 +119,7 @@ When the user asks Codex to test, audit, optimize, inspect, or find and fix issu
 11. Fix one confirmed issue at a time unless the user approves a grouped fix.
 12. After repository mutations, update `docs/change-release-ledger.md` and run `python3 scripts/audit_change_release_ledger.py`.
 13. After edits, run relevant validation and report commands/results honestly.
+
+## Development Workspace Lifecycle
+
+For every new feature, fix, testing retry and release preparation, follow `docs/workspace-lifecycle.md` before creating, duplicating or cleaning a workspace. Reuse the same scoped worktree where appropriate; do not copy dependencies or build output by default. Preserve isolated writable build outputs and shared dependency consumers. Cleanup requires a reported exact scope, current-use and recovery checks, and all required authorization; never automate permanent deletion. Existing release/CRL, clean-worktree and production-write rules remain unchanged.
