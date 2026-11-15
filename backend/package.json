@@ -30,7 +30,8 @@
     "test:invoice-payment-state": "ts-node-dev --transpile-only scripts/tests/test_invoice_payment_state.ts",
     "test:cleaning-media-image": "ts-node-dev --transpile-only scripts/tests/test_cleaning_media_image.ts",
     "test:cleaning-media-reference": "ts-node-dev --transpile-only scripts/tests/test_cleaning_media_reference.ts",
-    "test:immutable-media-upload": "ts-node-dev --transpile-only scripts/tests/test_immutable_media_upload_contract.ts",
+    "test:immutable-media-upload": "ts-node-dev --transpile-only scripts/tests/test_immutable_media_upload_contract.ts && npm run test:cleaning-media-watermark",
+    "test:cleaning-media-watermark": "node -r ts-node/register/transpile-only scripts/tests/test_cleaning_media_watermark.ts",
     "test:work-task-actions": "ts-node-dev --transpile-only scripts/tests/test_work_task_actions.ts",
     "test:daily-task-execution-visibility": "ts-node-dev --transpile-only scripts/tests/test_daily_task_execution_visibility.ts && npm run test:handover-visibility-routes",
     "test:password-only-task-reorder": "ts-node-dev --transpile-only scripts/tests/test_password_only_task_reorder.ts",
@@ -110,7 +111,9 @@
     "test:property-feedback-r2-media": "node -r ts-node/register/transpile-only scripts/tests/test_property_feedback_r2_media_routes.ts",
     "test:deep-cleaning-list-filters": "node -r ts-node/register/transpile-only scripts/tests/test_deep_cleaning_list_filters.ts",
     "test:mz114-completion-contract": "node -r ts-node/register/transpile-only scripts/tests/test_mz114_completion_contract.ts",
-    "test:mz114-stayover:pg": "node -r ts-node/register/transpile-only scripts/tests/test_mz114_stayover_completion_pg.ts"
+    "test:mz114-stayover:pg": "node -r ts-node/register/transpile-only scripts/tests/test_mz114_stayover_completion_pg.ts",
+    "check:deep-cleaning-workflow": "ts-node --transpile-only scripts/tests/test_deep_cleaning_workflow.ts",
+    "check:deep-cleaning-workflow-pg": "ts-node --transpile-only scripts/tests/test_deep_cleaning_workflow_pg.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.670.0",

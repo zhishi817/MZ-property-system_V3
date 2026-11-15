@@ -2,6 +2,73 @@
 
 本文件只保存当前有效的业务不变量、责任范围、测试映射和最近一次完整验证索引。
 
+## FR-049：深清真实执行人、待审核、管理员核价与照片一致性
+
+- **维护责任范围：** backend / web / mobile
+- **最后审查日期：** 2026-11-12
+- **状态：** active
+
+### 业务保护规则
+
+- 派工使用真实用户 ID；按用户最新确认，深清可选择全部真实用户但排除任含 customer_service 角色者（含多角色），不得继续沿用普通任务排除财务的规则。此例外只作用于深清，混合批次中的普通任务仍按原资格校验；不自动撤销历史派工，不虚构停用字段或服务账号。姓名仅显示，不代替身份。移动端原已完工反馈入口显式选择实际人员，返回名单包含本人时才可默认，代提交可改选，不扩大原管理代录角色。
+- 派工和执行无需金额；固定价无需工时，原可选时间/耗材历史保留。提交完工进入 pending_review，不乐观变 done、不生成费用、更不进入人员结算。
+- 仅实际 admin 审核，通用权限不能替代。核定整单金额或分项之和，二者互斥；未填不同于 0；合计已含耗材，不再次加费；既有扣款/GST选项保留。
+- 源记录、任务投影、审核金额、费用、审计与幂等回执应在同一事务；相同请求可重放、冲突请求拒绝，人工覆盖费用不得悄悄被改写。
+- 普通编辑、任务中心、通用任务动作、旧审核和反馈项目入口不能绕过管理员审核；历史记录不因普通文字/照片编辑重算或回填账目。
+- 编辑面板通过现有合法工作流动作处理派工、提交待审和 admin 审核，不提供任意状态跳转；成功回执与刷新应同步列表和已打开详情/编辑状态、执行人显示，同时保留未保存表单草稿。提交人员与实际执行人不得混同；历史姓名不等于已关联真实用户。
+- 提交人显示优先保留原始提交姓名，其次只读解析经 users.id 核实的创建账号；缺失显示“未记录”，不得以执行人、审核人或未核验文本替代。解析显示不回填源字段；普通编辑未主动改变提交人时完全省略该字段，保留原 null、空值和历史字符串。派工、完工、审核、刷新不改变最初提交者，审核者仍由独立 reviewed_by 记录。
+- 深清是独立任务类型，不展示退房/入住标题、时间、周转或入住指南区块；即使错误携带这些字段也不能混入深清界面。新增照片刷新和领域缓存状态逻辑必须按深清来源限定，不重置普通任务未保存输入，不改变退房/入住/入住中/检查/维修既有展示与执行规则。深清测试和预览使用独立纯深清数据，不继承普通清洁夹具。
+- 公开深清分享/提交保留原令牌与证据提交权限，不得核定或覆盖审核价格；原客户端同值回传兼容、实际越权变更明确拒绝。公开完工仅待审核。
+- 能力按接收者从后台读取，事件不广播操作者专属动作。前/后照片明确分隔，展示附件按精确引用去重不删原存储；未关联草稿在业务确认前保留本地证据。
+- 深清执行界面允许补充清洁前照片，与必需的清洁后照片在提交待审核时同事务保存；保留原 complete 执行人和状态授权，不新增即时保存或审核后编辑权。前图可选、旧客户端省略兼容，已有原图只追加去重不覆盖；前后草稿按来源/任务/人员/阶段隔离，上传未关联不能视作保存成功，失败或未知结果不能清理证据。
+- 独立深清已关联照片读取使用数据库验证的精确工作任务/深清来源/房源，当前执行人和真正 admin 可看图，不依赖旧退房/入住来源；同时保留原来源任务与反馈的完整既有授权，不能因增加正确上下文而缩减旧合法访问，也不能仅凭 write/泛管理角色放行。不开放未关联、错任务/来源/房源；曾被派工本身不保留权限，另有原合法历史权限者仍按原规则。网页执行补图使用既有认证上传通道，普通新增/编辑/分享仍保留原权限和路径；未关联图只作本地预览。
+- 新未派工和旧待审记录无真实任务投影时，真实数据库 admin 可凭精确深清记录 ID 与当前已绑定的唯一图片只读查看；不造任务、不补数据、不授普通人新权限。有错误任务 ID 不得降级记录路径，错记录、未关联、跨来源冲突仍拒绝；原来源合法权限不变。
+- 审价明细保存在既有私有 audit_logs，不进入执行人可见的任务事件；非财务现场完成响应及回执重放不返回金额、分项、扣款或审核备注，保持原财务隔离及已有财务角色授权。
+
+### 跨层检查
+
+- **Backend：** 真实 ID / 角色、列表与单条 DTO、工作任务及反馈路径、价格空值/零/小数、来源锁、原子费用、回执、历史兼容、零运行时 DDL。
+- **Client：** 页面实际动作、禁用/错误提示、单据模式/合计、原始/完工照片、提交后权威刷新、未保存草稿。
+- **入口：** 深清网页列表/详情，移动任务列表/通知或直接详情、缓存重入，普通反馈与检查批量队列的已完成记录。
+- **入口：** 深清网页列表/详情，移动任务列表/通知或直接详情、缓存重入，普通反馈与检查批量队列的已完成记录，公开深清分享/上传旁路。
+- **一致性：** 不从姓名、前端角色或事件操作者推导接收者权限；所有完工入口最终待 admin 审核。
+
+### 测试映射
+
+| 保护点 | 测试文件 | 测试场景 | 覆盖状态 | 执行命令 |
+|---|---|---|---|---|
+| 领域核价、角色、真实路由与回执 | `backend/scripts/tests/test_deep_cleaning_workflow.ts` | total/items/null/0、admin与旧token、客服排除/其他真实用户可选、GET深清能力、不污染维修、待审核/失败回滚、事件无actor能力；SQL由合成适配器替换 | partial | `npm run check:deep-cleaning-workflow --prefix backend`（check:fast / check:backend） |
+| 实际SQL、旧入口与财务隔离 | `backend/scripts/tests/test_deep_cleaning_workflow_pg.ts` | 新临时PG真实路由、财务等非客服用户派工/执行但无审核权、混合批次与未知来源保护、并发/失败回滚、人工费用、降权回执、Date/text[]、旧待审补人、来源与恢复归属、公开token及同值/改值、批次审计失败零残留、应用连接DDL拒绝 | not-wired | `npm run check:deep-cleaning-workflow-pg --prefix backend`（仅显式隔离本机PG验证） |
+| 原列表只读及历史边界 | `backend/scripts/tests/test_deep_cleaning_list_filters.ts` | 实际GET处理器、筛选/分页/NULL、缺schema失败、禁止DDL | sufficient | `npm run test:property-feedback-history --prefix backend`（check:fast / check:backend） |
+| 独立深清已关联照片精确鉴权 | `backend/scripts/tests/test_property_feedback_r2_media_routes.ts` | 实际媒体handler的合成数据库/对象：当前执行人及admin、前后原引用、错任务/来源/房源、未关联、前执行人及无关人员拒绝，其他来源回归；不是生产媒体验收 | partial | `npm run test:property-feedback-history --prefix backend`（check:fast / check:backend） |
+| 网页能力与两种价格合同 | `frontend/src/lib/deepCleaningWorkflow.test.ts` | 服务端能力、整单/分项、零与未填、旧支付/GST选项 | partial | `npm run test --prefix frontend`（check:fast / check:frontend） |
+| 非破坏式材料展示 | `frontend/src/lib/deepCleaningRecordDisplay.test.ts` | 精确引用去重、前后原引用和未知金额保留 | partial | `npm run test --prefix frontend`（check:fast / check:frontend） |
+| 公开证据提交不核价 | `frontend/src/lib/deepCleaningPublicShare.test.ts` | 普通保存无状态/费用、明确完工只待审核、已批不重开、无公开人员名录 | sufficient | `npm run test --prefix frontend`（check:fast / check:frontend） |
+| 移动待审核及前后照片 | `mz-cleaning-app-frontend/src/screens/tasks/TaskDetailScreen.test.tsx` | 纯深清与污染字段隔离、普通退住展示和未保存草稿不变、正式提交、失败重试、照片分隔、待审核动作、草稿关联边界 | partial | paired mobile `npm run test -- --runInBand TaskDetailScreen` |
+| 缓存与执行动作 | `mz-cleaning-app-frontend/src/lib/workTasksStore.test.ts` | 同源事件/缓存、后台能力优先，不把待审核写done；非深清错误携带或仅更新深清字段不改变原来源状态 | partial | paired mobile `npm run test -- --runInBand workTasksStore` |
+| 已完成反馈、人员和恢复批次 | `mz-cleaning-app-frontend/src/lib/inspectionPanelSubmitQueue.test.ts` | 实际人员/稳定ID持久、原子重试、显式补选保留照片和进度、owner/source证明、换号与未知归属阻断、ACK丢失核对 | sufficient | paired mobile `npm run check:ci` |
+| 人工恢复入口与旧项目防误提交 | `mz-cleaning-app-frontend/src/screens/tasks/InspectionPanelScreen.test.tsx` | 用户补选确认、服务端资格拒绝、恢复原批次，不放弃重建；配套FeedbackForm测试保护无caller旧项目分支不把单项变整单 | partial | paired mobile `npm run check:ci` |
+
+### 验证策略
+
+- 单元及路由适配器测试在清空环境、前置禁外连条件下执行。真实 SQL 另用全新临时本机 PostgreSQL，写前验证实例身份；不运行生产/Preview迁移。
+- Web 实际页面使用内存 fixture API，不登录生产。完整 Root/Mobile 门、独立审查和真实设备证据分开记录。
+- 映射 partial 仍不代表设备或全部历史数据受保护。真实本机SQL和配对Mobile全量门已完成；完全无owner/source证据的旧批次保留阻断，不称自动迁移成功。
+
+### 最后验证
+
+- **CRL：** root/CRL-20261112-001、mobile/CRL-20261112-001
+- **Commit：** not committed
+- **日期：** 2026-11-12；Root backend/Frontend完整门、真实本机PG、Mobile check:ci（88 suites / 936 tests）通过；最终fast与完整快照独立复核见配对CRL。生产/设备未验证。
+
+### 相关 CRL
+
+- root/CRL-20261112-001、mobile/CRL-20261112-001；FR-047 保留深清原始读取，FR-046 保留反馈锁和角色边界，FR-010 保留私有照片鉴权。
+
+### 非保护范围
+
+- 人员结算、历史费用回填、对象恢复或删除、共享鉴权/上传队列重构、生产数据写入、发布/OTA、真实设备和对象存在性不属于本地代码证明。
+
 ## FR-048：入住中完成照片关联、多浴室与正式完成保护
 
 - **维护责任范围：** backend completion photo save / formal self-complete and paired mobile completion draft

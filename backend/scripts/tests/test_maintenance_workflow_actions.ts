@@ -258,7 +258,7 @@ assert.match(taskCenter, /WHEN a\.source_type = 'property_maintenance' THEN a\.s
 assert.doesNotMatch(taskCenter, /syncPropertyFollowupWorkTasks/, 'task-center GET must not synchronize maintenance projections')
 assert.match(taskCenter, /maintenanceWorkAssignments/)
 assert.match(taskCenter, /maintenanceAssignedUserIds/)
-assert.match(taskCenter, /client\.query\('BEGIN'\)[\s\S]*lockAndValidateTaskCenterAssignmentUsers\(client, assignedUserIds, maintenanceAssignedUserIds\)[\s\S]*materializePropertyFollowupAssignments\(/, 'save-board must lock and revalidate assignee roles inside the write transaction')
+assert.match(taskCenter, /client\.query\('BEGIN'\)[\s\S]*lockAndValidateTaskCenterAssignmentUsers\(client, assignedUserIds, maintenanceAssignedUserIds, deepCleaningAssignedUserIds\)[\s\S]*materializePropertyFollowupAssignments\(/, 'save-board must lock and revalidate assignee roles inside the write transaction')
 assert.match(taskCenter, /canonicalizePropertyFollowupAssignmentForSave\(assignment, before\)[\s\S]*source_type \|\| ''\) === 'property_maintenance'[\s\S]*buildWorkSaveDiff\(before, assignment\)/, 'maintenance diff must use canonical server text before notification fields are computed')
 assert.match(taskCenter, /UPDATE property_maintenance[\s\S]*assignee_id=\$2/)
 assert.match(taskCenter, /upsertMaintenanceWorkTask\(client, 'internal', updated\)/)

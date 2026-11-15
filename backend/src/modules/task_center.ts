@@ -1,3 +1,4 @@
+import { isDeepCleaningExecutorEligibleRoleNames } from '../lib/deepCleaningWorkflow'
 import { Router } from 'express'
 import { z } from 'zod'
 import { v4 as uuid } from 'uuid'
@@ -599,7 +600,7 @@ function buildCleaningSaveDiff(before: any, assignment: any): TaskSaveDiff | nul
   }
 }
 
-function buildWorkSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
+export function buildWorkSaveDiff(before: any, assignment: any): TaskSaveDiff | null {
   const taskId = text(assignment?.task_id)
   if (!taskId || !before) return null
   const oldAssignee = nullableText(before.assignee_id)
@@ -1250,8 +1251,9 @@ export async function lockAndValidateTaskCenterAssignmentUsers(
   executor: any,
   assignedUserIds: string[],
   maintenanceAssignedUserIds: string[],
+  deepCleaningAssignedUserIds: string[] = [],
 ) {
-  const staffIds = Array.from(new Set([...assignedUserIds, ...maintenanceAssignedUserIds]
+  const staffIds = Array.from(new Set([...assignedUserIds, ...maintenanceAssignedUserIds, ...deepCleaningAssignedUserIds]
     .map((value) => String(value || '').trim())
     .filter(Boolean)))
     .sort((a, b) => a.localeCompare(b))
@@ -1284,6 +1286,7 @@ export async function lockAndValidateTaskCenterAssignmentUsers(
   if (maintenanceAssignedUserIds.some((id) => !roleNamesById.has(String(id)))) {
     throw new Error('maintenance_assignee_not_found')
   }
+  if (deepCleaningAssignedUserIds.some(id => !roleNamesById.has(String(id)) || !isDeepCleaningExecutorEligibleRoleNames(roleNamesById.get(String(id)) || []))) throw new Error('task_assignee_invalid')
   if (assignedUserIds.some((id) => !isTaskExecutorEligibleRoleNames(roleNamesById.get(String(id)) || []))) {
     throw new Error('task_assignee_invalid')
   }
@@ -3046,6 +3049,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
     if (!row.subrow_order.length) row.subrow_order = [defaultSubrowKey()]
   }
   let maintenanceWorkAssignmentIds = new Set<string>()
+  const deepCleaningWorkAssignmentIds = new Set<string>()
   if (hasPg && pgPool && payload.work_assignments.length) {
     try {
       await assertTaskCenterMaintenanceSchemaReady()
@@ -3055,11 +3059,14 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
           WHERE id::text = ANY($1::text[])`,
         [payload.work_assignments.map((item) => item.task_id)],
       )
+      for (const row of sourceResult.rows || []) if (String(row.source_type) === 'property_deep_cleaning') deepCleaningWorkAssignmentIds.add(String(row.id))
       maintenanceWorkAssignmentIds = new Set((sourceResult.rows || [])
         .filter((row: any) => String(row.source_type || '') === 'property_maintenance')
         .map((row: any) => String(row.id)))
       for (const assignment of payload.work_assignments) {
         const parsedTaskId = parsePropertyFollowupTaskId(assignment.task_id)
+        // A stored task's actual source wins over a misleading ID prefix.
+        if (parsedTaskId?.sourceType === 'property_deep_cleaning' && !(sourceResult.rows || []).some((row:any) => String(row.id) === String(assignment.task_id))) deepCleaningWorkAssignmentIds.add(String(assignment.task_id))
         if (parsedTaskId?.sourceType === 'property_maintenance') {
           maintenanceWorkAssignmentIds.add(String(assignment.task_id))
         }
@@ -3073,7 +3080,9 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
       .filter((row: any) => String(row.source_type || '') === 'property_maintenance')
       .map((row: any) => String(row.id)))
   }
-  const genericWorkAssignments = payload.work_assignments.filter((item) => !maintenanceWorkAssignmentIds.has(String(item.task_id)))
+  if (!hasPg || !pgPool) for (const row of ((db as any).workTasks || [])) if (String(row.source_type) === 'property_deep_cleaning') deepCleaningWorkAssignmentIds.add(String(row.id))
+  const deepCleaningAssignedUserIds = payload.work_assignments.filter(item => deepCleaningWorkAssignmentIds.has(String(item.task_id)) && item.assignee_assignment_action === 'assign').map(item => String(item.assignee_id || '').trim()).filter(Boolean)
+  const genericWorkAssignments = payload.work_assignments.filter((item) => !maintenanceWorkAssignmentIds.has(String(item.task_id)) && !deepCleaningWorkAssignmentIds.has(String(item.task_id)))
   const assignedUserIds = assignedTaskExecutorIds({
     cleaningAssignments: payload.cleaning_assignments,
     workAssignments: genericWorkAssignments,
@@ -3086,6 +3095,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
     const usersById = new Map<string, any>((db.users || []).map((item: any) => [String(item.id), item]))
     const missingMaintenanceUserId = maintenanceAssignedUserIds.find((id) => !usersById.has(id))
     if (missingMaintenanceUserId) return res.status(400).json({ message: '维修执行人员不存在' })
+    if (deepCleaningAssignedUserIds.some(id => !usersById.has(id) || !isDeepCleaningExecutorEligibleRoleNames([usersById.get(id)?.role,...(usersById.get(id)?.roles || [])]))) return res.status(400).json({message:'无效的任务执行人员'})
     const invalidId = assignedUserIds.find((id) => {
       const user = usersById.get(id)
       if (!user) return true
@@ -3101,7 +3111,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
       await ensureCleaningSchemaV2()
       await ensureCleaningInspectionScopeColumn()
       await ensureTaskCenterTables()
-      const staffIds = Array.from(new Set([...assignedUserIds, ...maintenanceAssignedUserIds]))
+      const staffIds = Array.from(new Set([...assignedUserIds, ...maintenanceAssignedUserIds, ...deepCleaningAssignedUserIds]))
       if (staffIds.length) {
         const staffResult = await pgPool.query(
           `SELECT
@@ -3121,6 +3131,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
         }
         const missingMaintenanceUserId = maintenanceAssignedUserIds.find((id) => !roleNamesById.has(id))
         if (missingMaintenanceUserId) return res.status(400).json({ message: '维修执行人员不存在' })
+        if (deepCleaningAssignedUserIds.some(id => !roleNamesById.has(id) || !isDeepCleaningExecutorEligibleRoleNames(roleNamesById.get(id) || []))) return res.status(400).json({message:'无效的任务执行人员'})
         const invalidId = assignedUserIds.find((id) => !isTaskExecutorEligibleRoleNames(roleNamesById.get(id) || []))
         if (invalidId) return res.status(400).json({ message: '无效的任务执行人员' })
       }
@@ -3193,7 +3204,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
       const cleaningAssignmentById = new Map<string, any>(payload.cleaning_assignments.map((item: any) => [String(item.task_id), item]))
       try {
         await client.query('BEGIN')
-        await lockAndValidateTaskCenterAssignmentUsers(client, assignedUserIds, maintenanceAssignedUserIds)
+        await lockAndValidateTaskCenterAssignmentUsers(client, assignedUserIds, maintenanceAssignedUserIds, deepCleaningAssignedUserIds)
         const turnoverLockKeys = Array.from(new Set(payload.cleaning_assignments
           .map((assignment) => taskTypeById.get(String(assignment.task_id)))
           .filter((task) => !!task?.property_id && !!task?.task_date)
@@ -3279,6 +3290,24 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
             delete (assignment as any).status
             const before = beforeById.get(String(assignment.task_id))
             Object.assign(assignment, canonicalizePropertyFollowupAssignmentForSave(assignment, before))
+            if (String(before?.source_type || '') === 'property_deep_cleaning') {
+              const diff = buildWorkSaveDiff(before, assignment)
+              if (diff?.changedFields.some((field) => ['assignee_id', 'scheduled_date', 'status'].includes(field))) {
+                const sourceResult = await client.query('SELECT * FROM property_deep_cleaning WHERE id::text=$1 AND deleted_at IS NULL FOR UPDATE', [String(before.source_id)])
+                const source = sourceResult.rows?.[0]
+                if (!source || !['pending', 'pending_assignment', 'open', 'todo', 'assigned', 'in_progress'].includes(String(source.status || 'pending').toLowerCase())
+                  || ['approved', 'closed'].includes(String(source.review_status || '').toLowerCase())) throw new Error('deep_cleaning_workflow_action_required')
+                const nextAssignee = assignment.assignee_assignment_action === 'unassign'
+                  ? null : assignment.assignee_assignment_action === 'assign' ? nullableText(assignment.assignee_id) : nullableText(source.assignee_id)
+                // The existing board eligibility gate validated every newly assigned ID.
+                await client.query(
+                  `UPDATE property_deep_cleaning SET assignee_id=$2,
+                     worker_name=(SELECT COALESCE(NULLIF(display_name,''),NULLIF(username,''),id::text) FROM users WHERE id::text=$2),
+                     eta=COALESCE($3::date,eta), status=$4, updated_at=now() WHERE id::text=$1`,
+                  [String(before.source_id), nextAssignee, assignment.scheduled_date == null ? null : dayText(assignment.scheduled_date), nextAssignee ? (String(source.status).toLowerCase() === 'in_progress' ? 'in_progress' : 'assigned') : 'pending'],
+                )
+              }
+            }
             if (String(before?.source_type || '') === 'property_maintenance') {
               maintenanceWorkAssignments.push({ assignment, before })
               const diff = buildWorkSaveDiff(before, assignment)
@@ -4064,6 +4093,21 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
       for (const task of (((db as any).workTasks || []) as any[])) {
         const assignment = workById.get(String(task.id))
         if (!assignment) continue
+        if (String(task.source_type || '') === 'property_deep_cleaning') {
+          const diff = buildWorkSaveDiff(task, assignment)
+          if (diff?.changedFields.some((field) => ['assignee_id', 'scheduled_date', 'status'].includes(field))) {
+            const source = (((db as any).propertyDeepCleaning || []) as any[]).find((item) => String(item.id) === String(task.source_id))
+            if (!source || !['pending', 'pending_assignment', 'open', 'todo', 'assigned', 'in_progress'].includes(String(source.status || 'pending').toLowerCase())
+              || ['approved', 'closed'].includes(String(source.review_status || '').toLowerCase())) throw new Error('deep_cleaning_workflow_action_required')
+            const nextAssignee = assignment.assignee_assignment_action === 'unassign' ? null
+              : assignment.assignee_assignment_action === 'assign' ? nullableText(assignment.assignee_id) : nullableText(source.assignee_id)
+            const assignedUser = (db.users || []).find((item: any) => String(item.id) === nextAssignee) as any
+            source.assignee_id = nextAssignee
+            source.worker_name = assignedUser?.display_name || assignedUser?.username || nextAssignee
+            source.status = nextAssignee ? (String(source.status).toLowerCase() === 'in_progress' ? 'in_progress' : 'assigned') : 'pending'
+            if (assignment.scheduled_date != null) source.eta = dayOnly(assignment.scheduled_date)
+          }
+        }
         if (String(task.source_type || '') === 'property_maintenance') {
           const assignmentActionValue = String((assignment as any).assignee_assignment_action || '').trim()
           if (!assignmentActionValue) continue
@@ -4104,6 +4148,7 @@ router.post('/save-board', requirePerm('cleaning.task.assign'), requireR5TaskRun
     return res.json({ ok: true, rows: rowMap.size, items: payload.items.length })
   } catch (e: any) {
     if (sendMaintenanceRuntimeSchemaNotReady(res, e)) return
+    if (e?.message === 'deep_cleaning_workflow_action_required') return res.status(409).json({ code: 'deep_cleaning_workflow_action_required' })
     const inspectionConflict = inspectionAssignmentConflictPayload(e)
     if (inspectionConflict) return res.status(409).json(inspectionConflict)
     if (e?.message === 'inspection_due_date_required') {
