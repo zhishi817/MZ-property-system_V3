@@ -39149,7 +39149,6 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Unverified deployment scope: physical iOS/Android, deployed auth/R2, production data, OTA and merge not run.
 - Cross-repository dependency verification: exact companion mobile content `69f3a6718d1c3d2e8147fc07fdeed2fed4e3090e`; both content fingerprints, actual paired full/source contracts, canonical CRL bindings and independent reviews are available. Read-only paired exact-range verifier must validate both committed heads before push; original raw reports retained without rewriting their NOT VERIFIED result.
 - Supplemental native verification: final mobile modules iOS simulator 13/13 PASS (116 identity/timezone/native AsyncStorage9 plus118 native downloader cache/account isolation4 against local HTTP fixture). Final118 real-PG native pair could not start due exhausted SysV shared-memory slots; mmap did not resolve. No unknown segments deleted or system settings changed. Previous25-case118 report is historical only and is not counted as this integration rerun. Actual R2/login, full app UI, physical/Android camera/gallery and video playback remain not run.
-
 ## CRL-20261112-002 — MZ116 photo watermark actor identity and capture time
 
 - **Repository:** `root`
@@ -39360,4 +39359,3 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Unverified deployment scope: physical iOS/Android, deployed auth/R2, production data, OTA and merge not run.
 - Cross-repository dependency verification: exact companion mobile content `69f3a6718d1c3d2e8147fc07fdeed2fed4e3090e`; both content fingerprints, actual paired full/source contracts, canonical CRL bindings and independent reviews are available. Read-only paired exact-range verifier must validate both committed heads before push; original raw reports retained without rewriting their NOT VERIFIED result.
 - Supplemental native verification: final mobile modules iOS simulator 13/13 PASS (116 identity/timezone/native AsyncStorage9 plus118 native downloader cache/account isolation4 against local HTTP fixture). Final118 real-PG native pair could not start due exhausted SysV shared-memory slots; mmap did not resolve. No unknown segments deleted or system settings changed. Previous25-case118 report is historical only and is not counted as this integration rerun. Actual R2/login, full app UI, physical/Android camera/gallery and video playback remain not run.
-
