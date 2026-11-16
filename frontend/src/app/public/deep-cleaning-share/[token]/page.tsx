@@ -1,20 +1,13 @@
 "use client"
-import { Alert, App, Button, Card, DatePicker, Form, Input, InputNumber, Select, Space, Typography, Upload } from 'antd'
+import { Alert, App, Button, Card, Form, Input, InputNumber, Select, Space, Table, Typography, Upload } from 'antd'
 import { LockOutlined } from '@ant-design/icons'
 import type { UploadFile } from 'antd/es/upload/interface'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE } from '../../../../lib/api'
+import { canSubmitPublicDeepCleaning, publicDeepCleaningPayload } from '../../../../lib/deepCleaningPublicShare'
 
 type DeepCleaningRecord = Record<string, any>
-
-const statusOptions = [
-  { value: 'pending', label: '待清洁' },
-  { value: 'assigned', label: '已分配' },
-  { value: 'in_progress', label: '清洁中' },
-  { value: 'completed', label: '待审核' },
-  { value: 'canceled', label: '已取消' },
-]
 
 const urgencyOptions = [
   { value: 'high', label: '高' },
@@ -47,7 +40,6 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
   const [attachUrls, setAttachUrls] = useState<string[]>([])
 
   const storageKey = useMemo(() => `deep_cleaning_share_jwt:${shareId}`, [shareId])
-  const statusWatch = Form.useWatch('status', form)
 
   async function loadRecord() {
     if (!shareId) return
@@ -72,16 +64,11 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
       setAfterFiles(a.map((u: string, i: number) => ({ uid: `a-${i}`, name: `after-${i + 1}`, status: 'done', url: u } as UploadFile)))
       setAttachFiles(at.map((u: string, i: number) => ({ uid: `at-${i}`, name: `att-${i + 1}`, status: 'done', url: u } as UploadFile)))
       form.setFieldsValue({
-        status: String(j?.status || 'pending'),
         urgency: String(j?.urgency || 'normal'),
         details: typeof j?.details === 'string' ? j.details : (j?.details ? JSON.stringify(j.details) : ''),
         repair_notes: String(j?.repair_notes || ''),
-        eta: j?.eta ? dayjs(String(j.eta)) : null,
-        completed_at: j?.completed_at ? dayjs(String(j.completed_at)) : null,
         checklist: safeJsonParse(j?.checklist) || [],
-        consumables: safeJsonParse(j?.consumables) || [],
         labor_minutes: j?.labor_minutes !== undefined && j?.labor_minutes !== null ? Number(j?.labor_minutes || 0) : undefined,
-        labor_cost: j?.labor_cost !== undefined && j?.labor_cost !== null ? Number(j?.labor_cost || 0) : undefined,
       })
     } catch {
       const msg = '加载失败'
@@ -129,30 +116,15 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
     return url
   }
 
-  async function save() {
+  async function save(submitForReview = false) {
+    if (loading) return
     if (!shareJwt) { message.error('请先输入密码'); return }
-    const v = await form.validateFields()
-    const payload: any = {
-      status: v.status,
-      urgency: v.urgency,
-      details: v.details ? String(v.details) : '[]',
-      repair_notes: String(v.repair_notes || '') || undefined,
-      photo_urls: beforeUrls,
-      repair_photo_urls: afterUrls,
-      attachment_urls: attachUrls,
-      checklist: Array.isArray(v.checklist) ? v.checklist : [],
-      consumables: Array.isArray(v.consumables) ? v.consumables : [],
-      labor_minutes: v.labor_minutes !== undefined ? Number(v.labor_minutes || 0) : undefined,
-      labor_cost: v.labor_cost !== undefined ? Number(v.labor_cost || 0) : undefined,
-      eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : undefined,
-    }
-    if (String(v.status || '') === 'completed') {
-      payload.completed_at = v.completed_at ? dayjs(v.completed_at).toDate().toISOString() : new Date().toISOString()
-    } else {
-      payload.completed_at = undefined
-    }
+    if (submitForReview && !canSubmitPublicDeepCleaning(record)) { message.error('此记录已提交或已审核，请仅保存材料'); return }
     setLoading(true)
     try {
+      const v = await form.validateFields()
+      if ([...beforeFiles, ...afterFiles, ...attachFiles].some(file => file.status === 'uploading' || file.status === 'error')) throw new Error('请等待材料上传成功后再保存')
+      const payload = publicDeepCleaningPayload(v, { before: beforeUrls, after: afterUrls, attachments: attachUrls }, submitForReview)
       const res = await fetch(`${API_BASE}/public/deep-cleaning-share/${encodeURIComponent(shareId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shareJwt}` },
@@ -160,10 +132,10 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
       })
       const j = await res.json().catch(() => null)
       if (!res.ok) { message.error(j?.message || '保存失败'); return }
-      message.success('已保存')
+      message.success(submitForReview ? '已提交待审核，金额由管理员确认' : '已保存材料，审核状态和金额不变')
       await loadRecord()
-    } catch {
-      message.error('保存失败')
+    } catch (e: any) {
+      if (!e?.errorFields) message.error(e?.message || '保存失败')
     } finally {
       setLoading(false)
     }
@@ -215,24 +187,15 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
         </Card>
 
         <Card loading={loading} style={{ borderRadius: 12 }} title="编辑内容">
-          <Form form={form} layout="vertical">
+          <Form form={form} layout="vertical" disabled={!shareJwt || loading}>
+            <Alert type="info" showIcon message="此页面仅维护说明、工作记录与照片。完工提交后仍需管理员审核，由管理员确认实际执行人、金额及扣款方式；保存材料不会重新提交审核或改价。" style={{ marginBottom: 16 }} />
             <Space style={{ width: '100%' }} wrap>
-              <Form.Item name="status" label="状态" rules={[{ required: true }]} style={{ minWidth: 220, marginBottom: 0 }}>
-                <Select options={statusOptions} />
-              </Form.Item>
               <Form.Item name="urgency" label="紧急程度" rules={[{ required: true }]} style={{ minWidth: 220, marginBottom: 0 }}>
                 <Select options={urgencyOptions} />
               </Form.Item>
-              <Form.Item name="eta" label="预计完成时间" style={{ minWidth: 220, marginBottom: 0 }}>
-                <DatePicker style={{ width: '100%' }} />
-              </Form.Item>
-              {String(statusWatch || '') === 'completed' ? (
-                <Form.Item name="completed_at" label="完成时间" style={{ minWidth: 220, marginBottom: 0 }}>
-                  <DatePicker showTime style={{ width: '100%' }} />
-                </Form.Item>
-              ) : null}
             </Space>
 
+            <Typography.Paragraph type="secondary">预计完成：{record.eta ? dayjs(record.eta).format('YYYY-MM-DD') : '-'}；完成时间：{record.completed_at ? dayjs(record.completed_at).format('YYYY-MM-DD HH:mm') : '-'}（由任务流程维护）</Typography.Paragraph>
             <Form.Item name="details" label="清洁摘要" rules={[{ required: true, min: 3 }]}>
               <Input.TextArea rows={3} placeholder="简要描述清洁重点/处理进度" />
             </Form.Item>
@@ -343,39 +306,18 @@ export default function PublicDeepCleaningSharePage({ params }: { params: { toke
                 <Form.Item name="labor_minutes" label="工时（分钟）" style={{ minWidth: 220, marginBottom: 0 }}>
                   <InputNumber min={0} style={{ width: '100%' }} />
                 </Form.Item>
-                <Form.Item name="labor_cost" label="人工成本（可选）" style={{ minWidth: 220, marginBottom: 0 }}>
-                  <InputNumber min={0} style={{ width: '100%' }} />
-                </Form.Item>
               </Space>
-              <Form.Item name="consumables" label="耗材记录" style={{ marginTop: 12 }}>
-                <Form.List name="consumables">
-                  {(fields, { add, remove }) => (
-                    <Space direction="vertical" style={{ width:'100%' }}>
-                      {fields.map(f => (
-                        <div key={f.key} style={{ display:'grid', gridTemplateColumns: '1fr 120px 120px 120px 60px', gap: 8, alignItems:'center' }}>
-                          <Form.Item name={[f.name, 'name']} rules={[{ required: true }]} style={{ marginBottom: 0 }}>
-                            <Input placeholder="耗材名称" />
-                          </Form.Item>
-                          <Form.Item name={[f.name, 'qty']} style={{ marginBottom: 0 }}>
-                            <InputNumber min={0} style={{ width:'100%' }} placeholder="数量" />
-                          </Form.Item>
-                          <Form.Item name={[f.name, 'unit']} style={{ marginBottom: 0 }}>
-                            <Input placeholder="单位" />
-                          </Form.Item>
-                          <Form.Item name={[f.name, 'cost']} style={{ marginBottom: 0 }}>
-                            <InputNumber min={0} style={{ width:'100%' }} placeholder="金额" />
-                          </Form.Item>
-                          <Button onClick={() => remove(f.name)}>删除</Button>
-                        </div>
-                      ))}
-                      <Button onClick={() => add({ name: '', qty: 1 })}>新增耗材</Button>
-                    </Space>
-                  )}
-                </Form.List>
-              </Form.Item>
+              <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>已有耗材记录只读。费用由管理员审核确认，不在公开链接修改。</Typography.Paragraph>
+              <Table size="small" pagination={false} rowKey={(_, index) => String(index)} dataSource={safeJsonParse(record.consumables) || []} columns={[
+                { title: '耗材', dataIndex: 'name' }, { title: '数量', dataIndex: 'qty' }, { title: '单位', dataIndex: 'unit' },
+                { title: '原记录金额', dataIndex: 'cost', render: (value: any) => value == null || value === '' ? '-' : String(value) },
+              ]} />
             </Card>
 
-            <Button type="primary" onClick={save} loading={loading} disabled={!shareJwt}>保存</Button>
+            <Space wrap>
+              <Button onClick={() => { void save(false) }} loading={loading} disabled={!shareJwt || loading}>保存材料</Button>
+              {canSubmitPublicDeepCleaning(record) ? <Button type="primary" onClick={() => { void save(true) }} loading={loading} disabled={!shareJwt || loading}>提交完工，等待审核</Button> : <Typography.Text type="secondary">已提交或已审核；补充材料不会更改审核结果。</Typography.Text>}
+            </Space>
           </Form>
         </Card>
           </>

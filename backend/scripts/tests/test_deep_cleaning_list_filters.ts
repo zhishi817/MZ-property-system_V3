@@ -5,6 +5,8 @@ import assert from 'node:assert/strict'
 process.env.DATABASE_URL = ''
 const queries: Array<{ sql: string; params: any[] }> = []
 const unexpected: string[] = []
+let sourceRows: any[] = [{ id: 'mock-row', occurred_at: '2026-11-09' }]
+const users = [{id:'creator',username:'真实创建者'},{id:'other',username:'另一创建者'}]
 let queryError: { code?: string; message: string } | null = null
 const fail = (...args: any[]) => { throw new Error(`Unexpected offline adapter action: ${String(args[0])}`) }
 const adapter: any = {
@@ -13,12 +15,15 @@ const adapter: any = {
     queries.push({ sql, params })
     if (queryError) throw Object.assign(new Error(queryError.message), { code: queryError.code })
     if (!/^SELECT\b/.test(sql)) { unexpected.push(sql); return fail(sql) }
+    if (sql.includes('SELECT w.id::text AS id,w.source_id::text')) return { rows: [] }
+    if (sql.startsWith('SELECT id, username FROM users')) return { rows: users.filter(u => params[0].includes(u.id)) }
+    if (sql.includes('FROM audit_logs')) return { rows: [] }
     if (sql.startsWith('SELECT COUNT(*)')) return { rows: [{ total: 1 }] }
-    if (sql.startsWith('SELECT * FROM property_deep_cleaning')) return { rows: [{ id: 'mock-row', occurred_at: '2026-11-09' }] }
+    if (sql.startsWith('SELECT * FROM property_deep_cleaning')) return { rows: sourceRows }
     unexpected.push(sql)
     return fail(sql)
   } },
-  pgSelect: async (table: string) => table === 'properties' ? [] : fail(table),
+  pgSelect: async (table: string) => table === 'properties' ? [] : table === 'property_deep_cleaning' ? sourceRows : fail(table),
   pgInsert: fail, pgUpdate: fail, pgDelete: fail, pgRunInTransaction: fail, pgRunWithAdvisoryLock: fail,
 }
 const adapterPath = require.resolve('../../src/dbAdapter')
@@ -94,6 +99,34 @@ async function main() {
   assert(legacy.sql.includes('"completed_at" >= $1') && legacy.sql.includes('"occurred_at" <= $2') && legacy.sql.includes('"category" = $3'))
   assert(!legacy.sql.includes('string_to_array'))
   assert.deepEqual(unexpected, [])
+  // Actual list and single handlers: executor changes never become submitter evidence.
+  const single = router.stack.find((entry: any) => entry.route?.path === '/:resource/:id' && entry.route.methods.get).route
+  sourceRows = [
+    {id:'empty',submitter_name:null,worker_name:'执行人'},
+    {id:'recorded',submitter_name:' 原始提交人 ',created_by_user_id:'creator',worker_name:'执行人'},
+    {id:'mobile',submitter_name:'移动提交人',created_by_user_id:'creator',assignee_id:'other'},
+    {id:'web',submitter_name:null,created_by:'creator',worker_name:'执行人'},
+    {id:'priority',created_by_user_id:'creator',created_by:'other'},
+    {id:'legacy',created_by_user_id:'missing',created_by:'creator'},
+    {id:'unknown',created_by:'真实创建者',worker_name:'执行人'},
+  ]
+  const expected = [[null,'unknown'],['原始提交人','recorded'],['移动提交人','recorded'],['真实创建者','created_by'],['真实创建者','created_by_user_id'],['真实创建者','created_by'],[null,'unknown']]
+  const baseline = JSON.stringify(sourceRows)
+  res = await invoke()
+  assert.deepEqual(res.body.map((r:any)=>[r.submitter_display_name,r.submitter_display_source]),expected)
+  assert.equal(JSON.stringify(sourceRows),baseline,'GET never writes inferred submitter')
+  for (let i=0;i<sourceRows.length;i++) {
+    const row=sourceRows[i]
+    const savedRows=sourceRows
+    sourceRows=[{...row,worker_name:'改派后的执行人',assignee_id:'different'}]
+    const singleRes:any={statusCode:200,status(code:number){this.statusCode=code;return this},json(body:any){this.body=body;return this}}
+    await single.stack[single.stack.length-1].handle({params:{resource:'property_deep_cleaning',id:row.id},query:{},user:{role:'admin',roles:['admin']}},singleRes)
+    assert.equal(singleRes.statusCode,200)
+    assert.deepEqual([singleRes.body.submitter_display_name,singleRes.body.submitter_display_source],expected[i])
+    assert.equal(singleRes.body.submitter_name,row.submitter_name,'raw value is not replaced by display fallback')
+    sourceRows=savedRows
+  }
+  assert.deepEqual(unexpected,[],'submitter enrichment is SELECT-only')
   for (const code of ['42P01', '42703']) {
     queryError = { code, message: 'synthetic missing schema' }
     res = await invoke({}, 'property_deep_cleaning', 503)

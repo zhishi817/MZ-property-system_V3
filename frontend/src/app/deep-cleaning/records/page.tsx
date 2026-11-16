@@ -9,7 +9,9 @@ import { hasPerm } from '../../../lib/auth'
 import { downloadNamedBlob } from '../../../lib/download'
 import { sortProperties } from '../../../lib/properties'
 import DeepCleaningMedia from '../../../components/DeepCleaningMedia'
-import { DEEP_CLEANING_AREAS, deepCleaningAreas, deepCleaningDetails, deepCleaningSummary, deepCleaningDisplayCost, deepCleaningMediaReferences, deepCleaningDate, deepCleaningDateBound } from '../../../lib/deepCleaningRecordDisplay'
+import TableRowActions from '../../../components/TableRowActions'
+import { deepCleaningExecutionUploadReference, deepCleaningCompletionPayload, deepCleaningCanAct, deepCleaningExecutorLabel, mergeDeepCleaningAuthoritativeRow, deepCleaningNeedsReviewAssignee, deepCleaningReviewPayload, newDeepCleaningOperationId } from '../../../lib/deepCleaningWorkflow'
+import { DEEP_CLEANING_AREAS, deepCleaningSubmitterEditPatch, deepCleaningSubmitterDisplay, deepCleaningAreas, deepCleaningDetails, deepCleaningSummary, deepCleaningDisplayCost, deepCleaningMediaReferences, deepCleaningDate, deepCleaningDateBound, deepCleaningVisibleAttachments } from '../../../lib/deepCleaningRecordDisplay'
 import { runWorkRecordPdfJob } from '../../../lib/workRecordPdfJobs'
 
 type DeepCleaningRecord = {
@@ -28,6 +30,8 @@ type DeepCleaningRecord = {
   status?: string
   urgency?: string
   submitter_name?: string
+  submitter_display_name?: string | null
+  submitter_display_source?: string
   submitted_at?: string
   created_by?: string
   assignee_id?: string
@@ -53,6 +57,13 @@ type DeepCleaningRecord = {
   reviewed_at?: string
   created_at?: string
   updated_at?: string
+  media_access_work_task_id?: string | null
+  workflow_status?: string
+  available_actions?: string[]
+  can_review?: boolean
+  can_assign?: boolean
+  pricing_mode?: string
+  price_items?: { id: string; description: string; amount: number }[]
 }
 
 function safeJsonParse(v: any) {
@@ -114,17 +125,6 @@ function gstTypeLabel(v?: string | null) {
   return s
 }
 
-function computeTotalCost(laborCostRaw: any, consumablesRaw: any) {
-  const labor = Number(laborCostRaw || 0)
-  const laborN = Number.isFinite(labor) ? labor : 0
-  const arr = Array.isArray(consumablesRaw) ? consumablesRaw : (safeJsonParse(consumablesRaw) || [])
-  const sum = (Array.isArray(arr) ? arr : []).reduce((s: number, x: any) => {
-    const n = Number(x?.cost || 0)
-    return s + (Number.isFinite(n) ? n : 0)
-  }, 0)
-  return Math.round(((laborN + sum) + Number.EPSILON) * 100) / 100
-}
-
 function combineDateAndTimeToIso(dateRaw: any, timeRaw: any): string | null {
   if (!dateRaw || !timeRaw) return null
   const d = dayjs(dateRaw)
@@ -137,9 +137,10 @@ export default function DeepCleaningRecordsPage() {
   const { message, modal } = App.useApp()
   const screens = Grid.useBreakpoint()
   const isMobile = !screens.md
-  const canWrite = hasPerm('property_deep_cleaning.write')
-  const canAudit = hasPerm('property_deep_cleaning.audit') || hasPerm('rbac.manage')
-  const canDownload = hasPerm('property_deep_cleaning.view') || canWrite || canAudit
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
+  const canWrite = mounted && hasPerm('property_deep_cleaning.write')
+  const canDownload = mounted && (hasPerm('property_deep_cleaning.view') || canWrite)
 
   const [list, setList] = useState<DeepCleaningRecord[]>([])
   const [total, setTotal] = useState(0)
@@ -163,7 +164,16 @@ export default function DeepCleaningRecordsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<DeepCleaningRecord | null>(null)
   const [savingEdit, setSavingEdit] = useState(false)
+  const [savingCreate, setSavingCreate] = useState(false)
+  const [workflow, setWorkflow] = useState<{ row: DeepCleaningRecord; action: 'assign' | 'review' | 'complete'; operationId: string } | null>(null)
+  const [savingWorkflow, setSavingWorkflow] = useState(false)
+  const [executorOptions, setExecutorOptions] = useState<{ value: string; label: string }[]>([])
+  const [executorError, setExecutorError] = useState('')
+  const [completeFiles, setCompleteFiles] = useState<UploadFile[]>([])
+  const [completeBeforeFiles, setCompleteBeforeFiles] = useState<UploadFile[]>([])
+  const [workflowForm] = Form.useForm()
   const [viewing, setViewing] = useState<DeepCleaningRecord | null>(null)
+  const [mediaPreviewContext, setMediaPreviewContext] = useState<DeepCleaningRecord | null>(null)
   const [mediaPreview, setMediaPreview] = useState<string | null>(null)
 
   const [createForm] = Form.useForm()
@@ -176,12 +186,14 @@ export default function DeepCleaningRecordsPage() {
   const [editAttachFiles, setEditAttachFiles] = useState<UploadFile[]>([])
 
   const abortRef = useRef<AbortController | null>(null)
+  const editSnapshotRef = useRef('')
 
   const statusOptions = [
     { value: 'pending', label: '待清洁' },
     { value: 'assigned', label: '已分配' },
     { value: 'in_progress', label: '清洁中' },
-    { value: 'review_pending', label: '待审核' },
+    { value: 'pending_review', label: '待审核' },
+    { value: 'review_pending', label: '待审核（历史）' },
     { value: 'completed', label: '已完成' },
     { value: 'canceled', label: '已取消' },
   ]
@@ -202,6 +214,7 @@ export default function DeepCleaningRecordsPage() {
     { value: 'GST_INCLUDED_10', label: '含GST' },
     { value: 'GST_10', label: '不含GST（另计）' },
     { value: 'GST_FREE', label: '免GST' },
+    { value: 'INPUT_TAXED', label: 'INPUT_TAXED' },
   ]
   const reviewOptions = [
     { value: 'pending', label: '待审核' },
@@ -215,7 +228,7 @@ export default function DeepCleaningRecordsPage() {
     if (v === 'pending') return <Tag color="default">{label}</Tag>
     if (v === 'assigned') return <Tag color="blue">{label}</Tag>
     if (v === 'in_progress') return <Tag color="orange">{label}</Tag>
-    if (v === 'review_pending') return <Tag color="gold">{label}</Tag>
+    if (v === 'review_pending' || v === 'pending_review') return <Tag color="gold">{label}</Tag>
     if (v === 'completed') return <Tag color="purple">{label}</Tag>
     if (v === 'canceled') return <Tag color="red">{label}</Tag>
     return <Tag>{label}</Tag>
@@ -242,26 +255,33 @@ export default function DeepCleaningRecordsPage() {
     return out
   }, [userOptions])
 
-  async function uploadFile(file: File) {
+  const [localPreviewVideo, setLocalPreviewVideo] = useState(false)
+  const localUploadPreviewUrls = useRef(new Map<string, string>())
+  useEffect(() => () => { localUploadPreviewUrls.current.forEach(url => URL.revokeObjectURL(url)) }, [])
+
+  async function uploadFile(file: File, execution = false) {
     const fd = new FormData()
     fd.append('file', file)
-    const res = await fetch(`${API_BASE}/deep-cleaning/upload`, { method: 'POST', headers: authHeaders(), body: fd })
+    const res = await fetch(`${API_BASE}${execution ? "/mzapp/upload" : "/deep-cleaning/upload"}`, { method: 'POST', headers: authHeaders(), body: fd })
     if (!res.ok) {
       const j = await res.json().catch(()=>null)
       throw new Error(j?.message || `HTTP ${res.status}`)
     }
     const j = await res.json().catch(()=>null)
-    const url = String(j?.url || '')
+    const url = execution ? deepCleaningExecutionUploadReference(j) : String(j?.url || '')
     if (!url) throw new Error('upload failed')
+    const previousPreview = localUploadPreviewUrls.current.get(url)
+    if (previousPreview) URL.revokeObjectURL(previousPreview)
+    localUploadPreviewUrls.current.set(url, URL.createObjectURL(file))
     return url
   }
 
-  const makeUploadProps = (setFiles: (v: UploadFile[])=>void): UploadProps => ({
+  const makeUploadProps = (setFiles: (v: UploadFile[])=>void, execution = false, context?: DeepCleaningRecord | null): UploadProps => ({
     multiple: true,
     accept: 'image/*,video/*',
     // Never replace file.url: save payloads retain the original stored reference.
     itemRender: (_origin, file, _files, actions) => <Space>
-      <Button type="link" disabled={!file.url} onClick={() => setMediaPreview(file.url || null)}>{file.name}</Button>
+      <Button type="link" disabled={!file.url} onClick={() => { setMediaPreviewContext(context || null); setLocalPreviewVideo(!!file.type?.startsWith('video/')); setMediaPreview(file.originFileObj ? localUploadPreviewUrls.current.get(file.url || '') || null : file.url || null) }}>{file.name}</Button>
       {file.status === 'uploading' ? <span>上传中 {Math.round(file.percent || 0)}%</span> : null}
       {file.status === 'error' ? <span>上传失败</span> : null}
       <Button size="small" onClick={actions.remove}>删除</Button>
@@ -269,7 +289,7 @@ export default function DeepCleaningRecordsPage() {
     customRequest: async (options) => {
       const { file, onSuccess, onError } = options as any
       try {
-        const url = await uploadFile(file as File)
+        const url = await uploadFile(file as File, execution)
         onSuccess?.({ url }, file)
       } catch (e: any) {
         onError?.(e)
@@ -294,7 +314,7 @@ export default function DeepCleaningRecordsPage() {
   async function loadUsers() {
     try {
       const users = await getJSON<any[]>('/rbac/users').catch(()=>[])
-      const opts = (Array.isArray(users) ? users : []).map(u => ({ value: String(u?.id || ''), label: String(u?.username || u?.name || u?.id || '') })).filter(x => x.value && x.label)
+      const opts = (Array.isArray(users) ? users : []).map(u => ({ value: String(u?.id || ''), label: String(u?.display_name || u?.username || u?.name || u?.id || '') })).filter(x => x.value && x.label)
       setUserOptions(opts)
     } catch { setUserOptions([]) }
   }
@@ -363,215 +383,171 @@ export default function DeepCleaningRecordsPage() {
       occurred_at: dayjs(),
       checklist: [{ item: '全屋表面除尘', done: false }, { item: '厨房油污清洁', done: false }, { item: '浴室除垢消毒', done: false }],
       consumables: [],
-      labor_cost: undefined,
-      pay_method: 'company_pay',
-      gst_type: 'GST_INCLUDED_10',
-      review_status: 'pending',
     })
     setCreateOpen(true)
   }
 
   async function createSubmit() {
-    const v = await createForm.validateFields()
-    const beforeUrls = (createBeforeFiles || []).map(f => String((f as any).url || (f as any).response?.url || '')).filter(Boolean)
-    const attachUrls = (createAttachFiles || []).map(f => String((f as any).url || (f as any).response?.url || '')).filter(Boolean)
-    const baseDate = v.occurred_at ? dayjs(v.occurred_at) : dayjs()
-    const startedIso = combineDateAndTimeToIso(baseDate, (v as any).started_time)
-    const endedIso = combineDateAndTimeToIso(baseDate, (v as any).ended_time)
-    const durationFromTimes = (startedIso && endedIso) ? Math.max(0, dayjs(endedIso).diff(dayjs(startedIso), 'minute')) : null
-    const durationValueRaw = (v as any).duration_minutes
-    const durationValue = durationValueRaw === undefined || durationValueRaw === null || durationValueRaw === '' ? null : Number(durationValueRaw)
-    const durationFinal = Number.isFinite(durationValue as any) ? Number(durationValue) : (durationFromTimes !== null ? durationFromTimes : null)
-    const status = String(v.status || 'pending')
-    const completedAtIso = v.completed_at ? dayjs(v.completed_at).toISOString() : ((status === 'review_pending' || status === 'completed') ? (endedIso || null) : null)
-    const payload: any = {
-      property_id: v.property_id,
-      occurred_at: baseDate.format('YYYY-MM-DD'),
-      category: v.category,
-      status,
-      urgency: v.urgency || 'normal',
-      worker_name: String(v.worker_name || '').trim(),
-      submitter_name: String(v.submitter_name || '').trim(),
-      submitted_at: new Date().toISOString(),
-      completed_at: completedAtIso,
-      started_at: startedIso,
-      ended_at: endedIso,
-      duration_minutes: durationFinal,
-      eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : null,
-      details: v.details ? String(v.details) : '[]',
-      invoice_description_en: v.invoice_description_en ? String(v.invoice_description_en) : '',
-      notes: v.notes ? String(v.notes) : '',
-      photo_urls: beforeUrls,
-      attachment_urls: attachUrls,
-      checklist: Array.isArray(v.checklist) ? v.checklist : [],
-      consumables: Array.isArray(v.consumables) ? v.consumables : [],
-      labor_cost: v.labor_cost !== undefined ? Number(v.labor_cost) : undefined,
-      pay_method: v.pay_method ? String(v.pay_method) : 'company_pay',
-      gst_type: v.gst_type ? String(v.gst_type) : 'GST_INCLUDED_10',
-      review_status: 'pending',
-    }
+    if (savingCreate) return
+    setSavingCreate(true)
     try {
-      await apiCreate('property_deep_cleaning', payload)
-      message.success('已新增清洁记录')
+      const v = await createForm.validateFields()
+      if ([...createBeforeFiles, ...createAttachFiles].some(f => f.status === 'uploading' || f.status === 'error')) throw new Error('请等待材料上传成功后再保存')
+      await apiCreate('property_deep_cleaning', {
+        started_at: combineDateAndTimeToIso(dayjs(v.occurred_at), v.started_time),
+        ended_at: combineDateAndTimeToIso(dayjs(v.occurred_at), v.ended_time),
+        duration_minutes: v.duration_minutes ?? null,
+        consumables: Array.isArray(v.consumables) ? v.consumables : [],
+        property_id: v.property_id,
+        occurred_at: dayjs(v.occurred_at).format('YYYY-MM-DD'),
+        category: v.category, urgency: v.urgency || 'normal',
+        submitter_name: String(v.submitter_name || '').trim(),
+        details: String(v.details || ''), notes: String(v.notes || ''),
+        invoice_description_en: String(v.invoice_description_en || ''),
+        photo_urls: deepCleaningMediaReferences(createBeforeFiles.map(f => f.url || (f.response as any)?.url)),
+        attachment_urls: deepCleaningMediaReferences(createAttachFiles.map(f => f.url || (f.response as any)?.url)),
+        checklist: Array.isArray(v.checklist) ? v.checklist : [],
+      })
+      message.success('已新增，请在记录上选择派工')
       setCreateOpen(false)
-      loadList(true)
-    } catch (e: any) {
-      message.error(e?.message || '新增失败')
-    }
+      await loadList(true)
+    } catch (e: any) { if (!e?.errorFields) message.error(e?.message || '新增失败') }
+    finally { setSavingCreate(false) }
   }
 
   function openEdit(r: DeepCleaningRecord) {
     setEditing(r)
     const checklist = safeJsonParse(r.checklist) || []
-    const consumables = safeJsonParse(r.consumables) || []
+    editForm.resetFields()
     editForm.setFieldsValue({
-      status: r.status || 'pending',
       urgency: r.urgency || 'normal',
-      worker_name: r.worker_name || '',
-      submitter_name: r.submitter_name || r.created_by || '',
-      eta: r.eta ? dayjs(r.eta) : null,
-      completed_at: r.completed_at ? dayjs(r.completed_at) : null,
-      started_time: r.started_at ? dayjs(r.started_at) : null,
-      ended_time: r.ended_at ? dayjs(r.ended_at) : null,
-      duration_minutes: r.duration_minutes !== undefined && r.duration_minutes !== null ? Number(r.duration_minutes) : undefined,
+      submitter_name: r.submitter_name || '',
       category: r.category || '',
       details: typeof r.details === 'string' ? r.details : (r.details ? JSON.stringify(r.details) : ''),
       invoice_description_en: r.invoice_description_en || '',
       notes: r.notes || '',
       repair_notes: r.repair_notes || '',
       checklist,
-      consumables,
-      labor_cost: r.labor_cost !== undefined && r.labor_cost !== null ? Number(r.labor_cost) : undefined,
-      pay_method: r.pay_method || 'company_pay',
-      gst_type: r.gst_type || 'GST_INCLUDED_10',
-      review_status: r.review_status || 'pending',
-      review_notes: r.review_notes || '',
+      started_time: r.started_at ? dayjs(r.started_at) : null,
+      ended_time: r.ended_at ? dayjs(r.ended_at) : null,
+      duration_minutes: r.duration_minutes ?? undefined,
+      consumables: safeJsonParse(r.consumables) || [],
     })
+    editSnapshotRef.current = JSON.stringify(editForm.getFieldsValue(true))
     setEditBeforeFiles(toUploadFileList(r.photo_urls))
     setEditAfterFiles(toUploadFileList(r.repair_photo_urls))
     setEditAttachFiles(toUploadFileList(r.attachment_urls))
   }
 
   async function saveEdit() {
-    if (!editing) return
-    if (savingEdit) return
+    if (!editing || savingEdit || !canWrite) return
     setSavingEdit(true)
     try {
-      const v = (canWrite || canAudit) ? await editForm.validateFields() : await editForm.validateFields()
-      const reviewPayload: any = {}
-      if (canAudit) {
-        reviewPayload.review_status = v.review_status || 'pending'
-        reviewPayload.review_notes = v.review_notes || ''
-      }
-
-      if (canWrite) {
-        const beforeUrls = (editBeforeFiles || []).map(f => String((f as any).url || (f as any).response?.url || '')).filter(Boolean)
-        const afterUrls = (editAfterFiles || []).map(f => String((f as any).url || (f as any).response?.url || '')).filter(Boolean)
-        const attachUrls = (editAttachFiles || []).map(f => String((f as any).url || (f as any).response?.url || '')).filter(Boolean)
-        const baseDate = (editing as any)?.occurred_at || (editing as any)?.completed_at || dayjs().format('YYYY-MM-DD')
-        const startedIso = combineDateAndTimeToIso(baseDate, (v as any).started_time)
-        const endedIso = combineDateAndTimeToIso(baseDate, (v as any).ended_time)
-        const durationFromTimes = (startedIso && endedIso) ? Math.max(0, dayjs(endedIso).diff(dayjs(startedIso), 'minute')) : null
-        const durationValueRaw = (v as any).duration_minutes
-        const durationValue = durationValueRaw === undefined || durationValueRaw === null || durationValueRaw === '' ? null : Number(durationValueRaw)
-        const durationFinal = Number.isFinite(durationValue as any) ? Number(durationValue) : (durationFromTimes !== null ? durationFromTimes : null)
-        const nextStatus = String(v.status || '')
-        const existingCompletedAt = String((editing as any)?.completed_at || '').trim()
-        const payload: any = {
-          status: v.status,
-          urgency: v.urgency,
-          worker_name: String(v.worker_name || '').trim(),
-          submitter_name: String(v.submitter_name || '').trim(),
-          eta: v.eta ? dayjs(v.eta).format('YYYY-MM-DD') : null,
-          completed_at:
-            v.completed_at ? dayjs(v.completed_at).toISOString()
-              : (nextStatus === 'review_pending' || nextStatus === 'completed')
-                ? (existingCompletedAt || endedIso || null)
-                : null,
-          started_at: startedIso,
-          ended_at: endedIso,
-          duration_minutes: durationFinal,
-          category: v.category || '',
-          details: v.details ? String(v.details) : '[]',
-          invoice_description_en: v.invoice_description_en ? String(v.invoice_description_en) : '',
-          notes: v.notes ? String(v.notes) : '',
-          repair_notes: v.repair_notes ? String(v.repair_notes) : '',
-          photo_urls: beforeUrls,
-          repair_photo_urls: afterUrls,
-          attachment_urls: attachUrls,
-          checklist: Array.isArray(v.checklist) ? v.checklist : [],
-          consumables: Array.isArray(v.consumables) ? v.consumables : [],
-          labor_cost: v.labor_cost !== undefined ? Number(v.labor_cost) : null,
-          pay_method: v.pay_method ? String(v.pay_method) : 'company_pay',
-          gst_type: v.gst_type ? String(v.gst_type) : 'GST_INCLUDED_10',
-        }
-        const writePromise = apiUpdate('property_deep_cleaning', String(editing.id), { ...payload })
-        const reviewPromise = (async () => {
-          if (!canAudit) return
-          const nextStatus = String(reviewPayload.review_status || 'pending')
-          const nextNotes = String(reviewPayload.review_notes || '')
-          const prevStatus = String(editing.review_status || 'pending')
-          const prevNotes = String(editing.review_notes || '')
-          const changed = nextStatus !== prevStatus || nextNotes !== prevNotes
-          if (!changed) return
-          const res = await fetch(`${API_BASE}/deep-cleaning/review/${String(editing.id)}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify(reviewPayload),
-          })
-          if (!res.ok) {
-            const j = await res.json().catch(() => null)
-            throw new Error(j?.message || `HTTP ${res.status}`)
-          }
-          await res.json().catch(() => null)
-        })()
-        await Promise.all([writePromise, reviewPromise])
-        setList(prev => (prev || []).map((x: any) => {
-          if (String(x?.id || '') !== String(editing.id)) return x
-          return {
-            ...x,
-            ...payload,
-            ...(canAudit ? { review_status: reviewPayload.review_status, review_notes: reviewPayload.review_notes } : null),
-          }
-        }))
-        message.success('已保存')
-        setEditing(null)
-        loadList(false)
-        return
-      }
-
-      if (canAudit) {
-        const nextStatus = String(reviewPayload.review_status || 'pending')
-        const nextNotes = String(reviewPayload.review_notes || '')
-        const prevStatus = String(editing.review_status || 'pending')
-        const prevNotes = String(editing.review_notes || '')
-        const changed = nextStatus !== prevStatus || nextNotes !== prevNotes
-        if (changed) {
-          const res = await fetch(`${API_BASE}/deep-cleaning/review/${String(editing.id)}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify(reviewPayload),
-          })
-          if (!res.ok) {
-            const j = await res.json().catch(() => null)
-            throw new Error(j?.message || `HTTP ${res.status}`)
-          }
-          await res.json().catch(() => null)
-          setList(prev => (prev || []).map((x: any) => {
-            if (String(x?.id || '') !== String(editing.id)) return x
-            return { ...x, review_status: reviewPayload.review_status, review_notes: reviewPayload.review_notes }
-          }))
-        }
-      }
-
+      const v = await editForm.validateFields()
+      if ([...editBeforeFiles, ...editAfterFiles, ...editAttachFiles].some(f => f.status === 'uploading' || f.status === 'error')) throw new Error('请等待材料上传成功后再保存')
+      await apiUpdate('property_deep_cleaning', String(editing.id), {
+        started_at: combineDateAndTimeToIso(editing.occurred_at || editing.completed_at || dayjs(), v.started_time),
+        ended_at: combineDateAndTimeToIso(editing.occurred_at || editing.completed_at || dayjs(), v.ended_time),
+        duration_minutes: v.duration_minutes ?? null,
+        consumables: Array.isArray(v.consumables) ? v.consumables : [],
+        urgency: v.urgency, ...deepCleaningSubmitterEditPatch(editing.submitter_name, v.submitter_name),
+        category: v.category || '', details: String(v.details || ''),
+        invoice_description_en: String(v.invoice_description_en || ''), notes: String(v.notes || ''),
+        repair_notes: String(v.repair_notes || ''),
+        photo_urls: deepCleaningMediaReferences(editBeforeFiles.map(f => f.url || (f.response as any)?.url)),
+        repair_photo_urls: deepCleaningMediaReferences(editAfterFiles.map(f => f.url || (f.response as any)?.url)),
+        attachment_urls: deepCleaningMediaReferences(editAttachFiles.map(f => f.url || (f.response as any)?.url)),
+        checklist: Array.isArray(v.checklist) ? v.checklist : [],
+      })
       message.success('已保存')
       setEditing(null)
-      loadList(false)
-    } catch (e: any) {
-      message.error(e?.message || '保存失败')
-    } finally {
-      setSavingEdit(false)
+      await loadList(false)
+    } catch (e: any) { if (!e?.errorFields) message.error(e?.message || '保存失败') }
+    finally { setSavingEdit(false) }
+  }
+
+  async function openWorkflow(row: DeepCleaningRecord, action: 'assign' | 'review' | 'complete') {
+    if (!deepCleaningCanAct(row, action)) return
+    workflowForm.resetFields()
+    setCompleteFiles(toUploadFileList(row.repair_photo_urls))
+    setCompleteBeforeFiles([])
+    workflowForm.setFieldsValue(action === 'assign' ? {
+      assignee_id: row.assignee_id || undefined, scheduled_date: row.eta ? dayjs(row.eta) : null,
+    } : {
+      pricing_mode: row.pricing_mode === 'items' ? 'items' : 'total',
+      total_amount: row.total_cost ?? undefined, price_items: row.price_items || [],
+      pay_method: row.pay_method || undefined, gst_type: row.gst_type || undefined,
+      review_notes: '', completion_note: row.repair_notes || '',
+    })
+    setWorkflow({ row, action, operationId: newDeepCleaningOperationId() })
+    if (action === 'assign' || (action === 'review' && deepCleaningNeedsReviewAssignee(row))) {
+      setExecutorOptions([]); setExecutorError('')
+      try {
+        const users = await getJSON<{ id: string; name: string }[]>('/deep-cleaning/executors')
+        setExecutorOptions(users.map(u => ({ value: u.id, label: u.name })))
+      } catch { setExecutorError('人员加载失败，请关闭后重试。') }
     }
+  }
+
+  function syncWorkflowRecord(incoming: DeepCleaningRecord) {
+    setList(previous => previous.map(row => mergeDeepCleaningAuthoritativeRow(row, incoming)))
+    setViewing(previous => previous ? mergeDeepCleaningAuthoritativeRow(previous, incoming) : null)
+    if (editing && String(editing.id) === String(incoming.id)) {
+      setEditing(previous => previous ? mergeDeepCleaningAuthoritativeRow(previous, incoming) : null)
+      // Never reset the ordinary form here: action receipts update headers and
+      // only untouched completion evidence, preserving any current local draft.
+      if (JSON.stringify(deepCleaningMediaReferences(editBeforeFiles.map(file => file.url))) === JSON.stringify(deepCleaningMediaReferences(editing.photo_urls))) {
+        setEditBeforeFiles(toUploadFileList(incoming.photo_urls ?? editing.photo_urls))
+      }
+      if (JSON.stringify(deepCleaningMediaReferences(editAfterFiles.map(file => file.url))) === JSON.stringify(deepCleaningMediaReferences(editing.repair_photo_urls))) {
+        setEditAfterFiles(toUploadFileList(incoming.repair_photo_urls ?? editing.repair_photo_urls))
+      }
+      if (incoming.repair_notes !== undefined && editForm.getFieldValue('repair_notes') === (editing.repair_notes || '')) {
+        editForm.setFieldValue('repair_notes', incoming.repair_notes)
+        const original = JSON.parse(editSnapshotRef.current || '{}')
+        editSnapshotRef.current = JSON.stringify({ ...original, repair_notes: incoming.repair_notes })
+      }
+    }
+  }
+
+  function openEditorWorkflow(action: 'assign' | 'review' | 'complete') {
+    if (!editing) return
+    const refs = (files: UploadFile[]) => deepCleaningMediaReferences(files.map(file => file.url || (file.response as any)?.url))
+    const changed = JSON.stringify(editForm.getFieldsValue(true)) !== editSnapshotRef.current
+      || JSON.stringify(refs(editBeforeFiles)) !== JSON.stringify(deepCleaningMediaReferences(editing.photo_urls))
+      || JSON.stringify(refs(editAfterFiles)) !== JSON.stringify(deepCleaningMediaReferences(editing.repair_photo_urls))
+      || JSON.stringify(refs(editAttachFiles)) !== JSON.stringify(deepCleaningMediaReferences(editing.attachment_urls))
+      || [...editBeforeFiles, ...editAfterFiles, ...editAttachFiles].some(file => file.status === 'uploading' || file.status === 'error')
+    if (changed) {
+      modal.info({ title: '请先保存当前编辑', content: '未保存的内容仍保留在编辑抽屉。请先保存，或取消本次编辑，再进行派工、完成提交或审核。流程操作不会自动保存这些修改。' })
+      return
+    }
+    void openWorkflow(editing, action)
+  }
+
+  async function submitWorkflow() {
+    if (!workflow || savingWorkflow) return
+    setSavingWorkflow(true)
+    try {
+      const v = await workflowForm.validateFields()
+      if (workflow.action === 'complete' && [...completeFiles, ...completeBeforeFiles].some(f => f.status === 'uploading' || f.status === 'error')) throw new Error('请等待材料上传成功后再提交')
+      const completionPhotos = deepCleaningMediaReferences(completeFiles.map(f => f.url || (f.response as any)?.url))
+      if (workflow.action === 'complete' && !completionPhotos.length) throw new Error('请上传清洁后照片')
+      const payload = workflow.action === 'complete' ? deepCleaningCompletionPayload(completionPhotos, completeBeforeFiles.map(f => f.url || (f.response as any)?.url), v.completion_note, workflow.operationId) : workflow.action === 'review' ? deepCleaningReviewPayload(v, workflow.operationId, workflow.row) : {
+        assignee_id: v.assignee_id, scheduled_date: v.scheduled_date ? dayjs(v.scheduled_date).format('YYYY-MM-DD') : null,
+        operation_id: workflow.operationId,
+      }
+      const res = await fetch(`${API_BASE}/deep-cleaning/records/${encodeURIComponent(workflow.row.id)}/workflow/${workflow.action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok) throw new Error(data?.message || data?.error || `HTTP ${res.status}`)
+      if (data && String(data.id || '') === String(workflow.row.id)) syncWorkflowRecord(data)
+      message.success(workflow.action === 'review' ? '审核已通过' : workflow.action === 'complete' ? '已提交，等待管理员审核' : '已分配')
+      setWorkflow(null)
+      await loadList(false)
+    } catch (e: any) { if (!e?.errorFields) message.error(e?.message || '操作失败，请重试') }
+    finally { setSavingWorkflow(false) }
   }
 
   async function remove(id: string) {
@@ -675,8 +651,8 @@ export default function DeepCleaningRecordsPage() {
       return deepCleaningDate(v)
     } },
     { title:'问题描述', width: 260, ellipsis: true, render: (_: any, r: DeepCleaningRecord) => deepCleaningSummary(r) || '-' },
-    { title:'提交人员', dataIndex:'submitter_name', width: 160, ellipsis: true, render:(v:string, r:any)=> String(v || (r as any)?.created_by || '-') },
-    { title:'清洁人员', dataIndex:'worker_name', width: 140, ellipsis: true, render:(v:string)=> String(v || '-') },
+    { title:'提交人员', dataIndex:'submitter_name', width: 160, ellipsis: true, render:(_v:string, r:DeepCleaningRecord)=> deepCleaningSubmitterDisplay(r) },
+    { title:'执行人员', dataIndex:'worker_name', width: 180, ellipsis: true, render:(_:string, r: DeepCleaningRecord)=> deepCleaningExecutorLabel(r, userOptions) },
     { title:'提交时间', dataIndex:'submitted_at', width: 160, render:(v:string, r: any)=> deepCleaningDate(v || r.created_at, 'YYYY-MM-DD HH:mm') },
     { title:'总费用', dataIndex:'total_cost', width: 120, render: (_: any, r: any) => {
       const v = (r as any)?.total_cost
@@ -686,16 +662,19 @@ export default function DeepCleaningRecordsPage() {
     { title:'扣款方式', dataIndex:'pay_method', width: 140, render: (v: any) => payMethodLabel(v) },
     { title:'GST', dataIndex:'gst_type', width: 140, render: (v: any) => gstTypeLabel(v) },
     { title:'区域', width: 140, render: (_: any, r: DeepCleaningRecord) => deepCleaningAreas(r) || '-' },
-    { title:'状态', dataIndex:'status', width: 120, render:(s:string)=> statusTag(s) },
+    { title:'状态', dataIndex:'status', width: 120, render:(s:string, r: DeepCleaningRecord)=> statusTag(r.workflow_status || s) },
     { title:'审核', dataIndex:'review_status', width: 120, render:(s:string)=> reviewTag(s) },
-    { title:'操作', width: 320, fixed: 'right' as const, render: (_:any, r:DeepCleaningRecord) => (
-      <Space wrap>
-        <Button onClick={()=>setViewing(r)}>详情</Button>
-        <Button onClick={()=>shareLink(r)}>分享</Button>
-        <Button onClick={()=>openExportPdf(r)} loading={downloadingId === String(r.id)} disabled={!canDownload}>导出PDF</Button>
-        <Button onClick={()=>openEdit(r)} disabled={!(canWrite || canAudit)}>{canWrite ? '编辑' : '审核'}</Button>
-        <Button danger onClick={()=>remove(String(r.id))} disabled={!hasPerm('property_deep_cleaning.delete')}>删除</Button>
-      </Space>
+    { title:'操作', width: 560, fixed: 'right' as const, render: (_:any, r:DeepCleaningRecord) => (
+      <TableRowActions actions={[
+        { key: 'detail', label: '详情', onClick: () => setViewing(r) },
+        { key: 'edit', label: '编辑', onClick: () => openEdit(r), hidden: !canWrite },
+        { key: 'assign', label: '派工', onClick: () => { void openWorkflow(r, 'assign') }, hidden: !deepCleaningCanAct(r, 'assign') },
+        { key: 'complete', label: '提交待审核', onClick: () => { void openWorkflow(r, 'complete') }, hidden: !deepCleaningCanAct(r, 'complete') },
+        { key: 'review', label: '审核', onClick: () => { void openWorkflow(r, 'review') }, hidden: !deepCleaningCanAct(r, 'review') },
+        { key: 'share', label: '分享', onClick: () => { void shareLink(r) } },
+        { key: 'export', label: '导出PDF', onClick: () => { void openExportPdf(r) }, loading: downloadingId === String(r.id), hidden: !canDownload },
+        { key: 'delete', label: '删除', onClick: () => { void remove(String(r.id)) }, danger: true, hidden: !hasPerm('property_deep_cleaning.delete') },
+      ]} />
     ) },
   ]
 
@@ -703,7 +682,7 @@ export default function DeepCleaningRecordsPage() {
     <Space direction="vertical" style={{ width:'100%' }}>
       {process.env.NODE_ENV === 'development' && process.env.NEXT_PUBLIC_DEEP_CLEANING_PREVIEW === 'synthetic' ? <Alert type="info" showIcon message="开发预览：仅使用模拟记录与示例图片，不连接生产数据库；保存、上传、删除及导出已由预览服务禁用。" /> : null}
       <Card title="深度清洁记录" extra={
-        <Button type="primary" onClick={openCreate} disabled={!hasPerm('property_deep_cleaning.write')}>新增深度清洁</Button>
+        <Button type="primary" onClick={openCreate} disabled={!canWrite}>新增深度清洁</Button>
       }>
         <Space style={{ width:'100%', marginBottom: 12 }} wrap>
           <Select
@@ -770,10 +749,10 @@ export default function DeepCleaningRecordsPage() {
       </Card>
 
       <Modal open={!!mediaPreview} onCancel={() => setMediaPreview(null)} footer={null} title="材料预览" destroyOnClose>
-        {mediaPreview ? <DeepCleaningMedia references={[mediaPreview]} /> : null}
+        {mediaPreview?.startsWith("blob:") ? (localPreviewVideo ? <video src={mediaPreview} controls style={{ width: "100%", maxHeight: 480, objectFit: "contain" }} /> : <Image src={mediaPreview} alt="待提交材料本地预览" style={{ maxHeight: 480, objectFit: "contain" }} />) : mediaPreview ? <DeepCleaningMedia references={[mediaPreview]} context={mediaPreviewContext} /> : null}
       </Modal>
-      <Modal open={createOpen} onCancel={()=>setCreateOpen(false)} onOk={createSubmit} title="新增深度清洁" okText="保存" width={isMobile ? '100%' : 780}>
-        <Form form={createForm} layout="vertical">
+      <Modal open={createOpen} onCancel={()=>{ if (!savingCreate) setCreateOpen(false) }} onOk={createSubmit} confirmLoading={savingCreate} maskClosable={!savingCreate} closable={!savingCreate} title="新增深度清洁" okText="保存" width={isMobile ? '100%' : 780}>
+        <Form form={createForm} layout="vertical" disabled={savingCreate}>
           <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
             <Form.Item name="property_id" label="房号" rules={[{ required: true, message:'请选择房号' }]}>
               <Select options={propOptions} showSearch optionFilterProp="label" />
@@ -784,23 +763,11 @@ export default function DeepCleaningRecordsPage() {
             <Form.Item name="category" label="区域" rules={[{ required: true, message:'请选择区域' }]}>
               <Select options={catOptions} />
             </Form.Item>
-            <Form.Item name="status" label="状态" rules={[{ required: true }]}>
-              <Select options={statusOptions} />
-            </Form.Item>
-            <Form.Item name="worker_name" label="清洁人员" rules={[{ required: true, message:'请输入清洁人员' }]}>
-              <Input placeholder="例如：Jack / 清洁团队名" />
-            </Form.Item>
-            <Form.Item name="submitter_name" label="提交人员">
-              <Select allowClear showSearch optionFilterProp="label" options={submitterOptions} />
+            <Form.Item name="submitter_name" label="提交人员" extra="记录提交者，不是任务执行人员；保存记录后，通过派工指定执行人员。">
+              <Select allowClear showSearch optionFilterProp="label" options={submitterOptions} placeholder="未记录（可选择提交人员）" />
             </Form.Item>
             <Form.Item name="urgency" label="紧急程度">
               <Select options={urgencyOptions} />
-            </Form.Item>
-            <Form.Item name="eta" label="预计完成日期">
-              <DatePicker style={{ width:'100%' }} />
-            </Form.Item>
-            <Form.Item name="completed_at" label="完成时间">
-              <DatePicker showTime style={{ width:'100%' }} />
             </Form.Item>
           </div>
           <Form.Item name="details" label="清洁摘要（可写清洁重点）">
@@ -845,7 +812,7 @@ export default function DeepCleaningRecordsPage() {
           <Form.Item name="notes" label="备注">
             <Input.TextArea rows={2} />
           </Form.Item>
-          <Card size="small" title="清洁时间" style={{ marginBottom: 12 }}>
+          <Card size="small" title="清洁时间（可选，不影响固定价格）" style={{ marginBottom: 12 }}>
             <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
               <Form.Item name="started_time" label="开始时间">
                 <TimePicker
@@ -901,30 +868,7 @@ export default function DeepCleaningRecordsPage() {
               </Form.Item>
             </div>
           </Card>
-          <Card size="small" title="费用信息" style={{ marginBottom: 12 }}>
-            <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
-              <Form.Item name="labor_cost" label="人工费用（可选）">
-                <InputNumber min={0} style={{ width:'100%' }} />
-              </Form.Item>
-              <Form.Item name="pay_method" label="扣款方式">
-                <Select options={payMethodOptions} />
-              </Form.Item>
-              <Form.Item name="gst_type" label="GST">
-                <Select options={gstTypeOptions} />
-              </Form.Item>
-            </div>
-            <Form.Item label="总费用">
-              <Form.Item
-                noStyle
-                shouldUpdate={(p, c) => p.labor_cost !== c.labor_cost || p.consumables !== c.consumables}
-              >
-                {() => {
-                  const labor = createForm.getFieldValue('labor_cost')
-                  const cons = createForm.getFieldValue('consumables')
-                  return <span>{fmtAmount(computeTotalCost(labor, cons))}</span>
-                }}
-              </Form.Item>
-            </Form.Item>
+          <Card size="small" title="耗材记录（可选）" style={{ marginBottom: 12 }}>
             <Form.Item name="consumables" label="耗材记录">
               <Form.List name="consumables">
                 {(fields, { add, remove }) => (
@@ -952,43 +896,41 @@ export default function DeepCleaningRecordsPage() {
               </Form.List>
             </Form.Item>
           </Card>
+          <Alert type="info" message="创建后选择真实人员派工；价格与扣款方式由管理员在完成审核时确认。固定价无需填写工时。" />
         </Form>
       </Modal>
 
       <Drawer
         open={!!editing}
         destroyOnClose
-        onClose={() => setEditing(null)}
+        onClose={() => { if (!savingEdit) setEditing(null) }}
+        closable={!savingEdit}
+        maskClosable={!savingEdit}
         title="编辑深度清洁"
         width={isMobile ? '100%' : 860}
         footer={
           <div style={{ textAlign:'right' }}>
             <Space>
               <Button onClick={() => setEditing(null)} disabled={savingEdit}>取消</Button>
-              <Button type="primary" onClick={saveEdit} loading={savingEdit} disabled={!(canWrite || canAudit) || savingEdit}>保存</Button>
+              <Button type="primary" onClick={saveEdit} loading={savingEdit} disabled={!canWrite || savingEdit}>保存</Button>
             </Space>
           </div>
         }
       >
-        <Form form={editForm} layout="vertical">
+        <Form form={editForm} layout="vertical" disabled={savingEdit}>
+          <Descriptions size="small" column={2}><Descriptions.Item label="状态">{statusTag(editing?.workflow_status || editing?.status)}</Descriptions.Item><Descriptions.Item label="执行人员">{deepCleaningExecutorLabel(editing || {}, userOptions)}</Descriptions.Item></Descriptions>
+          <Alert type="info" showIcon style={{ marginBottom: 12 }} message="状态由派工、提交待审核、管理员审核依次变更，不直接修改状态。执行人员与下方提交人员是不同字段。" />
+          {editing ? <Space wrap style={{ marginBottom: 16 }}>
+            {deepCleaningCanAct(editing, 'assign') ? <Button onClick={() => openEditorWorkflow('assign')}>{editing.assignee_id ? '改派执行人员' : '派工'}</Button> : null}
+            {deepCleaningCanAct(editing, 'complete') ? <Button onClick={() => openEditorWorkflow('complete')}>提交待审核</Button> : null}
+            {deepCleaningCanAct(editing, 'review') ? <Button onClick={() => openEditorWorkflow('review')}>管理员审核</Button> : null}
+          </Space> : null}
           <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
-            <Form.Item name="status" label="状态" rules={[{ required: true }]}>
-              <Select options={statusOptions} />
-            </Form.Item>
             <Form.Item name="urgency" label="紧急程度">
               <Select options={urgencyOptions} />
             </Form.Item>
-            <Form.Item name="worker_name" label="清洁人员" rules={[{ required: true, message:'请输入清洁人员' }]}>
-              <Input placeholder="例如：Jack / 清洁团队名" />
-            </Form.Item>
-            <Form.Item name="submitter_name" label="提交人员">
-              <Select allowClear showSearch optionFilterProp="label" options={submitterOptions} />
-            </Form.Item>
-            <Form.Item name="eta" label="预计完成日期">
-              <DatePicker style={{ width:'100%' }} />
-            </Form.Item>
-            <Form.Item name="completed_at" label="完成时间">
-              <DatePicker showTime style={{ width:'100%' }} />
+            <Form.Item name="submitter_name" label="提交人员" extra={editing?.submitter_name?.trim() ? "记录提交者，不是任务执行人员。" : deepCleaningSubmitterDisplay(editing) === "未记录" ? "提交人员未记录；不会用执行人员代替。可手动选择，不选择则保持原记录。" : `当前显示：${deepCleaningSubmitterDisplay(editing)}（经核验的创建账号）；此显示不会自动写入提交人员字段。`}>
+              <Select allowClear showSearch optionFilterProp="label" options={submitterOptions} placeholder="未记录（可选择提交人员）" />
             </Form.Item>
             <Form.Item name="category" label="区域" extra={!editing?.category && editing && deepCleaningAreas(editing) ? `原反馈区域：${deepCleaningAreas(editing)}；此处保留原执行区域设置。` : undefined}>
               <Select options={catOptions} />
@@ -1030,31 +972,28 @@ export default function DeepCleaningRecordsPage() {
             <Space direction="vertical" style={{ width:'100%' }}>
               <div>
                 <div style={{ marginBottom: 6, fontWeight: 600 }}>清洁前（图片/视频）</div>
-                <DeepCleaningMedia references={editBeforeFiles.map(file => file.url).filter(Boolean)} />
-                <Upload {...makeUploadProps(setEditBeforeFiles)} fileList={editBeforeFiles} listType="picture">
+                {editing ? <DeepCleaningMedia context={editing} references={editBeforeFiles.filter(file => !file.originFileObj).map(file => file.url).filter(Boolean)} /> : null}
+                <Upload {...makeUploadProps(setEditBeforeFiles, false, editing)} fileList={editBeforeFiles}>
                   <Button>上传</Button>
                 </Upload>
               </div>
               <div>
                 <div style={{ marginBottom: 6, fontWeight: 600 }}>清洁后（图片/视频）</div>
-                <DeepCleaningMedia references={editAfterFiles.map(file => file.url).filter(Boolean)} />
-                <Upload {...makeUploadProps(setEditAfterFiles)} fileList={editAfterFiles} listType="picture">
-                  <Button>上传</Button>
-                </Upload>
+                {editing ? <DeepCleaningMedia context={editing} references={editAfterFiles.filter(file => !file.originFileObj).map(file => file.url).filter(Boolean)} /> : null}
+                <Upload {...makeUploadProps(setEditAfterFiles, false, editing)} fileList={editAfterFiles}><Button>上传</Button></Upload>
+                <Typography.Text type="secondary">此处仅保存照片，不会自动提交完成或通过审核。</Typography.Text>
               </div>
               <div>
                 <div style={{ marginBottom: 6, fontWeight: 600 }}>附件</div>
-                <DeepCleaningMedia references={editAttachFiles.map(file => file.url).filter(Boolean)} />
-                <Upload {...makeUploadProps(setEditAttachFiles)} fileList={editAttachFiles}>
+                {editing ? <DeepCleaningMedia context={editing} references={deepCleaningVisibleAttachments(editAttachFiles.filter(file => !file.originFileObj).map(file => file.url), editBeforeFiles.map(file => file.url), editAfterFiles.map(file => file.url))} /> : null}
+                <Upload {...makeUploadProps(setEditAttachFiles, false, editing)} fileList={editAttachFiles} itemRender={(node, file, files, actions) => deepCleaningVisibleAttachments([file.url], editBeforeFiles.map(f => f.url), editAfterFiles.map(f => f.url)).length || !file.url ? makeUploadProps(setEditAttachFiles, false, editing).itemRender?.(node, file, files, actions) : null}>
                   <Button>上传</Button>
                 </Upload>
               </div>
             </Space>
           </Card>
-          <Form.Item name="repair_notes" label="执行说明（完成确认）">
-            <Input.TextArea rows={3} placeholder="例如：已完成厨房重油污处理，浴室除垢消毒，已更换耗材…" />
-          </Form.Item>
-          <Card size="small" title="清洁时间" style={{ marginBottom: 12 }}>
+          <Form.Item name="repair_notes" label="执行说明"><Input.TextArea rows={3} /></Form.Item>
+          <Card size="small" title="清洁时间（可选，不影响固定价格）" style={{ marginBottom: 12 }}>
             <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
               <Form.Item name="started_time" label="开始时间">
                 <TimePicker
@@ -1110,30 +1049,7 @@ export default function DeepCleaningRecordsPage() {
               </Form.Item>
             </div>
           </Card>
-          <Card size="small" title="费用信息" style={{ marginBottom: 12 }}>
-            <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
-              <Form.Item name="labor_cost" label="人工成本（可选）">
-                <InputNumber min={0} style={{ width:'100%' }} />
-              </Form.Item>
-              <Form.Item name="pay_method" label="扣款方式">
-                <Select options={payMethodOptions} />
-              </Form.Item>
-              <Form.Item name="gst_type" label="GST">
-                <Select options={gstTypeOptions} />
-              </Form.Item>
-            </div>
-            <Form.Item label="总费用">
-              <Form.Item
-                noStyle
-                shouldUpdate={(p, c) => p.labor_cost !== c.labor_cost || p.consumables !== c.consumables}
-              >
-                {() => {
-                  const labor = editForm.getFieldValue('labor_cost')
-                  const cons = editForm.getFieldValue('consumables')
-                  return <span>{fmtAmount(deepCleaningDisplayCost({ labor_cost: labor, consumables: cons }))}</span>
-                }}
-              </Form.Item>
-            </Form.Item>
+          <Card size="small" title="耗材记录（可选）" style={{ marginBottom: 12 }}>
             <Form.Item name="consumables" label="耗材记录">
               <Form.List name="consumables">
                 {(fields, { add, remove }) => (
@@ -1161,19 +1077,61 @@ export default function DeepCleaningRecordsPage() {
               </Form.List>
             </Form.Item>
           </Card>
-          {canAudit ? (
-            <Card size="small" title="结果审核">
-              <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
-                <Form.Item name="review_status" label="审核结果">
-                  <Select options={reviewOptions} />
-                </Form.Item>
-                <div />
-              </div>
-              <Form.Item name="review_notes" label="审核备注">
-                <Input.TextArea rows={3} />
-              </Form.Item>
-            </Card>
-          ) : null}
+          <Alert type="info" message="派工、完成提交与审核由独立操作处理。此处不修改审核金额、扣款方式。工时、耗材仅记录，不会重新计算审核总价。" />
+          <Descriptions size="small" column={2} style={{ marginTop: 12 }}>
+            <Descriptions.Item label="已记录时长">{fmtMinutes(editing?.duration_minutes)}</Descriptions.Item>
+            <Descriptions.Item label="已记录总费用">{fmtAmount(deepCleaningDisplayCost(editing || {}))}</Descriptions.Item>
+            <Descriptions.Item label="扣款方式">{payMethodLabel(editing?.pay_method)}</Descriptions.Item>
+          </Descriptions>
+        </Form>
+      </Drawer>
+
+      <Drawer open={!!workflow} destroyOnClose title={workflow?.action === 'assign' ? '分配深度清洁执行人员' : workflow?.action === 'complete' ? '提交深度清洁完成材料' : '管理员审核深度清洁'} width={isMobile ? '100%' : 640}
+        onClose={() => { if (!savingWorkflow) setWorkflow(null) }} closable={!savingWorkflow} maskClosable={!savingWorkflow}
+        footer={<Space style={{ display: 'flex', justifyContent: 'flex-end' }}><Button disabled={savingWorkflow} onClick={() => setWorkflow(null)}>取消</Button><Button type="primary" loading={savingWorkflow} onClick={submitWorkflow} disabled={savingWorkflow || (workflow?.action === 'assign' && !executorOptions.length)}>{workflow?.action === 'assign' ? '确认派工' : workflow?.action === 'complete' ? '提交待审核' : '确认金额并通过审核'}</Button></Space>}>
+        <Form form={workflowForm} layout="vertical" disabled={savingWorkflow}>
+          {workflow?.action === 'assign' ? <>
+            <Alert type="info" message="分配给系统中的真实人员，无需填写价格。" style={{ marginBottom: 16 }} />
+            {executorError ? <Alert type="error" message={executorError} /> : null}
+            <Form.Item name="assignee_id" label="执行人员" rules={[{ required: true, message: '请选择执行人员' }]}><Select showSearch optionFilterProp="label" options={executorOptions} placeholder="选择人员" /></Form.Item>
+            <Form.Item name="scheduled_date" label="预计完成日期"><DatePicker style={{ width: '100%' }} /></Form.Item>
+          </> : workflow?.action === 'complete' ? <>
+            <Alert type="info" message="提交后进入待审核，无需填写价格。" style={{ marginBottom: 16 }} />
+            <Divider orientation="left">清洁前照片</Divider><DeepCleaningMedia context={workflow?.row} references={workflow.row.photo_urls} />
+            <Typography.Paragraph type="secondary">已有清洁前照片保留不变；新上传材料可点击文件名本地预览，提交成功后才关联记录并进入待审核。</Typography.Paragraph>
+            <Upload {...makeUploadProps(setCompleteBeforeFiles, true, workflow.row)} fileList={completeBeforeFiles}><Button>补传清洁前照片</Button></Upload>
+            <Divider orientation="left">清洁后照片</Divider><DeepCleaningMedia context={workflow?.row} references={completeFiles.filter(file => !file.originFileObj).map(file => file.url).filter(Boolean)} />
+            <Upload {...makeUploadProps(setCompleteFiles, true, workflow.row)} fileList={completeFiles}><Button>上传清洁后照片</Button></Upload>
+            <Form.Item name="completion_note" label="执行说明"><Input.TextArea rows={3} /></Form.Item>
+          </> : <>
+            <Divider orientation="left">清洁前照片</Divider><DeepCleaningMedia context={workflow?.row} references={workflow?.row.photo_urls} />
+            <Divider orientation="left">清洁后照片</Divider><DeepCleaningMedia context={workflow?.row} references={workflow?.row.repair_photo_urls} />
+            <Descriptions size="small"><Descriptions.Item label="执行说明">{workflow?.row.repair_notes || '-'}</Descriptions.Item></Descriptions>
+            <Alert type="info" message="确认的是整单最终费用，已包含耗材，不会再次叠加。固定价格无需填写工时。本次不进入人员结算。" style={{ marginBottom: 16 }} />
+            {workflow && deepCleaningNeedsReviewAssignee(workflow.row) ? <>
+              <Alert type="warning" message="这条历史记录尚未关联真实执行人。请选择人员，随本次审核一起确认；不会自动按旧姓名匹配。" style={{ marginBottom: 16 }} />
+              {executorError ? <Alert type="error" message={executorError} /> : null}
+              <Form.Item name="assignee_id" label="实际执行人" rules={[{ required: true, message: '请选择实际执行人' }]}><Select showSearch optionFilterProp="label" options={executorOptions} placeholder="请选择实际执行人，不会自动匹配" /></Form.Item>
+            </> : null}
+            <Form.Item name="pricing_mode" label="定价方式" rules={[{ required: true }]}><Select options={[{ value: 'total', label: '整单总价' }, { value: 'items', label: '分项目价格' }]} /></Form.Item>
+            <Form.Item noStyle shouldUpdate={(p, c) => p.pricing_mode !== c.pricing_mode}>
+              {() => workflowForm.getFieldValue('pricing_mode') === 'items' ? <Form.List name="price_items">
+                {(fields, { add, remove }) => <Space direction="vertical" style={{ width: '100%', marginBottom: 16 }}>
+                  {fields.map(f => <div key={f.key} style={{ display: 'grid', gridTemplateColumns: '1fr 130px 60px', gap: 8 }}>
+                    <Form.Item name={[f.name, 'id']} hidden><Input /></Form.Item>
+                    <Form.Item name={[f.name, 'description']} rules={[{ required: true, whitespace: true, message: '请输入项目' }]}><Input placeholder="项目" /></Form.Item>
+                    <Form.Item name={[f.name, 'amount']} rules={[{ required: true, message: '请输入金额' }]}><InputNumber min={0} precision={2} style={{ width: '100%' }} placeholder="金额" /></Form.Item>
+                    <Button onClick={() => remove(f.name)}>删除</Button>
+                  </div>)}
+                  <Button onClick={() => add({ id: newDeepCleaningOperationId(), description: '' })}>新增价格项目</Button>
+                  <Form.Item noStyle shouldUpdate>{() => <Typography.Text>合计：{fmtAmount((workflowForm.getFieldValue('price_items') || []).reduce((sum: number, item: any) => sum + (Number(item?.amount) || 0), 0))}</Typography.Text>}</Form.Item>
+                </Space>}
+              </Form.List> : <Form.Item name="total_amount" label="整单总价（AUD）" rules={[{ required: true, message: '请确认整单金额，零费用请填 0' }]}><InputNumber min={0} precision={2} style={{ width: '100%' }} /></Form.Item>}
+            </Form.Item>
+            <Form.Item name="pay_method" label="扣款方式" rules={[{ required: true, message: '请选择扣款方式' }]}><Select options={payMethodOptions} /></Form.Item>
+            <Form.Item name="gst_type" label="GST" rules={[{ required: true, message: '请选择 GST' }]}><Select options={gstTypeOptions} /></Form.Item>
+            <Form.Item name="review_notes" label="审核备注"><Input.TextArea rows={3} /></Form.Item>
+          </>}
         </Form>
       </Drawer>
 
@@ -1219,7 +1177,7 @@ export default function DeepCleaningRecordsPage() {
         footer={
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <Button onClick={() => setViewing(null)}>关闭</Button>
-            {viewing && (canWrite || canAudit) ? <Button type="primary" onClick={() => { const v = viewing; setViewing(null); openEdit(v) }}>编辑记录</Button> : null}
+            {viewing && canWrite ? <Button type="primary" onClick={() => { const v = viewing; setViewing(null); openEdit(v) }}>编辑记录</Button> : null}
           </div>
         }
       >
@@ -1227,12 +1185,12 @@ export default function DeepCleaningRecordsPage() {
           <>
             <Descriptions title="基本信息" bordered column={2} labelStyle={{ width: '120px' }}>
               <Descriptions.Item label="工单号">{String(viewing?.work_no || viewing?.id || '-')}</Descriptions.Item>
-              <Descriptions.Item label="状态">{statusTag(viewing?.status)}</Descriptions.Item>
+              <Descriptions.Item label="状态">{statusTag(viewing?.workflow_status || viewing?.status)}</Descriptions.Item>
               <Descriptions.Item label="房号">{String(viewing?.code || viewing?.property_code || viewing?.property_id || '-')}</Descriptions.Item>
               <Descriptions.Item label="区域">{deepCleaningAreas(viewing) || '-'}</Descriptions.Item>
               <Descriptions.Item label="记录日期">{deepCleaningDate(viewing.completed_at || viewing.occurred_at)}</Descriptions.Item>
-              <Descriptions.Item label="清洁人员">{String(viewing?.worker_name || '-')}</Descriptions.Item>
-              <Descriptions.Item label="提交人员">{String(viewing.submitter_name || viewing.created_by || '-')}</Descriptions.Item>
+              <Descriptions.Item label="执行人员">{deepCleaningExecutorLabel(viewing || {}, userOptions)}</Descriptions.Item>
+              <Descriptions.Item label="提交人员">{deepCleaningSubmitterDisplay(viewing)}</Descriptions.Item>
               <Descriptions.Item label="完成时间">{deepCleaningDate(viewing.completed_at, 'YYYY-MM-DD HH:mm')}</Descriptions.Item>
               <Descriptions.Item label="提交时间">{deepCleaningDate(viewing.submitted_at || viewing.created_at, 'YYYY-MM-DD HH:mm')}</Descriptions.Item>
               <Descriptions.Item label="总费用">{fmtAmount(deepCleaningDisplayCost(viewing))}</Descriptions.Item>
@@ -1240,6 +1198,7 @@ export default function DeepCleaningRecordsPage() {
               <Descriptions.Item label="GST">{gstTypeLabel((viewing as any)?.gst_type)}</Descriptions.Item>
             </Descriptions>
 
+            {viewing.pricing_mode === 'items' && viewing.price_items?.length ? <><Divider orientation="left">审核价格项目</Divider><Table size="small" pagination={false} rowKey="id" dataSource={viewing.price_items} columns={[{ title: '项目', dataIndex: 'description' }, { title: '金额', dataIndex: 'amount', render: fmtAmount }]} /></> : null}
             <Divider orientation="left">清洁项目</Divider>
             <Descriptions bordered column={2} labelStyle={{ width: '120px' }}>
             <Descriptions.Item label="项目描述" span={2} style={{ whiteSpace: 'pre-wrap' }}>
@@ -1259,21 +1218,20 @@ export default function DeepCleaningRecordsPage() {
             <Divider orientation="left">清洁前照片</Divider>
             <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
               <Descriptions.Item label="照片">
-                <DeepCleaningMedia references={viewing.photo_urls} />
+                <DeepCleaningMedia context={viewing} references={viewing.photo_urls} />
               </Descriptions.Item>
             </Descriptions>
 
             <Divider orientation="left">清洁后照片</Divider>
             <Descriptions bordered column={1} labelStyle={{ width: '120px' }}>
               <Descriptions.Item label="照片">
-                <DeepCleaningMedia references={viewing.repair_photo_urls} />
+                <DeepCleaningMedia context={viewing} references={viewing.repair_photo_urls} />
               </Descriptions.Item>
             </Descriptions>
 
             {(() => {
-              const shown = new Set([...deepCleaningMediaReferences(viewing.photo_urls), ...deepCleaningMediaReferences(viewing.repair_photo_urls)])
-              const attachments = deepCleaningMediaReferences(viewing.attachment_urls).filter(ref => !shown.has(ref))
-              return attachments.length ? <><Divider orientation="left">附件</Divider><DeepCleaningMedia references={attachments} /></> : null
+              const attachments = deepCleaningVisibleAttachments(viewing.attachment_urls, viewing.photo_urls, viewing.repair_photo_urls)
+              return attachments.length ? <><Divider orientation="left">附件</Divider><DeepCleaningMedia context={viewing} references={attachments} /></> : null
             })()}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>

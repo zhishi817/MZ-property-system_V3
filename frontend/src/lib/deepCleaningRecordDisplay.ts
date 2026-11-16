@@ -68,19 +68,34 @@ export function deepCleaningMediaReferences(value: unknown): string[] {
   return Array.isArray(value) ? Array.from(new Set(value.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean))) : []
 }
 
+// Display-only deduplication. Keep the original persisted attachment list when
+// editing: hiding an already displayed photo is not authorization to delete it.
+export function deepCleaningVisibleAttachments(attachments: unknown, before: unknown, after: unknown): string[] {
+  const evidence = new Set([...deepCleaningMediaReferences(before), ...deepCleaningMediaReferences(after)])
+  return deepCleaningMediaReferences(attachments).filter(reference => !evidence.has(reference))
+}
+
 // Keep R2 authority intact: only the server may resolve its storage identity.
-export function deepCleaningMediaRequest(reference: string) {
+export type DeepCleaningMediaContext = { id?: string; media_access_work_task_id?: string | null }
+
+export function deepCleaningMediaRequest(reference: string, context?: DeepCleaningMediaContext | null) {
+  const scoped = (url: string) => {
+    const params: Record<string, string> | null = context?.media_access_work_task_id
+      ? { work_task_id: context.media_access_work_task_id }
+      : context?.id ? { deep_record_id: context.id } : null
+    return params ? `${url}&${new URLSearchParams(params)}` : url
+  }
   const proxy = maintenanceFeedbackMediaProxyUrl(reference)
-  if (proxy) return { url: proxy, authenticated: true }
+  if (proxy) return { url: scoped(proxy), authenticated: true }
   if (/^r2:\/\//i.test(reference) && API_BASE) {
-    return { url: `${API_BASE}/cleaning-app/media/image?${new URLSearchParams({ url: reference })}`, authenticated: true }
+    return { url: scoped(`${API_BASE}/cleaning-app/media/image?${new URLSearchParams({ url: reference })}`), authenticated: true }
   }
   if (/^https?:\/\//i.test(reference) || /^\/uploads\//.test(reference)) return { url: reference, authenticated: false }
   return null
 }
 
-export async function loadDeepCleaningMedia(reference: string, signal?: AbortSignal) {
-  const request = deepCleaningMediaRequest(reference)
+export async function loadDeepCleaningMedia(reference: string, signal?: AbortSignal, context?: DeepCleaningMediaContext | null) {
+  const request = deepCleaningMediaRequest(reference, context)
   if (!request) throw new Error('unsupported_media_reference')
   if (!request.authenticated) return { src: request.url, revoke: false }
   const response = await fetch(request.url, { headers: authHeaders(), signal })
@@ -97,4 +112,18 @@ export function deepCleaningNonImageLink(reference: string) {
   const path = reference.split(/[?#]/)[0]
   const extension = path.match(/\.([a-z0-9]{1,8})$/i)?.[1]?.toLowerCase()
   return extension && !['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'heif', 'avif', 'tif', 'tiff'].includes(extension) ? reference : ''
+}
+
+export function deepCleaningSubmitterDisplay(record: { submitter_name?: unknown; submitter_display_name?: unknown; submitter_display_source?: unknown } | null | undefined) {
+  const recorded = typeof record?.submitter_name === 'string' ? record.submitter_name.trim() : ''
+  if (recorded) return recorded
+  const verified = ['created_by_user_id', 'created_by'].includes(String(record?.submitter_display_source || ''))
+  const name = typeof record?.submitter_display_name === 'string' ? record.submitter_display_name.trim() : ''
+  return verified && name ? name : '未记录'
+}
+
+export function deepCleaningSubmitterEditPatch(original: unknown, current: unknown): { submitter_name?: string } {
+  const before = typeof original === 'string' ? original : ''
+  const after = typeof current === 'string' ? current : ''
+  return before === after ? {} : { submitter_name: after.trim() }
 }

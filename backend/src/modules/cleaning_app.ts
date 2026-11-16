@@ -15,6 +15,7 @@ import { effectiveInspectionMode, isCleaningTaskInspectionSubmitParticipant, isI
 import { CLEANING_IMAGE_FORMAT_ERROR, encodeCleaningImageToJpeg, isImageUploadCandidate, normalizeCleaningImageUpload } from '../lib/cleaningMediaImage'
 import { isCleaningMediaKey } from '../lib/cleaningMediaReference'
 import { completionPhotoLimitViolation } from '../lib/cleaningCompletionPhotoLimits'
+import { cleaningMediaCaptureOwnerMatches, cleaningPhotoWatermarkLines, recordedCaptureTime } from '../lib/cleaningMediaWatermark'
 import { currentOfflineTaskPhotoKeyFromReference, currentMzappTaskPhotoKeyFromReference, isLegacyMzappTaskPhotoPublicUrl, offlineTaskPhotoReferenceVariants, normalizeMzappTaskPhotoKey } from '../lib/mzappTaskPhotoReference'
 import {
   buildIdempotencyPayloadHash,
@@ -888,7 +889,7 @@ router.post('/tasks/:id/start', requirePerm('cleaning_app.tasks.start'), require
         await client.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [require('uuid').v4(), id, 'key_photo', parsed.data.media_url, parsed.data.captured_at || now, parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
+          [require('uuid').v4(), id, 'key_photo', parsed.data.media_url, recordedCaptureTime(parsed.data.captured_at), parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
         )
         const patch = buildKeyPhotoUploadTaskPatch({
           statusBefore: before.status,
@@ -1080,7 +1081,7 @@ router.post('/tasks/:id/issues', requirePerm('cleaning_app.issues.report'), asyn
       const issue = { id: require('uuid').v4(), task_id: id, title: parsed.data.title, detail: parsed.data.detail || null, severity: parsed.data.severity || null }
       await pgInsert('cleaning_issues', issue as any)
       if (parsed.data.media_url) {
-        const media = { id: require('uuid').v4(), task_id: id, type: 'issue_photo', url: parsed.data.media_url, captured_at: new Date().toISOString(), uploader_id: String(user?.sub || '').trim() || null }
+        const media = { id: require('uuid').v4(), task_id: id, type: 'issue_photo', url: parsed.data.media_url, captured_at: null, uploader_id: String(user?.sub || '').trim() || null }
         try { await pgInsert('cleaning_task_media', media as any) } catch {}
       }
       await emitWorkTaskEvent({
@@ -1315,7 +1316,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
               task_id: String(id),
               type: `consumable_item_photo:${String(it.item_id)}`,
               url: photoUrl,
-              captured_at: new Date().toISOString(),
+              captured_at: null,
               uploader_id: String(user?.sub || '').trim() || null,
             } as any, client)
           }
@@ -1342,7 +1343,7 @@ router.post('/tasks/:id/consumables', requirePerm('cleaning_app.tasks.finish'), 
             task_id: String(id),
             type: 'consumable_living_room_photo',
             url: livingRoomPhotoUrl,
-            captured_at: new Date().toISOString(),
+            captured_at: null,
             uploader_id: String(user?.sub || '').trim() || null,
           } as any, client)
         }
@@ -1572,7 +1573,7 @@ router.post('/tasks/:id/inspection-complete', requirePerm('cleaning_app.inspect.
         await client.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
            VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6,$7)`,
-          [require('uuid').v4(), id, parsed.data.media_url, parsed.data.captured_at || now, parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
+          [require('uuid').v4(), id, parsed.data.media_url, recordedCaptureTime(parsed.data.captured_at), parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
         )
         const actionResult = await applyCleaningTaskActionTransition({
           taskId: String(id),
@@ -1786,12 +1787,11 @@ router.post('/tasks/:id/inspection-photos', requireAnyPerm(['cleaning_app.inspec
           await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'inspection_%'`, [id])
           for (const it of parsed.data.items) {
             const type = `inspection_${it.area}`
-            const cap = String(it.captured_at || '').trim()
-            const capturedAt = cap ? new Date(cap) : new Date()
+            const capturedAt = recordedCaptureTime(it.captured_at)
             await client.query(
               `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
                VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-              [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), String(user?.sub || '').trim() || null],
+              [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt, String(user?.sub || '').trim() || null],
             )
           }
         }
@@ -1908,7 +1908,7 @@ router.post('/tasks/:id/inspection-issue-photos', requireAnyPerm(['cleaning_app.
 
       const uuid = require('uuid')
       for (const item of parsed.data.items) {
-        const capturedAt = String(item.captured_at || '').trim() ? new Date(String(item.captured_at)).toISOString() : new Date().toISOString()
+        const capturedAt = recordedCaptureTime(item.captured_at)
         await client.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
            VALUES ($1,$2,'inspection_unclean',$3,$4,$5,$6)`,
@@ -2086,12 +2086,11 @@ router.post('/tasks/:id/completion-photos', requirePerm('cleaning_app.tasks.fini
         await client.query(`DELETE FROM cleaning_task_media WHERE task_id=$1 AND type LIKE 'completion_%'`, [id])
         for (const it of parsed.data.items) {
           const type = `completion_${it.area}`
-          const cap = String(it.captured_at || '').trim()
-          const capturedAt = cap ? new Date(cap) : new Date()
+          const capturedAt = recordedCaptureTime(it.captured_at)
           await client.query(
             `INSERT INTO cleaning_task_media (id, task_id, type, url, note, captured_at, uploader_id)
              VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-            [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt.toISOString(), String(user?.sub || '').trim() || null],
+            [uuid.v4(), id, type, String(it.url), it.note == null ? null : String(it.note || ''), capturedAt, String(user?.sub || '').trim() || null],
           )
         }
         const actionAudit = await recordWorkTaskActionAudit({
@@ -2220,7 +2219,7 @@ router.post('/tasks/:id/lockbox-video', requirePerm('cleaning_app.tasks.finish')
         await client.query(
           `INSERT INTO cleaning_task_media (id, task_id, type, url, captured_at, lat, lng, uploader_id)
            VALUES ($1,$2,'lockbox_video',$3,$4,$5,$6,$7)`,
-          [uuid.v4(), id, String(parsed.data.media_url), String(parsed.data.captured_at || now), parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
+          [uuid.v4(), id, String(parsed.data.media_url), recordedCaptureTime(parsed.data.captured_at), parsed.data.lat ?? null, parsed.data.lng ?? null, String(user?.sub || '').trim() || null],
         )
         const actionResult = await applyCleaningTaskActionTransition({
           taskId: String(id),
@@ -3027,12 +3026,11 @@ router.post('/day-end/backup-keys', requireAnyPerm(['cleaning_app.tasks.finish',
     const userId = String(user.sub || '').trim()
     const date = String(parsed.data.date || '').slice(0, 10)
     for (const it of parsed.data.items) {
-      const cap = String(it.captured_at || '').trim()
-      const capturedAt = cap ? new Date(cap) : null
+      const capturedAt = recordedCaptureTime(it.captured_at)
       await pgPool.query(
         `INSERT INTO cleaning_day_end_media (id, user_id, date, kind, url, captured_at)
          VALUES ($1,$2,$3,'backup_key_return',$4,$5)`,
-        [uuid.v4(), userId, date, String(it.url), capturedAt ? capturedAt.toISOString() : null],
+        [uuid.v4(), userId, date, String(it.url), capturedAt],
       )
     }
     return res.status(201).json({ ok: true })
@@ -3084,12 +3082,11 @@ router.post('/day-end/handover', requireAnyPerm(['cleaning_app.tasks.finish', 'c
       await client.query('BEGIN')
       const insertMediaItems = async (kind: string, items: any[]) => {
         for (const it of items) {
-          const cap = String(it.captured_at || '').trim()
-          const capturedAt = cap ? new Date(cap) : null
+          const capturedAt = recordedCaptureTime(it.captured_at)
           await client.query(
             `INSERT INTO cleaning_day_end_media (id, user_id, date, kind, url, captured_at)
              VALUES ($1,$2,$3,$4,$5,$6)`,
-            [uuid.v4(), userId, date, kind, String(it.url), capturedAt ? capturedAt.toISOString() : null],
+            [uuid.v4(), userId, date, kind, String(it.url), capturedAt],
           )
         }
       }
@@ -3805,6 +3802,7 @@ router.get(
       const requestedWorkTaskIdRaw = String((req.query as any)?.work_task_id || '').trim()
       const requestedWorkTaskId = safeOfflineWorkTaskId(requestedWorkTaskIdRaw)
       const workTaskId = requestedWorkTaskId
+      const deepRecordId = String((req.query as any)?.deep_record_id || '').trim()
       const guestLuggageId = String((req.query as any)?.guest_luggage_id || '').trim()
       const sourceTaskId = String((req.query as any)?.source_task_id || '').trim()
       const propertyHistoryRequested = String((req.query as any)?.history_scope || '').trim() === 'property'
@@ -3824,6 +3822,7 @@ router.get(
       const requestedDayEndUserId = safeDayEndMediaUserId(requestedDayEndUserIdRaw)
       const requestedDayEndDate = safeDayEndMediaDate(requestedDayEndDateRaw)
       const hasDayEndContext = Boolean(requestedDayEndUserIdRaw || requestedDayEndDateRaw)
+      if (deepRecordId && (guestLuggageId || hasDayEndContext || hasScopedMediaContext || propertyHistoryRequested || (requestedWorkTaskIdRaw && !workTaskId))) return res.status(403).json({message:'forbidden_media'})
       if (propertyHistoryRequested && (!sourceTaskId || requestedWorkTaskIdRaw || guestLuggageId || hasDayEndContext || hasScopedMediaContext)) {
         return res.status(403).json({ message: 'forbidden_media' })
       }
@@ -3873,6 +3872,7 @@ router.get(
         if (offlineRows.length && (!offlineRow || (requestedWorkTaskId && String(offlineRow.id || '').trim() !== requestedWorkTaskId))) {
           return res.status(403).json({ code: 'forbidden_media', message: 'forbidden_media' })
         }
+        if (offlineRows.length && deepRecordId) return res.status(403).json({message:'forbidden_media'})
         if (offlineRow && propertyHistoryRequested) return res.status(403).json({ message: 'forbidden_media' })
         if (offlineRow) {
           const user = (req as any).user || {}
@@ -4164,17 +4164,50 @@ router.get(
         ? guestLuggageMediaRow
           ? await findPropertyFeedbackMediaRows(pgPool, key, workTaskId)
           : []
-        : propertyHistoryRequested || !hasTaskOrDayEndMedia || (matchingMediaRows.length > 0 && hasTaskContextMismatch)
+        : deepRecordId || propertyHistoryRequested || !hasTaskOrDayEndMedia || (matchingMediaRows.length > 0 && hasTaskContextMismatch)
           ? await findPropertyFeedbackMediaRows(pgPool, key, workTaskId)
           : []
       const hasGuestLuggageSourceConflict = matchingGuestLuggageRows.length > 0
         && (hasTaskOrDayEndMedia || feedbackMediaRows.length > 0)
       const feedbackMediaRow = feedbackMediaRows.length === 1 ? feedbackMediaRows[0] : null
+      if (deepRecordId && (hasTaskOrDayEndMedia || !feedbackMediaRow || feedbackMediaRow.feedback_source_type !== 'property_deep_cleaning' || String(feedbackMediaRow.feedback_source_id) !== deepRecordId)) return res.status(403).json({message:'forbidden_media'})
       const hasRecordedSourceConflict = hasTaskOrDayEndMedia && !taskOrDayEndMedia
       const hasDayEndFeedbackSourceConflict = matchingDayEndRows.length > 0 && feedbackMediaRows.length > 0
       if (hasTaskContextMismatch
         && !canUseUniqueFeedbackMediaForMismatchedTaskContext(matchingMediaRows, feedbackMediaRows)) {
         return res.status(403).json({ message: 'forbidden_media' })
+      }
+      // Deep-cleaning evidence is scoped to the actual current source/projection,
+      // not the original cleaning task or a synthetic completed-event history.
+      const deepCleaningWorkTaskContextRequested = feedbackMediaRow?.feedback_source_type === 'property_deep_cleaning' && (!!workTaskId || !!deepRecordId)
+      const deepCleaningMediaRow = deepCleaningWorkTaskContextRequested && workTaskId
+        ? (await pgPool.query(`SELECT d.assignee_id::text AS assignee_id,d.photo_urls,d.repair_photo_urls,d.attachment_urls,
+            EXISTS(SELECT 1 FROM users u WHERE u.id::text=$4 AND (u.role='admin' OR EXISTS(SELECT 1 FROM user_roles ur WHERE ur.user_id::text=u.id::text AND ur.role_name='admin'))) AS is_admin
+          FROM work_tasks w JOIN property_deep_cleaning d ON d.id::text=w.source_id::text AND d.property_id::text=w.property_id::text
+          WHERE w.id::text=$1 AND w.source_type='property_deep_cleaning' AND d.id::text=$2 AND d.property_id::text=$3 AND d.deleted_at IS NULL
+            AND w.assignee_id::text IS NOT DISTINCT FROM d.assignee_id::text
+          LIMIT 1`,[workTaskId,String(feedbackMediaRow.feedback_source_id || ''),String(feedbackMediaRow.property_id || ''),userId])).rows[0]
+        : deepCleaningWorkTaskContextRequested && deepRecordId && !requestedWorkTaskIdRaw
+          ? (await pgPool.query(`SELECT d.assignee_id::text AS assignee_id,d.photo_urls,d.repair_photo_urls,d.attachment_urls,
+              EXISTS(SELECT 1 FROM users u WHERE u.id::text=$3 AND (u.role='admin' OR EXISTS(SELECT 1 FROM user_roles ur WHERE ur.user_id::text=u.id::text AND ur.role_name='admin'))) AS is_admin
+            FROM property_deep_cleaning d WHERE d.id::text=$1 AND d.property_id::text=$2 AND d.deleted_at IS NULL
+              AND NOT EXISTS(SELECT 1 FROM work_tasks w WHERE w.source_type='property_deep_cleaning' AND w.source_id::text=d.id::text)
+            LIMIT 1`,[deepRecordId,String(feedbackMediaRow.property_id || ''),userId])).rows[0]
+          : null
+      const hasExactDeepCleaningBinding = !!deepCleaningMediaRow && !!userId
+        && (!sourceTaskId || sourceTaskId === String(feedbackMediaRow?.source_task_id || '').trim())
+        && feedbackMediaRowReferencesKey(deepCleaningMediaRow,key)
+      let canViewDeepCleaningWorkTask = hasExactDeepCleaningBinding
+        && (deepCleaningMediaRow.is_admin === true || (!!workTaskId && String(deepCleaningMediaRow.assignee_id || '') === userId))
+      // Adding an exact work-task context must not revoke access that the old
+      // canonical cleaning-source path already granted. Never fall back when
+      // the supplied work-task/source/property/reference binding is invalid.
+      const deepCanonicalSourceTaskId = String(feedbackMediaRow?.source_task_id || '').trim()
+      if (hasExactDeepCleaningBinding && !canViewDeepCleaningWorkTask && deepCanonicalSourceTaskId) {
+        const canonicalTask=(await pgPool.query(`SELECT id,cleaner_id,inspector_id,assignee_id FROM cleaning_tasks WHERE id::text=$1::text AND ${activeCleaningTaskWhereSql('cleaning_tasks')} LIMIT 1`,[deepCanonicalSourceTaskId])).rows[0]
+        canViewDeepCleaningWorkTask = !!canonicalTask
+          && await canViewMzappRecordedCleaningMedia(user,canonicalTask,userId,'feedback_viewer_context')
+          && await canViewMzappPropertyFeedback(user,feedbackMediaRow,userId)
       }
       const maintenanceWorkTaskResult = feedbackMediaRow?.feedback_source_type === 'property_maintenance' && workTaskId
         ? await pgPool.query(
@@ -4198,6 +4231,7 @@ router.get(
         && !!workTaskId
       const taskBoundFeedback = !historicalFeedbackMedia
         && !maintenanceWorkTaskContextRequested
+        && !deepCleaningWorkTaskContextRequested
         && ['property_maintenance', 'property_deep_cleaning', 'property_daily_necessities']
         .includes(String(feedbackMediaRow?.feedback_source_type || '').trim())
       const feedbackSourceTaskId = taskBoundFeedback
@@ -4221,7 +4255,7 @@ router.get(
         )
         : null
       const feedbackViewerTask = feedbackViewerTaskResult?.rows?.[0] || null
-      const canViewFeedbackTaskContext = historicalFeedbackMedia
+      const canViewFeedbackTaskContext = deepCleaningWorkTaskContextRequested ? canViewDeepCleaningWorkTask : historicalFeedbackMedia
         ? true
         : maintenanceWorkTaskContextRequested
           ? canViewMaintenanceWorkTask
@@ -4233,7 +4267,7 @@ router.get(
               !!feedbackViewerTask
               && await canViewMzappRecordedCleaningMedia(user, feedbackViewerTask, userId, 'feedback_viewer_context')
             )
-      const exactFeedbackSourceMatches = historicalFeedbackMedia
+      const exactFeedbackSourceMatches = deepCleaningWorkTaskContextRequested || historicalFeedbackMedia
         || maintenanceWorkTaskContextRequested
         || !sourceTaskId
         || !taskBoundFeedback
@@ -4242,7 +4276,7 @@ router.get(
         ? await canViewPropertyHistoryFeedbackMedia(pgPool, user, feedbackMediaRow, sourceTaskId, key)
         : false
       const canViewFeedbackMedia = feedbackMediaRow && exactFeedbackSourceMatches && canViewFeedbackTaskContext
-        ? String(feedbackMediaRow.feedback_source_type || '') === 'external_maintenance_orders'
+        ? deepCleaningWorkTaskContextRequested ? canViewDeepCleaningWorkTask : String(feedbackMediaRow.feedback_source_type || '') === 'external_maintenance_orders'
           ? await canViewExternalMaintenanceCompletionMedia(pgPool, user, feedbackMediaRow, userId, workTaskId, key)
           : historicalFeedbackMedia
             ? canViewMzappHistoricalWorkRecordMedia(user, feedbackMediaRow, userId, workTaskId)
@@ -4335,22 +4369,13 @@ router.post(
     const propertyCode = String(body.property_code || '').trim()
     const capturedAt = String(body.captured_at || '').trim()
     const submitter = String(user.username || user.sub || '').trim()
-    const fmt = (iso: string) => {
-      const d = new Date(String(iso || ''))
-      if (Number.isNaN(d.getTime())) return ''
-      const pad2 = (n: number) => String(n).padStart(2, '0')
-      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+    if (!cleaningMediaCaptureOwnerMatches(body.captured_by_user_id, user.sub)) {
+      return res.status(409).json({ code: 'MEDIA_CAPTURE_OWNER_MISMATCH', message: '请使用拍摄账号继续上传；照片已保留', upload_request_id: uploadRequestId })
     }
-    const fallbackLines =
-      wantWatermark && isImage
-        ? [
-            `${propertyCode || '未知房号'}${submitter ? `  ${submitter}` : ''}`.trim(),
-            fmt(capturedAt) || fmt(new Date().toISOString()),
-          ].filter(Boolean)
-        : []
-
-    const lines0 = (watermarkText ? watermarkText.split(/\r?\n/) : fallbackLines).map((x) => String(x || '').trim()).filter(Boolean)
-    const lines = lines0.length > 2 ? lines0.slice(0, 2) : lines0
+    const lines = wantWatermark && isImage ? cleaningPhotoWatermarkLines({
+      propertyCode, purpose, capturedAt, authenticatedName: user.username,
+      capturedByUserId: body.captured_by_user_id,
+    }) : []
 
     console.log(
       `[cleaning-upload] event=received request_id=${uploadRequestId} task_id=${stableUploadKeySegment(taskId, 'unscoped')} media_id=${stableUploadKeySegment(mediaId, 'unscoped')} purpose=${stableUploadKeySegment(purpose, 'unspecified')} size_bytes=${fileBytes} mime=${stableUploadKeySegment(req.file.mimetype, 'unknown')} r2=${hasR2 ? 1 : 0}`,
