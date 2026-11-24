@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { requirePerm } from '../auth'
 import { v4 as uuidv4 } from 'uuid'
 import { isPdfRenderServiceUser } from '../services/pdfRenderServiceAuth'
+import { lockRecurringTemplateIdsTx } from '../lib/propertyPayableTemplateSafety'
 
 export const router = Router()
 const PROPERTY_PAYABLE_TEMPLATE_KIND = 'property_payable'
@@ -266,11 +267,23 @@ export function propertyPayableTemplateHasBusinessChanges(existing: any, nextPat
 async function syncPropertyPayableTemplatesTx(client: any, propertyId: string, rawTemplates: any[] | undefined, actorId: string | null) {
   await ensurePropertyPayableColumns(client)
   const nextTemplates = normalizePayableTemplates(rawTemplates, actorId, propertyId)
+  const candidateIds = await client.query(
+    `SELECT id
+       FROM recurring_payments
+      WHERE property_id = $1
+        AND COALESCE(template_kind, $2) = $3`,
+    [propertyId, 'fixed_expense', PROPERTY_PAYABLE_TEMPLATE_KIND]
+  )
+  await lockRecurringTemplateIdsTx(client, [
+    ...(candidateIds.rows || []).map((row: any) => row.id),
+    ...nextTemplates.map((row) => row.id),
+  ])
   const existingRes = await client.query(
     `SELECT *
        FROM recurring_payments
       WHERE property_id = $1
-        AND COALESCE(template_kind, $2) = $3`,
+        AND COALESCE(template_kind, $2) = $3
+      FOR UPDATE`,
     [propertyId, 'fixed_expense', PROPERTY_PAYABLE_TEMPLATE_KIND]
   )
   const existingRows: any[] = Array.isArray(existingRes.rows) ? existingRes.rows : []

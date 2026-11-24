@@ -25,6 +25,7 @@ import {
 } from '../../../lib/propertyPayables'
 import AuditTrail from '../../../components/AuditTrail'
 import PropertyPayableVendorInput, { rememberPropertyPayableVendors } from '../../../components/PropertyPayableVendorInput'
+import PropertyBills, { type PropertyBillTemplate, type PropertyBillTemplateContext } from './PropertyBills'
 
 type Property = { id: string; code?: string; address?: string; region?: string; archived?: boolean | null }
 type WorkbenchRow = {
@@ -37,6 +38,7 @@ type WorkbenchRow = {
   vendor: string
   category?: string | null
   category_detail?: string | null
+  other_bill_name?: string | null
   start_month_key?: string | null
   due_day_of_month?: number
   bill_expected_day_of_month?: number | null
@@ -91,7 +93,7 @@ type PropertyPayableCalendarDay = {
 }
 type PropertyPayableCalendarData = { month_key: string; days: PropertyPayableCalendarDay[]; unscheduled_count: number }
 type PropertyPayableCalendarDayData = { date: string; total: number; page: number; page_size: number; rows: WorkbenchRow[] }
-type PropertyPayablesView = 'queue' | 'calendar' | 'paid' | 'templates'
+type PropertyPayablesView = 'queue' | 'calendar' | 'paid' | 'templates' | 'property-bills'
 type PropertyPayableStatusFilter = 'bill_not_received' | 'awaiting_confirmation' | 'payment_overdue' | 'payment_due_soon' | 'awaiting_payment' | 'paid'
 
 function monthKey(d: dayjs.Dayjs) {
@@ -169,6 +171,38 @@ function workbenchMonthKey(row?: WorkbenchRow | null, fallback?: string) {
   return String(fallback || '').trim()
 }
 
+function propertyBillTemplateRow(template: PropertyBillTemplate, context: PropertyBillTemplateContext): WorkbenchRow {
+  return {
+    template_id: template.template_id,
+    template_status: template.template_status,
+    property_id: context.property_id,
+    property_code: context.property_code,
+    vendor: template.vendor || '',
+    category: context.category,
+    category_detail: template.category_detail,
+    other_bill_name: template.other_bill_name,
+    amount: template.amount == null ? undefined : Number(template.amount),
+    bill_account_no: template.account_number,
+    start_month_key: template.start_month_key,
+    due_day_of_month: template.due_day_of_month == null ? undefined : Number(template.due_day_of_month),
+    bill_expected_day_of_month: template.bill_expected_day_of_month,
+    bill_period_start_day_of_month: template.bill_period_start_day_of_month,
+    bill_period_start_month_offset: template.bill_period_start_month_offset,
+    bill_period_end_day_of_month: template.bill_period_end_day_of_month,
+    bill_period_end_month_offset: template.bill_period_end_month_offset,
+    frequency_months: template.cycle_months == null ? undefined : Number(template.cycle_months),
+    remind_days_before: template.remind_days_before == null ? undefined : Number(template.remind_days_before),
+    payment_type: template.payment_type,
+    pay_account_name: template.pay_account_name,
+    pay_bsb: template.pay_bsb,
+    pay_account_number: template.pay_account_number,
+    pay_ref: template.pay_ref,
+    bpay_code: template.bpay_code,
+    pay_mobile_number: template.pay_mobile_number,
+    template_note: template.note,
+  }
+}
+
 export default function PropertyPayablesPage() {
   const { message } = App.useApp()
   const [month, setMonth] = useState(dayjs())
@@ -190,19 +224,33 @@ export default function PropertyPayablesPage() {
   const [dayLoading, setDayLoading] = useState(false)
   const [detailRow, setDetailRow] = useState<WorkbenchRow | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
+  const [detailMode, setDetailMode] = useState<'bill' | 'template'>('bill')
+  const [detailTemplate, setDetailTemplate] = useState<PropertyBillTemplate | null>(null)
+  const [detailTemplateContext, setDetailTemplateContext] = useState<PropertyBillTemplateContext | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [confirmingRow, setConfirmingRow] = useState<WorkbenchRow | null>(null)
   const [confirmForm] = Form.useForm()
   const [confirmSaving, setConfirmSaving] = useState(false)
   const [templateOpen, setTemplateOpen] = useState(false)
   const [templateSaving, setTemplateSaving] = useState(false)
+  const [templateNameSaving, setTemplateNameSaving] = useState(false)
   const [editingTemplate, setEditingTemplate] = useState<WorkbenchRow | null>(null)
+  const [templateContext, setTemplateContext] = useState<PropertyBillTemplateContext | null>(null)
+  const [propertyBillsRefreshToken, setPropertyBillsRefreshToken] = useState(0)
+  const [propertyBillDisplayNameStorageReady, setPropertyBillDisplayNameStorageReady] = useState(false)
   const [templateForm] = Form.useForm()
   const watchedTemplatePaymentType = Form.useWatch('payment_type', templateForm) || 'bank_account'
+  const watchedTemplateCategory = Form.useWatch('category', templateForm)
   const [invoiceOpen, setInvoiceOpen] = useState<{ expenseId: string } | null>(null)
   const [invoices, setInvoices] = useState<ExpenseInvoice[]>([])
 
   const selectedMonthKey = monthKey(month)
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('view') === 'templates') {
+      setActiveView('templates')
+    }
+  }, [])
 
   const loadWorkbench = useCallback(async () => {
     setLoading(true)
@@ -435,14 +483,37 @@ export default function PropertyPayablesPage() {
     }
   }
 
-  function openTemplate(row?: WorkbenchRow | null) {
+  function openBillDetail(row: WorkbenchRow) {
+    setDetailMode('bill')
+    setDetailTemplate(null)
+    setDetailTemplateContext(null)
+    setDetailRow(row)
+    setDetailOpen(true)
+  }
+
+  function openPropertyBillTemplateDetail(template: PropertyBillTemplate, context: PropertyBillTemplateContext) {
+    setDetailMode('template')
+    setDetailTemplate(template)
+    setDetailTemplateContext(context)
+    setDetailRow(propertyBillTemplateRow(template, context))
+    setDetailOpen(true)
+  }
+
+  function openPropertyBillTemplateEditor(template: PropertyBillTemplate, context: PropertyBillTemplateContext) {
+    setDetailOpen(false)
+    openTemplate(propertyBillTemplateRow(template, context), context)
+  }
+
+  function openTemplate(row?: WorkbenchRow | null, context?: PropertyBillTemplateContext | null) {
+    setTemplateContext(context || null)
     setEditingTemplate(row || null)
     templateForm.resetFields()
     templateForm.setFieldsValue({
-      property_id: row?.property_id || undefined,
+      property_id: context?.property_id || row?.property_id || undefined,
       vendor: row?.vendor || '',
-      category: row?.category || 'electricity',
+      category: context?.category || row?.category || 'electricity',
       category_detail: row?.category_detail || '',
+      other_bill_name: row?.other_bill_name || '',
       amount: row?.amount == null ? undefined : Number(row.amount || 0),
       bill_account_no: row?.bill_account_no || '',
       start_month_key: toPropertyPayableMonthValue(row?.start_month_key || selectedMonthKey),
@@ -464,6 +535,52 @@ export default function PropertyPayablesPage() {
       note: row?.template_note || '',
     })
     setTemplateOpen(true)
+  }
+
+  function closeTemplate() {
+    if (templateSaving || templateNameSaving) return
+    const refreshPropertyBill = Boolean(templateContext)
+    setTemplateOpen(false)
+    setEditingTemplate(null)
+    setTemplateContext(null)
+    if (refreshPropertyBill) setPropertyBillsRefreshToken((value) => value + 1)
+  }
+
+  async function persistPropertyBillDisplayName(templateId: string, propertyId: string, name: string) {
+    const resp = await fetch(`${API_BASE}/recurring/property-payables/property-bills/${encodeURIComponent(propertyId)}/other/templates/${encodeURIComponent(templateId)}/display-name`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ name }),
+    })
+    const json = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      const error: any = new Error(json?.message || `HTTP ${resp.status}`)
+      error.code = json?.code
+      throw error
+    }
+    return json
+  }
+
+  async function saveTemplateDisplayNameOnly() {
+    if (!editingTemplate || watchedTemplateCategory !== 'other' || templateNameSaving || templateSaving) return
+    const propertyId = String(editingTemplate.property_id || '').trim()
+    const name = String(templateForm.getFieldValue('other_bill_name') || '').trim()
+    if (!propertyBillDisplayNameStorageReady) return message.warning('专用费用名称存储尚未启用，未修改模板或账单。')
+    if (!propertyId) return message.error('模板缺少可靠的房源绑定，未保存费用名称。')
+    if (!name || name.length > 80) return message.error('费用名称需为 1–80 个字符；空白不会清除已有名称。')
+    setTemplateNameSaving(true)
+    try {
+      await persistPropertyBillDisplayName(editingTemplate.template_id, propertyId, name)
+      templateForm.setFieldValue('other_bill_name', name)
+      setEditingTemplate((current) => current ? {...current, other_bill_name: name} : current)
+      setPropertyBillsRefreshToken((value) => value + 1)
+      message.success('费用名称已单独保存，模板金额、账期和已有账单未修改。')
+    } catch (error: any) {
+      if (error?.code === 'display_name_storage_not_ready') setPropertyBillDisplayNameStorageReady(false)
+      message.error(error?.code === 'display_name_storage_not_ready' ? '专用费用名称存储尚未启用，未修改模板或账单。' : '费用名称未保存。')
+    } finally {
+      setTemplateNameSaving(false)
+    }
   }
 
   async function saveTemplate() {
@@ -498,6 +615,8 @@ export default function PropertyPayablesPage() {
     }
     setTemplateSaving(true)
     try {
+      let createdTemplateId = editingTemplate?.template_id || ''
+      let displayNameWarning = false
       if (editingTemplate) {
         const resp = await fetch(`${API_BASE}/recurring/payments/${editingTemplate.template_id}`, {
           method: 'PATCH',
@@ -507,19 +626,32 @@ export default function PropertyPayablesPage() {
         const json = await resp.json().catch(() => ({}))
         if (!resp.ok) throw new Error(json?.message || `HTTP ${resp.status}`)
       } else {
+        createdTemplateId = crypto.randomUUID()
         const resp = await fetch(`${API_BASE}/recurring/payments`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ id: crypto.randomUUID(), ...body, initial_mark: 'unpaid' }),
+          body: JSON.stringify({ id: createdTemplateId, ...body, initial_mark: 'unpaid' }),
         })
         const json = await resp.json().catch(() => ({}))
         if (!resp.ok) throw new Error(json?.message || `HTTP ${resp.status}`)
+        const displayName = String(values.other_bill_name || '').trim()
+        if (body.category === 'other' && propertyBillDisplayNameStorageReady && displayName) {
+          try {
+            await persistPropertyBillDisplayName(createdTemplateId, String(body.property_id || ''), displayName)
+          } catch {
+            displayNameWarning = true
+          }
+        }
       }
       rememberPropertyPayableVendors(body.vendor)
-      message.success(editingTemplate ? '模板已更新' : '模板已创建')
+      if (displayNameWarning) message.warning('模板已创建，但费用名称未保存；可以稍后使用“仅保存费用名称”重试。')
+      else message.success(editingTemplate ? '模板已更新' : '模板已创建')
+      const refreshPropertyBill = Boolean(templateContext)
       setTemplateOpen(false)
       setEditingTemplate(null)
+      setTemplateContext(null)
       await refreshPropertyPayables()
+      if (refreshPropertyBill) setPropertyBillsRefreshToken((value) => value + 1)
     } catch (e: any) {
       message.error(e?.message || '保存模板失败')
     } finally {
@@ -579,11 +711,11 @@ export default function PropertyPayablesPage() {
   }
 
   useEffect(() => {
-    if (!detailRow) return
+    if (!detailRow || detailMode === 'template') return
     const next = dayRows.find((row) => sameWorkbenchRow(row, detailRow))
       || rows.find((row) => sameWorkbenchRow(row, detailRow))
     if (next && next !== detailRow) setDetailRow(next)
-  }, [dayRows, detailRow, rows])
+  }, [dayRows, detailMode, detailRow, rows])
 
   async function openInvoices(row: WorkbenchRow) {
     if (!row.snapshot_id) {
@@ -630,6 +762,13 @@ export default function PropertyPayablesPage() {
     setMonth((prev) => prev.add(step, 'month'))
   }
 
+  function leaveLegacyTemplateManager() {
+    setActiveView('property-bills')
+    const url = new URL(window.location.href)
+    url.searchParams.delete('view')
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+  }
+
   const statusFilterOptions = [
     { value: 'payment_overdue', label: '付款逾期' },
     { value: 'bill_not_received', label: '账单未收到' },
@@ -655,7 +794,7 @@ export default function PropertyPayablesPage() {
       key: 'ops',
       render: (_: any, row: WorkbenchRow) => (
         <Space wrap>
-          <Button onClick={() => { setDetailRow(row); setDetailOpen(true) }}>详情</Button>
+          <Button onClick={() => openBillDetail(row)}>详情</Button>
           <Button onClick={() => openTemplate(row)}>编辑模板</Button>
           <Button onClick={() => openConfirm(row)} disabled={row.status === 'paid'}>调整本月账单</Button>
           <Button onClick={() => openInvoices(row)} disabled={!row.snapshot_id}>上传本月支出发票</Button>
@@ -679,7 +818,7 @@ export default function PropertyPayablesPage() {
 
   const renderRowActions = (row: WorkbenchRow, compact = false) => (
     <Space wrap size={compact ? 6 : 8}>
-      <Button size={compact ? 'small' : 'middle'} onClick={() => { setDetailRow(row); setDetailOpen(true) }}>详情</Button>
+      <Button size={compact ? 'small' : 'middle'} onClick={() => openBillDetail(row)}>详情</Button>
       {!compact ? <Button onClick={() => openTemplate(row)}>编辑模板</Button> : null}
       <Button size={compact ? 'small' : 'middle'} onClick={() => openConfirm(row)} disabled={row.status === 'paid'}>{compact ? '确认账单' : '调整本月账单'}</Button>
       <Button size={compact ? 'small' : 'middle'} onClick={() => openInvoices(row)} disabled={!row.snapshot_id}>上传发票</Button>
@@ -795,7 +934,7 @@ export default function PropertyPayablesPage() {
                 { label: '待处理', value: 'queue' },
                 { label: '日历', value: 'calendar' },
                 { label: '已付记录', value: 'paid' },
-                { label: '模板管理', value: 'templates' },
+                { label: '房源账单', value: 'property-bills' },
               ]}
             />
             <span className="property-payables-workbench-hint">按实际/预计到账日分布；到账日已过且未付款的账单优先显示。</span>
@@ -900,6 +1039,13 @@ export default function PropertyPayablesPage() {
 
           {activeView === 'templates' ? (
             <div className="property-payables-table-panel">
+              <div className="property-payables-panel-header">
+                <div>
+                  <strong>模板管理（兼容入口）</strong>
+                  <span>仅用于管理无法从有效房号账单进入的原模板；普通导航统一使用“房源账单”。</span>
+                </div>
+                <Button onClick={leaveLegacyTemplateManager}>返回房源账单</Button>
+              </div>
               <Table
                 rowKey={(row) => row.template_id}
                 dataSource={templateRows}
@@ -918,7 +1064,7 @@ export default function PropertyPayablesPage() {
                     key: 'ops',
                     render: (_: any, row: WorkbenchRow) => (
                       <Space wrap>
-                        <Button onClick={() => { setDetailRow(row); setDetailOpen(true) }}>详情</Button>
+                        <Button onClick={() => openBillDetail(row)}>详情</Button>
                         <Button onClick={() => openTemplate(row)}>编辑模板</Button>
                         <Popconfirm
                           title="删除代付模板？"
@@ -937,6 +1083,13 @@ export default function PropertyPayablesPage() {
               />
             </div>
           ) : null}
+          {activeView === 'property-bills' ? <PropertyBills
+            refreshToken={propertyBillsRefreshToken}
+            onViewTemplate={openPropertyBillTemplateDetail}
+            onEditTemplate={openPropertyBillTemplateEditor}
+            onCreateTemplate={(context) => openTemplate(null, context)}
+            onDisplayNameStorageReady={setPropertyBillDisplayNameStorageReady}
+          /> : null}
         </Card>
       </Space>
 
@@ -944,8 +1097,12 @@ export default function PropertyPayablesPage() {
         open={detailOpen}
         onClose={() => setDetailOpen(false)}
         width={760}
-        title="代付详情"
-        extra={detailRow ? (
+        title={detailMode === 'template' ? '代付模板详情' : '代付详情'}
+        extra={detailRow && detailMode === 'template' ? (
+          detailTemplateContext?.can_edit && detailTemplate
+            ? <Button onClick={() => openPropertyBillTemplateEditor(detailTemplate, detailTemplateContext)}>编辑模板</Button>
+            : <Tag style={{ marginInlineEnd: 0 }}>只读</Tag>
+        ) : detailRow ? (
           <Space wrap>
             <Button onClick={() => openTemplate(detailRow)}>编辑模板</Button>
             <Button onClick={() => openConfirm(detailRow)} disabled={detailRow.status === 'paid'}>调整本月账单</Button>
@@ -966,7 +1123,40 @@ export default function PropertyPayablesPage() {
           </Space>
         ) : null}
       >
-        {detailRow ? (
+        {detailRow && detailMode === 'template' ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Card size="small">这里只查看并沿用原代付模板资料，不提供付款、账单确认、暂停或删除操作。</Card>
+            <Descriptions bordered column={2} size="small">
+              <Descriptions.Item label="房源">{detailRow.property_code || '-'}</Descriptions.Item>
+              <Descriptions.Item label="收费公司/事项">{detailRow.vendor || '-'}</Descriptions.Item>
+              <Descriptions.Item label="类别">{propertyPayableCategoryLabel(detailRow.category || '')}</Descriptions.Item>
+              <Descriptions.Item label="Account Number">{detailRow.bill_account_no || '-'}</Descriptions.Item>
+              <Descriptions.Item label="默认金额">{detailRow.amount == null ? '-' : formatMoney(detailRow.amount)}</Descriptions.Item>
+              <Descriptions.Item label="模板状态">{detailRow.template_status === 'paused' ? '已暂停' : '启用中'}</Descriptions.Item>
+              <Descriptions.Item label="账单周期">{propertyPayableFrequencyLabel(detailRow.frequency_months)}</Descriptions.Item>
+              <Descriptions.Item label="预计收到账单日">{detailRow.bill_expected_day_of_month ? `账单月 ${detailRow.bill_expected_day_of_month} 号` : '-'}</Descriptions.Item>
+              <Descriptions.Item label="付款截止日">{PROPERTY_PAYABLE_SETTLEMENT_DUE_LABEL}</Descriptions.Item>
+              <Descriptions.Item label="起始月份">{detailRow.start_month_key || '-'}</Descriptions.Item>
+              <Descriptions.Item label="付款方式">{propertyPayablePaymentTypeLabel(detailRow.payment_type || '')}</Descriptions.Item>
+              <Descriptions.Item label="收款方">{detailRow.pay_account_name || '-'}</Descriptions.Item>
+              {detailRow.payment_type === 'bank_account' ? <>
+                <Descriptions.Item label="BSB">{detailRow.pay_bsb || '-'}</Descriptions.Item>
+                <Descriptions.Item label="Account No.">{detailRow.pay_account_number || '-'}</Descriptions.Item>
+                <Descriptions.Item label="付款 Reference" span={2}>{detailRow.pay_ref || '-'}</Descriptions.Item>
+              </> : null}
+              {detailRow.payment_type === 'bpay' ? <>
+                <Descriptions.Item label="BPAY Code">{detailRow.bpay_code || '-'}</Descriptions.Item>
+                <Descriptions.Item label="付款 Reference">{detailRow.pay_ref || '-'}</Descriptions.Item>
+              </> : null}
+              {detailRow.payment_type === 'payid' ? <>
+                <Descriptions.Item label="PayID 手机号">{detailRow.pay_mobile_number || '-'}</Descriptions.Item>
+                <Descriptions.Item label="付款 Reference">{detailRow.pay_ref || '-'}</Descriptions.Item>
+              </> : null}
+              <Descriptions.Item label="模板备注" span={2}>{detailRow.template_note || '-'}</Descriptions.Item>
+            </Descriptions>
+            <AuditTrail refs={[{ entity: 'RecurringPayment', entity_id: detailRow.template_id }]} />
+          </Space>
+        ) : detailRow ? (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions bordered column={2} size="small">
               <Descriptions.Item label="房源">{detailRow.property_code || detailRow.property_address || '-'}</Descriptions.Item>
@@ -1039,16 +1229,25 @@ export default function PropertyPayablesPage() {
 
       <Drawer
         open={templateOpen}
-        onClose={() => setTemplateOpen(false)}
+        onClose={closeTemplate}
         width={720}
         title={editingTemplate ? '编辑代付模板' : '新增代付模板'}
-        extra={<Button type="primary" loading={templateSaving} onClick={saveTemplate}>保存模板</Button>}
+        extra={<Space>
+          {editingTemplate && watchedTemplateCategory === 'other' ? <Button loading={templateNameSaving} disabled={templateSaving || !propertyBillDisplayNameStorageReady}
+            onClick={saveTemplateDisplayNameOnly}>仅保存费用名称</Button> : null}
+          <Button type="primary" loading={templateSaving} disabled={templateNameSaving} onClick={saveTemplate}>
+            {editingTemplate ? '保存全部模板字段' : '保存模板'}
+          </Button>
+        </Space>}
       >
         <Form form={templateForm} layout="vertical">
+          {templateContext ? <Card size="small" style={{ marginBottom: 16 }}>
+            从房源账单进入时，房源与费用类别保持锁定，避免改变原账单和历史记录的归属。保存或取消后会返回当前房源与费用分类并刷新模板资料。
+          </Card> : null}
           <Row gutter={[16, 12]}>
             <Col span={12}>
               <Form.Item name="property_id" label="房源" rules={[{ required: true, message: '请选择房源' }]}>
-                <Select showSearch optionFilterProp="label" options={propertyOptions} />
+                <Select showSearch optionFilterProp="label" options={propertyOptions} disabled={Boolean(templateContext)} />
               </Form.Item>
             </Col>
             <Col span={12}>
@@ -1058,9 +1257,21 @@ export default function PropertyPayablesPage() {
             </Col>
             <Col span={12}>
               <Form.Item name="category" label="类别" rules={[{ required: true, message: '请选择类别' }]}>
-                <Select options={PROPERTY_PAYABLE_CATEGORY_OPTIONS.map((item) => ({ value: item.value, label: item.label }))} />
+                <Select options={PROPERTY_PAYABLE_CATEGORY_OPTIONS.map((item) => ({ value: item.value, label: item.label }))} disabled={Boolean(templateContext)} />
               </Form.Item>
             </Col>
+            {watchedTemplateCategory === 'other' ? <Col span={12}>
+              <Form.Item name="other_bill_name" label="费用名称"
+                rules={[
+                  { max: 80, message: '费用名称最多 80 个字符' },
+                  ...(!editingTemplate && propertyBillDisplayNameStorageReady ? [{ required: true, whitespace: true, message: '请输入费用名称' }] : []),
+                ]}
+                extra={propertyBillDisplayNameStorageReady
+                  ? editingTemplate ? '只改名称请使用右上角“仅保存费用名称”；空白不会清除已有名称。' : '例如：空调使用费。名称与收费公司/事项、付款方相互独立。'
+                  : '专用费用名称存储尚未启用；当前不会写入旧模板字段，其他模板功能仍可使用。'}>
+                <Input maxLength={80} showCount disabled={!propertyBillDisplayNameStorageReady} placeholder="例如：空调使用费" />
+              </Form.Item>
+            </Col> : null}
             <Col span={12}>
               <Form.Item name="amount" label="默认金额">
                 <InputNumber min={0} step={1} style={{ width: '100%' }} />

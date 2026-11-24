@@ -12,6 +12,7 @@
     "db:seed-user": "ts-node-dev --transpile-only scripts/seed_user.ts",
     "db:fix-year-2026": "ts-node-dev --transpile-only scripts/run_fix_year_2026.ts",
     "test:email-year-rule": "ts-node-dev --transpile-only scripts/test_email_year_rule.ts",
+    "test:mz128-property-bills": "ts-node-dev --transpile-only scripts/tests/test_property_bill_configurations.ts",
     "test:airbnb-localized-email": "ts-node-dev --transpile-only scripts/tests/test_airbnb_localized_email.ts",
     "test:order-fixed-cleaning-fee": "ts-node-dev --transpile-only scripts/tests/test_order_fixed_cleaning_fee.ts",
     "test:order-cancel-permission": "ts-node-dev --transpile-only scripts/tests/test_order_cancel_permission_contract.ts",
