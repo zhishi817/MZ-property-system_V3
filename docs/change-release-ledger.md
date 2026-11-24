@@ -39382,6 +39382,25 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Independent review: `GO`; evidence: independent read-only thread `6b04d1cf-8f54-83ec-b235-c729b00af00e` reviewed the complete staged diff and recomputed fingerprint `785f68e6b5c58713b9d8ed83825d0613e3fcbe7a66d1b698f6c57d37b4af1747`, reran the pre-commit gate as GO for 16 paths / 83 hunks, confirmed all four earlier blockers repaired, and found no P0/P1, unrelated path, secret, generated-output or production-write risk. One non-blocking P2 remains: a user can switch categories while a stop/resume/delete request is in flight, then successful completion reopens the original category; the server request and write remain bound to the original exact property/category/template.
 - Action conclusion: `GO`; blockers: none for committing this exact candidate. This GO does not authorize push, PR, merge, migration or deployment.
 
+#### RA-20261124-MZ128-ROOT-PUSH
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261120-002`
+- Selected CRL identities: `root/CRL-20261120-002`
+- Intended action: `push`
+- Branch: `codex/mz128-property-bills-20261123`
+- Base: `origin/Dev@0cfed07732d6eb36d4940f074f16b743ff618eaa`; freshly fetched at `2026-11-24T00:03:21Z` and still identical to the release base.
+- Candidate patch SHA-256: `785f68e6b5c58713b9d8ed83825d0613e3fcbe7a66d1b698f6c57d37b4af1747` excluding `docs/change-release-ledger.md`.
+- Commit SHA: `c95e9e0a17e6630fb744a27dad1527f8f99b06d3`
+- Dependencies: none
+- Required validation: `PASS`; evidence: the content candidate and ledger receipts are committed; exact `0cfed07732d6eb36d4940f074f16b743ff618eaa...d4431cfe5ee4d3bf0b25f9bc383d291d55be1cf6` release report is GO with clean checkout, fresh base, 16 selected files, 83 committed non-ledger hunks, matching candidate fingerprint and no generated or sensitive file. Root `check:full`, targeted MZ-128, Feature Registry and pre-commit gates remain PASS; no post-review content change occurred.
+- Shared-hunk review: `PASS`; evidence: exact committed range and candidate fingerprint match the independently reviewed 16-path source candidate; only selected CRL ledger receipts follow the content commit.
+- Generated-file review: `PASS`; evidence: exact range report found no generated files, sensitive categories, dependencies, caches, logs or environment files.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; evidence: the user explicitly requested the complete MZ-128 scope be committed and pushed, and the coordinating instruction binds that request to the independent branch `codex/mz128-property-bills-20261123`; the exact content commit is `c95e9e0a17e6630fb744a27dad1527f8f99b06d3` and no later content change exists.
+- Independent review: `GO`; evidence: thread `6b04d1cf-8f54-83ec-b235-c729b00af00e` gave GO for the exact content fingerprint and branch after complete staged-diff review; commit/range audit proves the committed content is identical. This does not authorize PR, merge, migration or deployment.
+- Action conclusion: `GO`; blockers: none for an ordinary non-force push of this exact branch after the final committed-range audit. PR, merge, deployment and database actions remain excluded.
+
 ### Risks / Release Notes
 
 - Final signed-in UI search/detail click-through still needs the user's existing localhost session; no authentication was bypassed. There is no confirmed dedicated MZ-128 synthetic property, so no real configuration/template save/readback was attempted. Browser write-path evidence is isolated synthetic only.
