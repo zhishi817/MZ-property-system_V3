@@ -39396,10 +39396,11 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Required validation: `PASS`; evidence: the content candidate and ledger receipts are committed; exact `0cfed07732d6eb36d4940f074f16b743ff618eaa...d4431cfe5ee4d3bf0b25f9bc383d291d55be1cf6` release report is GO with clean checkout, fresh base, 16 selected files, 83 committed non-ledger hunks, matching candidate fingerprint and no generated or sensitive file. Root `check:full`, targeted MZ-128, Feature Registry and pre-commit gates remain PASS; no post-review content change occurred.
 - Shared-hunk review: `PASS`; evidence: exact committed range and candidate fingerprint match the independently reviewed 16-path source candidate; only selected CRL ledger receipts follow the content commit.
 - Generated-file review: `PASS`; evidence: exact range report found no generated files, sensitive categories, dependencies, caches, logs or environment files.
-- Technical state: `committed`
+- Remote evidence: ordinary non-force push created `origin/codex/mz128-property-bills-20261123`; independent `git ls-remote --heads` readback matched pushed audit head `eaa8fdd744ed218fa1f4a1eff9fd2913a3c6f4b8`. No PR, merge, deployment, migration or database action occurred.
+- Technical state: `pushed`
 - User authorization: `approved-for-push`; evidence: the user explicitly requested the complete MZ-128 scope be committed and pushed, and the coordinating instruction binds that request to the independent branch `codex/mz128-property-bills-20261123`; the exact content commit is `c95e9e0a17e6630fb744a27dad1527f8f99b06d3` and no later content change exists.
 - Independent review: `GO`; evidence: committed-range thread `6b04d537-8b5c-83ec-8277-ac5595a25039` independently recomputed the exact candidate fingerprint, verified base → content commit → audit head ancestry, confirmed every post-content commit is ledger-only, reran the final release report and `git diff --check` as GO, found no P0/P1 or branch workflow that deploys production, and approved only an ordinary non-force push of this branch. The earlier accepted non-destructive category-return P2 remains documented. This does not authorize PR, merge, migration or deployment.
-- Action conclusion: `GO`; blockers: none for an ordinary non-force push of this exact branch after the final committed-range audit. PR, merge, deployment and database actions remain excluded.
+- Action conclusion: `GO`; blockers: none. The authorized ordinary non-force branch push completed and was independently read back; PR, merge, deployment and database actions remain excluded.
 
 ### Risks / Release Notes
 
