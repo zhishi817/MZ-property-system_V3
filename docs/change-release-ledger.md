@@ -39398,7 +39398,7 @@ Shared cross-thread record of repository changes and selectable release units. D
 - Generated-file review: `PASS`; evidence: exact range report found no generated files, sensitive categories, dependencies, caches, logs or environment files.
 - Technical state: `committed`
 - User authorization: `approved-for-push`; evidence: the user explicitly requested the complete MZ-128 scope be committed and pushed, and the coordinating instruction binds that request to the independent branch `codex/mz128-property-bills-20261123`; the exact content commit is `c95e9e0a17e6630fb744a27dad1527f8f99b06d3` and no later content change exists.
-- Independent review: `GO`; evidence: thread `6b04d1cf-8f54-83ec-b235-c729b00af00e` gave GO for the exact content fingerprint and branch after complete staged-diff review; commit/range audit proves the committed content is identical. This does not authorize PR, merge, migration or deployment.
+- Independent review: `GO`; evidence: committed-range thread `6b04d537-8b5c-83ec-8277-ac5595a25039` independently recomputed the exact candidate fingerprint, verified base → content commit → audit head ancestry, confirmed every post-content commit is ledger-only, reran the final release report and `git diff --check` as GO, found no P0/P1 or branch workflow that deploys production, and approved only an ordinary non-force push of this branch. The earlier accepted non-destructive category-return P2 remains documented. This does not authorize PR, merge, migration or deployment.
 - Action conclusion: `GO`; blockers: none for an ordinary non-force push of this exact branch after the final committed-range audit. PR, merge, deployment and database actions remain excluded.
 
 ### Risks / Release Notes
