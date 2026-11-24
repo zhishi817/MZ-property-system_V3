@@ -3,8 +3,20 @@ import { requireAnyPerm, requirePerm, userHasAnyPerm } from '../auth'
 import { addAudit } from '../store'
 import { hasPg, pgPool, pgRunInTransaction } from '../dbAdapter'
 import { z } from 'zod'
+import { propertyBillsRouter } from './property_bills'
+import {
+  assertPropertyPayableSnapshotBinding,
+  isPropertyPayableMonthDue,
+  isPropertyPayableTemplateRow,
+  isRecurringTemplateActive,
+  lockRecurringTemplateIdsTx,
+  readRecurringTemplateForUpdateTx,
+  recurringTemplateSafetyError,
+  shouldMaterializePropertyPayableTemplate,
+} from '../lib/propertyPayableTemplateSafety'
 
 export const router = Router()
+router.use('/property-payables/property-bills', propertyBillsRouter)
 
 function currentMonthKeyAU(): string {
   const parts = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', year: 'numeric', month: '2-digit' }).formatToParts(new Date())
@@ -499,7 +511,18 @@ async function getPropertyPayableSnapshotTx(client: any, fixedExpenseId: string,
   return (res.rows?.[0] as PropertyPayableSnapshotRow) || null
 }
 
-async function ensurePropertyPayableSnapshotTx(client: any, payment: any, monthKey: string, actorId?: string | null) {
+export async function ensurePropertyPayableSnapshotTx(client: any, payment: any, monthKey: string, actorId?: string | null) {
+  const templateId = String(payment?.id || '').trim()
+  const current = await readRecurringTemplateForUpdateTx(client, templateId)
+  if (!current || !isPropertyPayableTemplateRow(current)) throw recurringTemplateSafetyError('recurring_template_not_found')
+  const existing = await getPropertyPayableSnapshotTx(client, templateId, monthKey)
+  assertPropertyPayableSnapshotBinding(current, existing)
+  if (existing) return { ...existing, inserted: false }
+  if (!isRecurringTemplateActive(current)) throw recurringTemplateSafetyError('property_payable_template_inactive')
+  if (!isPropertyPayableMonthDue(current, monthKey)) {
+    throw recurringTemplateSafetyError('property_payable_period_not_due')
+  }
+  payment = current
   const templateDates = computePropertyPayableTemplateDates(payment, monthKey)
   const dueISO = templateDates.due_date
   const payload = {
@@ -1003,7 +1026,7 @@ function parsePropertyPayableWorkbenchMonths(query: any) {
   return result
 }
 
-function buildPropertyPayableWorkbenchMonth(
+export function buildPropertyPayableWorkbenchMonth(
   templates: any[],
   snapByTemplate: Map<string, any>,
   monthKey: string,
@@ -1017,6 +1040,7 @@ function buildPropertyPayableWorkbenchMonth(
       const isDue = !!startMonth && isDueMonthKey(startMonth, monthKey, freq)
       const snapshot = snapByTemplate.get(String(tpl.id)) || null
       if (!isDue && !snapshot) return null
+      if (!shouldMaterializePropertyPayableTemplate(tpl, snapshot)) return null
       const templateDates = computePropertyPayableTemplateDates(tpl, monthKey)
       const dueDate = String(templateDates.due_date || snapshot?.due_date || '').slice(0, 10)
       const billExpectedDate = String(snapshot?.bill_expected_date || templateDates.bill_expected_date || '').slice(0, 10) || null
@@ -1976,6 +2000,10 @@ router.post('/payments/:id/ensure-snapshot', requireAnyPerm(['recurring_payments
     return res.json({ ok: true, ...result })
   } catch (e: any) {
     const msg = String(e?.message || 'ensure failed')
+    if (msg === 'property_payable_template_inactive') return res.status(409).json({ code: msg, message: '模板已停用，缺失账期不会补建' })
+    if (msg === 'property_payable_period_not_due') return res.status(409).json({ code: msg, message: '该账期不在模板当前生成计划内，不会补建' })
+    if (msg === 'property_payable_template_binding_mismatch') return res.status(409).json({ code: msg, message: '账单与模板的房源或费用分类不一致' })
+    if (msg === 'recurring_template_not_found') return res.status(404).json({ code: msg, message: 'not found' })
     if (/timeout exceeded when trying to connect/i.test(msg)) return res.status(503).json({ message: msg })
     if (/lock timeout/i.test(msg)) return res.status(503).json({ message: msg })
     return res.status(500).json({ message: msg })
@@ -1993,9 +2021,9 @@ async function handleConfirmPropertyPayableBill(req: any, res: any) {
     const result = await pgRunInTransaction(async (client) => {
       await applyTxTimeouts(client)
       await ensureSchemasOnce()
+      await lockRecurringTemplateIdsTx(client, [id])
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202604, `${id}:${monthKey}:confirm`])
-      const payRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
-      const payment = payRes.rows?.[0] || null
+      const payment = await readRecurringTemplateForUpdateTx(client, id)
       if (!payment) return { notFound: true }
       if (!isPropertyPayableTemplate(payment)) return { invalid: 'only_property_payable_supported' }
       if (!(await canAccessPropertyPayables(req))) return { forbidden: true }
@@ -2018,7 +2046,12 @@ async function handleConfirmPropertyPayableBill(req: any, res: any) {
     if ((result as any)?.failed) return res.status(500).json({ message: 'confirm amount failed' })
     return res.json(result)
   } catch (e: any) {
-    return res.status(500).json({ message: String(e?.message || 'confirm bill failed') })
+    const message = String(e?.message || 'confirm bill failed')
+    if (message === 'property_payable_template_inactive') return res.status(409).json({ code: message, message: '模板已停用，缺失账期不会补建' })
+    if (message === 'property_payable_period_not_due') return res.status(409).json({ code: message, message: '该账期不在模板当前生成计划内，不会补建' })
+    if (message === 'property_payable_template_binding_mismatch') return res.status(409).json({ code: message, message: '账单与模板的房源或费用分类不一致' })
+    if (message === 'recurring_template_not_found') return res.status(404).json({ code: message, message: 'not found' })
+    return res.status(500).json({ message })
   }
 }
 
@@ -2038,9 +2071,9 @@ router.post('/payments/:id/mark-paid', requireAnyPerm(['recurring_payments.write
     const result = await pgRunInTransaction(async (client) => {
       await applyTxTimeouts(client)
       await ensureSchemasOnce()
+      await lockRecurringTemplateIdsTx(client, [id])
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202604, `${id}:${monthKey}`])
-      const payRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
-      const payment = payRes.rows?.[0] || null
+      const payment = await readRecurringTemplateForUpdateTx(client, id)
       if (!payment) return { notFound: true }
       if (isRecurringIncomeTemplate(payment)) {
         const incomeRow = await upsertRecurringIncomeTx(client, payment, monthKey, 'received', paidDate)
@@ -2138,6 +2171,10 @@ router.post('/payments/:id/mark-paid', requireAnyPerm(['recurring_payments.write
     return res.json(result)
   } catch (e: any) {
     const msg = String(e?.message || 'mark paid failed')
+    if (msg === 'property_payable_template_inactive') return res.status(409).json({ code: msg, message: '模板已停用，缺失账期不会补建' })
+    if (msg === 'property_payable_period_not_due') return res.status(409).json({ code: msg, message: '该账期不在模板当前生成计划内，不会补建' })
+    if (msg === 'property_payable_template_binding_mismatch') return res.status(409).json({ code: msg, message: '账单与模板的房源或费用分类不一致' })
+    if (msg === 'recurring_template_not_found') return res.status(404).json({ code: msg, message: 'not found' })
     if (/duplicate key value violates unique constraint/i.test(msg)) return res.status(409).json({ message: msg })
     if (/timeout exceeded when trying to connect/i.test(msg)) return res.status(503).json({ message: msg })
     if (/lock timeout/i.test(msg)) return res.status(503).json({ message: msg })
@@ -2156,9 +2193,9 @@ router.post('/payments/:id/unmark-paid', requireAnyPerm(['recurring_payments.wri
     const result = await pgRunInTransaction(async (client) => {
       await applyTxTimeouts(client)
       await ensureSchemasOnce()
+      await lockRecurringTemplateIdsTx(client, [id])
       await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [202604, `${id}:${monthKey}`])
-      const payRes = await client.query('SELECT * FROM recurring_payments WHERE id = $1', [id])
-      const payment = payRes.rows?.[0] || null
+      const payment = await readRecurringTemplateForUpdateTx(client, id)
       if (!payment) return { notFound: true }
       if (isRecurringIncomeTemplate(payment)) {
         const incomeRow = await upsertRecurringIncomeTx(client, payment, monthKey, 'unreceived', null)
@@ -2221,6 +2258,10 @@ router.post('/payments/:id/unmark-paid', requireAnyPerm(['recurring_payments.wri
     return res.json(result)
   } catch (e: any) {
     const msg = String(e?.message || 'unmark paid failed')
+    if (msg === 'property_payable_template_inactive') return res.status(409).json({ code: msg, message: '模板已停用，缺失账期不会补建' })
+    if (msg === 'property_payable_period_not_due') return res.status(409).json({ code: msg, message: '该账期不在模板当前生成计划内，不会补建' })
+    if (msg === 'property_payable_template_binding_mismatch') return res.status(409).json({ code: msg, message: '账单与模板的房源或费用分类不一致' })
+    if (msg === 'recurring_template_not_found') return res.status(404).json({ code: msg, message: 'not found' })
     if (/duplicate key value violates unique constraint/i.test(msg)) return res.status(409).json({ message: msg })
     if (/timeout exceeded when trying to connect/i.test(msg)) return res.status(503).json({ message: msg })
     if (/lock timeout/i.test(msg)) return res.status(503).json({ message: msg })

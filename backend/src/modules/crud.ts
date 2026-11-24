@@ -13,25 +13,36 @@ import { maintenanceTaskSummaryFromDetails } from '../lib/maintenanceWorkflowSto
 import { assertMaintenanceRuntimeSchemaReady, isMaintenanceRuntimeSchemaReady } from '../lib/maintenanceRuntimeSchema'
 import { assertMaintenanceWorkflowSchemaReady, MaintenanceWorkflowSchemaNotReady } from '../lib/maintenanceWorkflowSchema'
 import { isPdfRenderServiceUser } from '../services/pdfRenderServiceAuth'
+import { assertRecurringReferenceWriteTx } from '../lib/propertyPayableTemplateSafety'
 
 // Only feedback-linked accounting writes join the source row lock protocol.
 async function pgInsert(resource: string, payload: Record<string, any>, client?: any): Promise<any> {
-  if (!['property_expenses', 'company_expenses'].includes(resource)) return rawPgInsert(resource, payload, client)
+  const expense = ['property_expenses', 'company_expenses'].includes(resource)
+  const recurringTransaction = resource === 'finance_transactions' && !!String(payload.recurring_payment_id || '').trim()
+  if (!expense && !recurringTransaction) return rawPgInsert(resource, payload, client)
   const save = async (tx: any) => {
-    await lockPropertyFeedbackExpenseKeys(tx, resource, [payload])
-    await lockPropertyFeedbackExpenseReferences(tx, [payload])
+    if (expense) {
+      await lockPropertyFeedbackExpenseKeys(tx, resource, [payload])
+      await lockPropertyFeedbackExpenseReferences(tx, [payload])
+    }
+    await assertRecurringReferenceWriteTx(tx, resource as any, null, payload)
     return rawPgInsert(resource, payload, tx)
   }
   return client ? save(client) : pgRunInTransaction(save)
 }
 
 async function pgUpdate(resource: string, id: string, payload: Record<string, any>, client?: any): Promise<any> {
-  if (!['property_expenses', 'company_expenses'].includes(resource)) return rawPgUpdate(resource, id, payload, client)
+  const expense = ['property_expenses', 'company_expenses'].includes(resource)
+  const recurringTransaction = resource === 'finance_transactions' && Object.prototype.hasOwnProperty.call(payload, 'recurring_payment_id')
+  if (!expense && !recurringTransaction) return rawPgUpdate(resource, id, payload, client)
   const save = async (tx: any) => {
     const previous = await tx.query(`SELECT * FROM ${resource} WHERE id = $1`, [id])
-    await lockPropertyFeedbackExpenseKeys(tx, resource, [previous.rows[0], { ...previous.rows[0], ...payload }])
-    await lockPropertyFeedbackExpenseReferences(tx, [previous.rows[0], { ...previous.rows[0], ...payload }], [previous.rows[0]])
-    await assertPropertyFeedbackExpenseReferenceUnchanged(tx, resource as 'property_expenses' | 'company_expenses', id, previous.rows[0])
+    if (expense) {
+      await lockPropertyFeedbackExpenseKeys(tx, resource, [previous.rows[0], { ...previous.rows[0], ...payload }])
+      await lockPropertyFeedbackExpenseReferences(tx, [previous.rows[0], { ...previous.rows[0], ...payload }], [previous.rows[0]])
+      await assertPropertyFeedbackExpenseReferenceUnchanged(tx, resource as 'property_expenses' | 'company_expenses', id, previous.rows[0])
+    }
+    await assertRecurringReferenceWriteTx(tx, resource as any, previous.rows[0], { ...previous.rows[0], ...payload })
     return rawPgUpdate(resource, id, payload, tx)
   }
   return client ? save(client) : pgRunInTransaction(save)
@@ -1806,6 +1817,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
                 const previous = (await client.query(`SELECT * FROM ${resource} WHERE fixed_expense_id = $1 AND month_key = $2`, [fixedId, monthKey])).rows[0]
                 await lockPropertyFeedbackExpenseReferences(client, [previous, { ...previous, ...toInsert }], [previous])
                 if (previous) await assertPropertyFeedbackExpenseReferenceUnchanged(client, resource as 'property_expenses' | 'company_expenses', String(previous.id), previous)
+                await assertRecurringReferenceWriteTx(client, resource as any, previous, { ...previous, ...toInsert })
                 return client.query(sql, vals)
               })
               const rowUp = up?.rows?.[0] || null
@@ -1821,6 +1833,7 @@ router.post('/:resource', requireResourcePerm('write'), async (req, res) => {
         const msg = String(e?.message || '')
         if (msg === 'deep_cleaning_ownership_locked') return res.status(409).json({code:msg})
         if (msg === 'feedback_expense_reference_conflict' || msg === 'property_feedback_not_found') return res.status(409).json({ code: msg })
+        if (['recurring_template_not_found', 'property_payable_template_scope_mismatch', 'property_payable_template_binding_mismatch', 'property_payable_template_inactive'].includes(msg)) return res.status(409).json({ code: msg })
         if (/duplicate key value violates unique constraint/i.test(msg)) {
           return res.status(409).json({ message: msg })
         }
@@ -2545,6 +2558,7 @@ router.patch('/:resource/:id', requireResourcePerm('write'), async (req, res) =>
         const msg = String(e?.message || '')
         if (msg === 'deep_cleaning_ownership_locked') return res.status(409).json({code:msg})
         if (msg === 'feedback_expense_reference_conflict' || msg === 'property_feedback_not_found') return res.status(409).json({ code: msg })
+        if (['recurring_template_not_found', 'property_payable_template_scope_mismatch', 'property_payable_template_binding_mismatch', 'property_payable_template_inactive'].includes(msg)) return res.status(409).json({ code: msg })
         if (resource === 'recurring_payments' && /column\s+"?frequency_months"?\s+of\s+relation\s+"?recurring_payments"?\s+does\s+not\s+exist/i.test(msg)) {
           const { pgPool } = require('../dbAdapter')
           if (pgPool) await pgPool.query('ALTER TABLE recurring_payments ADD COLUMN IF NOT EXISTS frequency_months integer;')
