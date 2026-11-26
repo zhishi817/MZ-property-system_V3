@@ -1,5 +1,130 @@
 # Change Release Ledger
 
+## CRL-20261126-002 — MZ-124 房源账单 Fast Regression 合并检查
+
+- **Repository:** `root`
+- **Status:** local candidate; remote proof not performed
+- **Updated:** 2026-11-26 UTC
+- **Request:** Verify the MZ-124 Property Bills merge gate after the function and UI pilot.
+- **Outcome:** Incorporate affected Dev PRs into the existing required Fast Regression check without changing hosted branch settings.
+
+### Implementation
+
+- Classify affected routes and shared dependencies. The existing check starts even if classification is missing, and the final check rejects failed, skipped or wrong-revision browser evidence.
+- Run the browser pilot against the exact PR test merge revision only when applicable, reusing the existing synthetic fixture and no application/deployment secret.
+- Keep the approval of four Mac design images separate from future runner-specific pixel comparison.
+
+### Files / Areas
+
+- `.github/workflows/quality.yml` — reuse Fast Regression and verify the exact browser run.
+- `scripts/ci/classify_pr_risk.sh` — classify Property Bills and shared dependencies, with ledger-only exclusion.
+- `scripts/ci/require_property_bills_pilot.sh` — fail closed on missing/incorrect results.
+- `scripts/tests/test_root_quality_workflow_contract.py` — guard workflow structure, scope, and failed/skipped/wrong-revision outcome.
+- `docs/mz124-property-bills-merge-gate.md` — operation, safe rehearsal and CI/visual boundary.
+- `docs/change-release-ledger.md` — release scopes and evidence for the two selected units.
+
+### Impact / Dependencies
+
+- Requires local candidate `root/CRL-20261126-001`; no unrelated 124 tasks included.
+- GitHub ubuntu runner acquires Chromium matching the locked Playwright package and starts a loopback test PostgreSQL. No database, API, UI, production, branch settings or deployment modifications.
+- The PR-bound test protects Dev integration. Existing post-integration checks and main release policy stay unchanged.
+- Rollback: revert the five listed gate files as one unit, keeping existing required check and pilot scripts intact.
+
+### Validation
+
+- 13 Root Quality workflow tests passed; cases cover success, failure, skipped, cancellation, no receipt and a different revision.
+- Structure checked with parsed YAML; confirmed current hosted Dev protects the existing Fast Regression context and requires an up-to-date branch. Actual patched workflow on hosted Actions and prevented PR merge are not yet verified.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none
+- `.github/workflows/quality.yml` — SHA-256: `2ad2a3ad3afc5d7f71a09b2edb31bd86ce20814cc4352dd2bd9da4bde81a3209`
+- `.github/workflows/quality.yml` — SHA-256: `8f8545bc47dbd293927df2ee87354ce5b001458baebff079f9dda56bb17f8dc7`
+- `.github/workflows/quality.yml` — SHA-256: `9c715e3f28f914aa47d2f601ccecda5846573cb91e7a6923737102dc1d0add8f`
+- `.github/workflows/quality.yml` — SHA-256: `a0376317a9d0ce0ab71a24c0609078a2f7687a7977afd202d98df9642b065d51`
+- `.github/workflows/quality.yml` — SHA-256: `b31baf662de20a9e9c06532b4dca0a10e9ab92c256ccb33eff55d8fba52e938c`
+- `.github/workflows/quality.yml` — SHA-256: `fbfdc3beeef186f0ddaca7f857adf905c6f332b53527cc8d5f05965644d8890f`
+- `docs/mz124-property-bills-merge-gate.md` — SHA-256: `2c2cb03fd46f1d0275d66345a7cab8b5c73b57d949dba56567d1ecacbb830557`
+- `scripts/ci/classify_pr_risk.sh` — SHA-256: `d96116e70137a0dff5eba12d73d7aa57f0ffa141db756fbbf6c4c509f3dc38da`
+- `scripts/ci/classify_pr_risk.sh` — SHA-256: `e52bbdbdf1df110f215f945c0f90875b68ca8367d5607b4aa4eb9dce58e51270`
+- `scripts/ci/require_property_bills_pilot.sh` — SHA-256: `ce67d140c05f85a5d6982be1cbc6e4a814e1a4dec38207eb42cf97a0c42f6362`
+- `scripts/tests/test_root_quality_workflow_contract.py` — SHA-256: `1010020925ecad91365fa62f755699a822d2316b74f72ee7cb8772cb87c6a4a5`
+
+### Release Attempts
+
+#### RA-20261126-MZ124-BILLS-ROOT-COMMIT
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261126-001`, `CRL-20261126-002`
+- Selected CRL identities: `root/CRL-20261126-001`, `root/CRL-20261126-002`
+- Intended action: `commit`
+- Branch: `codex/acceptance-mz124-property-bills`
+- Base: `origin/Dev@83e26c9b0fe9e432730945bf7496ad4e0c3c242b`; fetched at `2026-11-26T10:00:32Z`.
+- Candidate patch SHA-256: `fef393213f0c3123319ccb5902e655ccc34bb52c247ccce31b84a6558233279d`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `not committed` at pre-commit verification; the resulting exact content SHA is independently verified after the action.
+- Dependencies: `root/CRL-20261126-001` supplies the pilot run by `root/CRL-20261126-002`; both included in this candidate.
+- Required validation: `PASS` for local commit; 13 workflow contract tests, YAML and shell/Node syntax, staged whitespace and scope audits. Prior six-case browser sample and Neon Dev rollback evidence are recorded in CRL-20261126-001. The new Ubuntu Actions run and live PR protection are not yet verified.
+- Shared-hunk review: `PASS`; independent review verified exact 12 staged paths and 17 registered non-ledger hunks with no unrelated paths, unstaged changes or untracked files.
+- Generated-file review: `PASS`; no generated output, caches, private configuration or credentials; local-only fixtures are intentional source.
+- Technical state: `verified`
+- User authorization: `selected-for-commit`; user requested local submit in `Sentinel_9580898d8b148191b93b3049fd08b77f` and approved the independent review before local commit in `Sentinel_ff0eac35c8988191888623390acc9972`.
+- Independent review: `GO`; read-only reviewer thread `6b080a1a-9c60-83ec-8125-6ee6e7b6e024` independently verified this exact fingerprint and reported no P0/P1/P2 findings. No remote Actions rehearsal or visual pixel comparison performed.
+- Action conclusion: `GO` for local commit only; no authorization for push, PR, merge, deployment or production writes.
+
+## CRL-20261126-001 — MZ-124 房源账单本地回归样板
+
+- **Repository:** `root`
+- **Status:** in-progress; local tooling candidate, not released
+- **Updated:** 2026-11-26 UTC
+- **Request:** Build the first preservational billing regression sample, including functional browser checks, a deliberately failed check, and UI review candidates.
+- **Outcome:** A repeatable pilot using the pinned application page, billing router, permission middleware and temporary PostgreSQL; no approved visual baseline or activated GitHub gate.
+
+### Implementation
+
+- Keep site and billing runtime unchanged. Verify the sampled workflow using synthetic roles and data on loopback; export sanitized candidate screenshots.
+- Validate the expected functional evidence separately from UI approval, with a missing-result rejection, deliberate historical-assertion failure, and opt-in comparison with independently approved images.
+
+### Files / Areas
+
+- `scripts/mz124-bills-pilot-browser.cjs` — actual-page functional assertions, isolated browsing, candidate screenshots.
+- `scripts/mz124-bills-pilot-fixture.sql` — synthetic roles, properties, two templates and preserved history for a fresh local database only.
+- `scripts/mz124-bills-pilot-local.cjs` — loopback-only harness mounting the real billing router and permission middleware, synthetic session and unrelated read-only scaffolding.
+- `scripts/mz124-bills-pilot-run.sh` — fixed Git source, existing dependencies, isolated runtime, positive and negative check orchestration.
+- `scripts/mz124-bills-pilot-gate.cjs` — fail-closed local receipt verification and optional approved-screenshot comparison.
+- `docs/mz124-property-bills-pilot.md` — commands, evidence distinctions, UI approval and GitHub rollout limits.
+
+### Impact / Dependencies
+
+- API and production schema: no changes. No production read or write, no shared Dev writes, no external sync, no installs.
+- Fixture schema is ephemeral, local only; the normal deployment, full migration, shared Dev login and real accounts are not covered.
+- Existing FR-050 lower-level suite retained; visual candidates are not approved and cannot serve as their own baseline. Rule changes still require business sign-off.
+- Target source: `83e26c9b0fe9e432730945bf7496ad4e0c3c242b`; tooling workspace is not a release worktree. Rollback is omitting this standalone tool and stopping its local processes.
+
+### Validation
+
+- Pinned FR-050 suite `npm run test:mz128-property-bills` passed. Missing local result correctly blocks; negative browser run rejects mismatched history.
+- The Dev connection check returned `ENOTFOUND` in the restricted environment but passed with normal local networking; read-only verification, not a write or a shared Dev browser run.
+- Positive browser run at pinned Root revision: six checks passed on the real local page, real billing router/permission checks, and temporary PostgreSQL. UI screenshots are candidates; not approved or compared to an approved baseline.
+- 2026-11-26: separately repeated the six checks against the identity-verified Neon Dev database with the pinned page and billing router, in one guarded transaction using only synthetic roles, properties, templates, and history. Save/stop/resume were observed, rollback verified, and a separate read-only connection found zero scoped records across six tables. No DDL, persistent changes, existing record writes, real sign-in, hosted deployment, or GitHub protection verification.
+
+### Staged Commit Scope
+
+- **Repository:** `root`
+- **Status:** prepared
+- **Untracked review:** none
+- `docs/mz124-property-bills-pilot.md` — SHA-256: `19f135dff4e5bf2d1be15a474a367113c9b5bf2a943c7451c49b6e76427db761`
+- `scripts/mz124-bills-pilot-browser.cjs` — SHA-256: `01839d0613345fcb8b7832010d75579a3326c2a9944ecd848978d4df59964e56`
+- `scripts/mz124-bills-pilot-fixture.sql` — SHA-256: `75752e3a8876dd003491fc8de4e2031df59b456321f5af7a3314fb29ae732473`
+- `scripts/mz124-bills-pilot-gate.cjs` — SHA-256: `ebfb2b67301354d8636d32346ab6612dc0c9783d1c4f31bea335abecb93ec4f6`
+- `scripts/mz124-bills-pilot-local.cjs` — SHA-256: `94db7449fd00189cc0da74fd3938f399fb7b1b790660334497c8b38ee28db3e9`
+- `scripts/mz124-bills-pilot-run.sh` — SHA-256: `3ebcb8590913c37d31bd88798865bc2860e3b5c43a663f6b712851103ef3a428`
+
+### Release Attempts
+
+- None. Not committed, not pushed, no PR, no merge, no deployment; no production or physical-device validation.
+
 ## CRL-20261110-004 — MZ-114 入住中完成照片多浴室、预览与完成审计修复
 
 - **Repository:** `root`
