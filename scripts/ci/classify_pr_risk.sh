@@ -21,6 +21,9 @@ fi
 # paths own API/auth, task/cleaning state, financial data or RBAC settings.
 readonly HIGH_RISK_PATTERN='^(\.github/workflows/|package(-lock)?\.json$|shared/|backend/(package(-lock)?\.json$|src/|scripts/(schema|init_db|migrations/)|migrations/)|frontend/(package(-lock)?\.json$|src/(lib/|app/(task-center|cleaning|login|auth|finance|rbac)/))|docs/feature-regression-registry\.md$)'
 
+# Relevant bill pages and shared dependencies, including the gate itself.
+readonly PROPERTY_BILLS_PATTERN='^([.]github/workflows/|package(-lock)?[.]json$|shared/|frontend/(package(-lock)?[.]json$|middleware[.]ts$|next[.]config[.]|postcss[.]config[.]|src/(app/(finance/|layout[.]tsx$|globals[.]css$)|components/|lib/))|backend/(package(-lock)?[.]json$|src/|scripts/(migrations/|tests/test_property_bill)|migrations/)|scripts/(ci/|mz124-bills-pilot-|tests/test_root_quality_workflow_contract)|docs/feature-regression-registry[.]md$)'
+
 normalized_paths="$(printf '%s\n' "$changed_paths" | sed '/^[[:space:]]*$/d')"
 
 if [[ -n "$normalized_paths" ]] && ! printf '%s\n' "$normalized_paths" | grep -Evq '^docs/change-release-ledger\.md$'; then
@@ -33,4 +36,10 @@ if printf '%s\n' "$normalized_paths" | grep -Eq "$HIGH_RISK_PATTERN"; then
   echo 'full_required=true'
 else
   echo 'full_required=false'
+fi
+
+if printf '%s\n' "$normalized_paths" | grep -Eq "$PROPERTY_BILLS_PATTERN"; then
+  echo 'property_bills_required=true'
+else
+  echo 'property_bills_required=false'
 fi

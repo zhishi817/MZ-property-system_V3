@@ -1,0 +1,47 @@
+'use strict'
+const path = require('node:path')
+const assert = require('node:assert/strict')
+const backend = path.resolve(process.argv[2] || '.')
+const dep = name => require(path.join(backend,'node_modules',name))
+const conn = new URL(process.env.DATABASE_URL || 'http://invalid')
+assert(conn.protocol === 'postgresql:' && conn.hostname === '127.0.0.1' && conn.port && conn.pathname === '/mz124_bills_pilot' && conn.search === '?sslmode=disable', 'only the local pilot database is allowed')
+assert(process.env.MZ124_PILOT_KEY?.length >= 32 && process.env.NODE_ENV === 'test')
+dep('ts-node').register({transpileOnly:true,project:path.join(backend,'tsconfig.json')})
+const {pgPool} = require(path.join(backend,'src/dbAdapter'))
+const {listPermissionCodesForUser} = require(path.join(backend,'src/auth'))
+const {propertyBillsRouter} = require(path.join(backend,'src/modules/property_bills'))
+const express = dep('express'), jwt = dep('jsonwebtoken')
+const app = express()
+const origin = 'http://127.0.0.1:43171'
+app.use((req,res,next)=>{
+ if(req.headers.origin && req.headers.origin !== origin) return res.sendStatus(403)
+ res.set({'Access-Control-Allow-Origin':origin,'Access-Control-Allow-Methods':'GET,POST,OPTIONS','Access-Control-Allow-Headers':'Authorization,Content-Type','Cache-Control':'no-store'})
+ if(req.method === 'OPTIONS') return res.sendStatus(204)
+ next()
+})
+app.use(express.json())
+app.get('/health',(_req,res)=>res.json({ok:true, mode:'isolated-pilot'}))
+app.get('/version',(_req,res)=>res.json({version:'isolated-pilot'}))
+app.use((req,res,next)=>{
+ try {
+  const user=jwt.verify(String(req.headers.authorization||'').replace(/^Bearer /,''),process.env.MZ124_PILOT_KEY,{algorithms:['HS256'],audience:'mz124-isolated'})
+  if (!['pilot-editor','pilot-viewer'].includes(user.role) || user.sub!==user.role) return res.sendStatus(401)
+  req.user = user
+  next()
+ } catch {res.sendStatus(401)}
+})
+app.get('/auth/me',(req,res)=>res.json({username:req.user.role,role:req.user.role,id:req.user.sub}))
+app.get('/rbac/my-permissions',async(req,res)=>res.json(await listPermissionCodesForUser(req.user)))
+app.get('/properties',async(_req,res)=>res.json((await pgPool.query('SELECT id,code,region FROM properties ORDER BY code')).rows))
+app.get('/recurring/property-payables/workbench',(_req,res)=>res.json({rows:[],summary:{}}))
+app.get('/recurring/property-payables/calendar',(_req,res)=>res.json({days:[],rows:[]}))
+app.get('/recurring/property-payables/calendar-day',(_req,res)=>res.json({rows:[]}))
+app.use('/recurring/property-payables/property-bills',propertyBillsRouter)
+app.use((_req,res)=>res.sendStatus(404))
+;(async()=>{
+ const q=await pgPool.query("SELECT current_database() AS name, inet_server_addr()::text AS address, to_regclass('public.property_bill_configurations') IS NOT NULL AS seeded")
+ assert.equal(q.rows[0]?.name,'mz124_bills_pilot')
+ assert.equal(q.rows[0]?.address,'127.0.0.1/32')
+ assert.equal(q.rows[0]?.seeded,true)
+ app.listen(43172,'127.0.0.1',()=>console.log('isolated pilot ready'))
+})().catch(e=>{console.error(e.message);process.exit(1)})

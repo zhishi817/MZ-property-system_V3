@@ -62,6 +62,41 @@ class RootQualityWorkflowContractTests(unittest.TestCase):
         self.assertIn("Full regression deferred until integration", full)
         self.assertEqual(1, full.count("npm run check:full"))
 
+    def test_property_bills_regression_is_part_of_existing_required_fast_job(self) -> None:
+        fast = job_section(WORKFLOW.read_text(encoding="utf-8"), "fast", "full")
+        for item in ('name: Fast Regression', 'Verify regression classification ran',
+                     'git rev-parse HEAD', 'scripts/mz124-bills-pilot-run.sh',
+                     'scripts/ci/require_property_bills_pilot.sh'):
+            self.assertIn(item, fast)
+        self.assertEqual(2, fast.count('always()'))
+        self.assertNotIn('secrets.', fast)
+
+    def test_property_bills_job_pins_its_playwright_supported_runner(self) -> None:
+        fast = job_section(WORKFLOW.read_text(encoding="utf-8"), "fast", "full")
+        self.assertIn("    runs-on: ubuntu-24.04\n", fast)
+        self.assertNotIn("ubuntu-latest\n", fast)
+
+    def test_property_bills_scope_includes_dependencies_but_not_ledger_only(self) -> None:
+        for file in ("frontend/src/app/finance/property-payables/PropertyBills.tsx",
+                     "frontend/src/components/AdminLayout.tsx", "backend/src/auth.ts",
+                     "scripts/mz124-bills-pilot-browser.cjs", ".github/workflows/quality.yml"):
+            completed = subprocess.run(["bash", str(RISK_CLASSIFIER), "--stdin"],
+                                       input=file+"\n", text=True, capture_output=True, check=True)
+            self.assertIn("property_bills_required=true", completed.stdout, file)
+        completed = subprocess.run(["bash", str(RISK_CLASSIFIER), "--stdin"],
+                                   input="docs/change-release-ledger.md\n", text=True, capture_output=True, check=True)
+        self.assertIn("property_bills_required=false", completed.stdout)
+
+    def test_property_bills_required_result_rejects_fail_skip_and_wrong_revision(self) -> None:
+        gate = ROOT / "scripts/ci/require_property_bills_pilot.sh"
+        expected = "a"*40
+        for status, observed, passed in (("success", expected, True), ("failure", expected, False),
+                                          ("skipped", "", False), ("cancelled", expected, False),
+                                          ("success", "", False), ("success", "b"*40, False)):
+            completed = subprocess.run(["bash", str(gate), status, observed, expected],
+                                       text=True, capture_output=True)
+            self.assertEqual(passed, completed.returncode == 0, (status, observed))
+
     def test_mz034_sql_uses_only_an_ephemeral_postgres_service(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         sql = job_section(workflow, "mz034_sql", "check")

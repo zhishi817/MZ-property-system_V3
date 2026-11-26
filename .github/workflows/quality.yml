@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      property_bills_required: ${{ steps.classify.outputs.property_bills_required }}
       full_required: ${{ steps.classify.outputs.full_required }}
       ledger_only: ${{ steps.classify.outputs.ledger_only }}
 
@@ -44,6 +45,7 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" != 'pull_request' ]]; then
             echo 'full_required=true' >> "$GITHUB_OUTPUT"
+            echo 'property_bills_required=false' >> "$GITHUB_OUTPUT"
             echo 'ledger_only=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -112,12 +114,23 @@ jobs:
   fast:
     name: Fast Regression
     needs: risk
-    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    # Playwright 1.58.2 supports Ubuntu 24.04; ubuntu-latest can move ahead.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       RUN_FAST: ${{ needs.risk.outputs.ledger_only != 'true' }}
+      RISK_RESULT: ${{ needs.risk.result }}
+      BILLS_REQUIRED: ${{ needs.risk.outputs.property_bills_required }}
 
     steps:
+      - name: Verify regression classification ran
+        shell: bash
+        run: |
+          test "$RISK_RESULT" = success
+          case "$BILLS_REQUIRED" in true|false) ;; *) exit 1 ;; esac
+          if [ "$BILLS_REQUIRED" = true ]; then test "$RUN_FAST" = true; fi
+
       - name: Fast regression not required for a ledger-only pull request
         if: env.RUN_FAST != 'true'
         run: echo 'Ledger-only pull request; Fast Regression has no code surface to inspect.'
@@ -172,6 +185,38 @@ jobs:
       - name: Run fast regression
         if: env.RUN_FAST == 'true'
         run: npm run check:ci
+
+      - name: Prepare isolated browser and PostgreSQL binaries
+        if: env.BILLS_REQUIRED == 'true'
+        shell: bash
+        run: |
+          pg_bin="$(pg_config --bindir)"
+          test -x "$pg_bin/initdb"
+          echo "$pg_bin" >> "$GITHUB_PATH"
+          ./frontend/node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Run Property Bills browser regression on the checked out merge revision
+        id: bills-pilot
+        if: env.BILLS_REQUIRED == 'true'
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          bash scripts/mz124-bills-pilot-run.sh "$PWD" "$GITHUB_SHA"
+          echo "verified_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Require the Property Bills run when applicable
+        if: ${{ always() }}
+        shell: bash
+        env:
+          BILLS_OUTCOME: ${{ steps.bills-pilot.outcome }}
+          BILLS_VERIFIED_SHA: ${{ steps.bills-pilot.outputs.verified_sha }}
+        run: |
+          test "$RISK_RESULT" = success
+          case "$BILLS_REQUIRED" in
+            false) echo 'No Property Bills impact on this event.' ;;
+            true) bash scripts/ci/require_property_bills_pilot.sh "$BILLS_OUTCOME" "$BILLS_VERIFIED_SHA" "$GITHUB_SHA" ;;
+            *) echo 'Requiredness is unknown; cannot count as passed.' >&2; exit 1 ;;
+          esac
 
   full:
     name: Full Regression
