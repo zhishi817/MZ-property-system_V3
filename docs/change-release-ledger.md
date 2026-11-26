@@ -68,16 +68,36 @@
 - Branch: `codex/acceptance-mz124-property-bills-rerun`
 - Base: `origin/Dev@83e26c9b0fe9e432730945bf7496ad4e0c3c242b`; fetched at `2026-11-26T12:06:29Z`.
 - Candidate patch SHA-256: `5d12646632b19f81c0310247755e86d9d72c77d3c728a75dd1571de2b9d8f9a5`, exact Dev-to-candidate diff excluding the ledger; identical to prior cumulative content commit `6051e91be666df7a12042a4a2e9077003ea0b50f`.
-- Commit SHA: `not committed`; verify the exact result after the action.
+- Commit SHA: `4c9dd3ebdae0bdd69432edcb9d82e24d588897f2`
 - Dependencies: none
 - In-scope dependency: the original pilot, the merge gate, and the runner fix are together in this cumulative candidate.
 - Required validation: `PASS` for local scope; 14 workflow contracts and exact staged audit with cumulative scopes. Hosted positive browser pass not yet verified.
 - Shared-hunk review: `PASS`; combined workflow and test hunks are attributed to CRL-003 with CRL-002 dependency; all other original hunks stay attributed to their existing scope. Historical incremental scope remains in `6051e91`; proof is kept separately from this re-registration.
 - Generated-file review: `PASS`; no generated files, dependencies, environment config, or credential values.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; explicit confirmation in `Sentinel_03d789a0434c81918990fe00676a37bc` to preserve the original and re-create the local commit with identical test code and accurate ledger. No push of this branch or commit is authorized.
 - Independent review: `GO`; read-only review `6b080a1a-9c60-83ec-8125-6ee6e7b6e024`, turn `01a217c0-cc72-7415-aa3a-ff86f5eab380`, verified exact cumulative fingerprint, 12 paths, 17 hunks, and byte-for-byte non-ledger equality with 6051e91. No P0/P1/P2.
 - Action conclusion: `GO`; blockers: none for the exact local commit. No authorization for push, PR, merge, deployment or production actions.
+
+#### RA-20261126-MZ124-BILLS-RERUN-ROOT-PUSH
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261126-001`, `CRL-20261126-002`, `CRL-20261126-003`
+- Selected CRL identities: `root/CRL-20261126-001`, `root/CRL-20261126-002`, `root/CRL-20261126-003`
+- Intended action: `push`
+- Branch: `codex/acceptance-mz124-property-bills-rerun`
+- Base: `origin/Dev@83e26c9b0fe9e432730945bf7496ad4e0c3c242b`; fetched at `2026-11-26T21:34:23Z`.
+- Candidate patch SHA-256: `5d12646632b19f81c0310247755e86d9d72c77d3c728a75dd1571de2b9d8f9a5`, excluding ledger metadata.
+- Commit SHA: `4c9dd3ebdae0bdd69432edcb9d82e24d588897f2`
+- Dependencies: none
+- In-scope dependency: all three pilot, fail-closed gate, and Ubuntu runner units are in the exact content commit.
+- Required validation: `PASS` for local scope; 14 workflow contracts, shell/Node/YAML syntax, clean diff and full-range ledger coverage. Hosted browser regression is the purpose of the rehearsal, not a pre-existing result.
+- Shared-hunk review: `PASS`; 17 unique non-ledger hunks, cumulative workflow and workflow contract hunks attributed to CRL-003; staged content scope unchanged by this receipt.
+- Generated-file review: `PASS`; no generated artifacts, dependencies, credentials, or environment configuration for shared or production resources in this candidate.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; user confirmed in `Sentinel_8248a31fbe9481918bcec42f1852bfad` to push the exact local content to this new branch and open a test-only PR to Dev. No merge, deployment, production access, database changes, or hosted settings changes.
+- Independent review: `GO`; read-only exact push review turn 01a219c8-7c0d-745f-ae9c-ee0fb35fb1bc; 12 paths and 17 hunks with exact fingerprint, scope, authorization and production isolation verified; P0/P1/P2 = 0. Hosted browser rehearsal not yet run.
+- Action conclusion: `GO`; blockers: none after the exact committed-range audit and immediate remote preflight. Push to the approved temporary branch and open the test PR only; no merge or deployment.
 
 ## CRL-20261126-002 — MZ-124 房源账单 Fast Regression 合并检查
 
