@@ -63,15 +63,36 @@
 - Branch: `codex/acceptance-mz124-property-bills`
 - Base: `origin/Dev@83e26c9b0fe9e432730945bf7496ad4e0c3c242b`; fetched at `2026-11-26T10:00:32Z`.
 - Candidate patch SHA-256: `fef393213f0c3123319ccb5902e655ccc34bb52c247ccce31b84a6558233279d`, excluding `docs/change-release-ledger.md`.
-- Commit SHA: `not committed` at pre-commit verification; the resulting exact content SHA is independently verified after the action.
-- Dependencies: `root/CRL-20261126-001` supplies the pilot run by `root/CRL-20261126-002`; both included in this candidate.
+- Commit SHA: `74d1d05ca7df3358473d408b11af8eacfa4fe71b`
+- Dependencies: none
+- In-scope dependency: `root/CRL-20261126-001` supplies the pilot to `root/CRL-20261126-002`; both are included in the exact content commit.
 - Required validation: `PASS` for local commit; 13 workflow contract tests, YAML and shell/Node syntax, staged whitespace and scope audits. Prior six-case browser sample and Neon Dev rollback evidence are recorded in CRL-20261126-001. The new Ubuntu Actions run and live PR protection are not yet verified.
 - Shared-hunk review: `PASS`; independent review verified exact 12 staged paths and 17 registered non-ledger hunks with no unrelated paths, unstaged changes or untracked files.
 - Generated-file review: `PASS`; no generated output, caches, private configuration or credentials; local-only fixtures are intentional source.
-- Technical state: `verified`
+- Technical state: `committed`
 - User authorization: `selected-for-commit`; user requested local submit in `Sentinel_9580898d8b148191b93b3049fd08b77f` and approved the independent review before local commit in `Sentinel_ff0eac35c8988191888623390acc9972`.
 - Independent review: `GO`; read-only reviewer thread `6b080a1a-9c60-83ec-8125-6ee6e7b6e024` independently verified this exact fingerprint and reported no P0/P1/P2 findings. No remote Actions rehearsal or visual pixel comparison performed.
-- Action conclusion: `GO` for local commit only; no authorization for push, PR, merge, deployment or production writes.
+- Action conclusion: `GO`; blockers: none for the completed local commit. This attempt does not authorize push, PR, merge, deployment or production writes.
+
+#### RA-20261126-MZ124-BILLS-ROOT-PUSH
+
+- Repository: `root`
+- Selected CRLs: `CRL-20261126-001`, `CRL-20261126-002`
+- Selected CRL identities: `root/CRL-20261126-001`, `root/CRL-20261126-002`
+- Intended action: `push`
+- Branch: `codex/acceptance-mz124-property-bills`
+- Base: `origin/Dev@83e26c9b0fe9e432730945bf7496ad4e0c3c242b`; fetched at `2026-11-26T10:43:53Z`.
+- Candidate patch SHA-256: `fef393213f0c3123319ccb5902e655ccc34bb52c247ccce31b84a6558233279d`, excluding `docs/change-release-ledger.md`.
+- Commit SHA: `74d1d05ca7df3358473d408b11af8eacfa4fe71b`
+- Dependencies: none
+- In-scope dependency: both the pilot and the gate that uses it are included in the exact content commit.
+- Required validation: `PASS` for local release scope; post-commit content fingerprint equals reviewed staged fingerprint, 13 workflow contract tests and local staged-scope audit pass. Actual hosted Ubuntu Actions and branch protection are the purpose of the test PR, not already-verified evidence.
+- Shared-hunk review: `PASS`; 17 selected non-ledger hunks across 12 paths including the ledger. Only the review and authorization metadata in this ledger follows the exact content commit.
+- Generated-file review: `PASS`; no generated artifacts or sensitive configuration included. Synthetic fixture SQL is source for isolated loopback testing only.
+- Technical state: `committed`
+- User authorization: `approved-for-push`; the user confirmed in `Sentinel_e3efd07db7cc8191855d23c013f2f9f6` the exact content commit on this temporary branch, a test-only PR to Dev, and possible automatic Vercel preview. No merge, intentional deployment, production access, database changes or hosted settings changes are authorized.
+- Independent review: `GO`; read-only review thread `6b080a1a-9c60-83ec-8125-6ee6e7b6e024`, push review dated 2026-11-26, verified the exact content commit, 17 non-ledger hunks, user authorization and ledger-only draft. No P0/P1/P2 findings. The live PR rehearsal is not yet verified.
+- Action conclusion: `GO`; blockers: none after exact committed-range audit and immediate remote preflight. Ordinary temporary test-branch push only, with possible authorized Vercel preview. Never merge this rehearsal or change deployment settings.
 
 ## CRL-20261126-001 — MZ-124 房源账单本地回归样板
 
